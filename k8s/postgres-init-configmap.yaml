@@ -1,0 +1,185 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-scripts
+  namespace: asi-dashboard
+data:
+  001_initial_schema.sql: |
+    -- Create chips table
+    CREATE TABLE IF NOT EXISTS chips (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        architecture VARCHAR(100),
+        process_node VARCHAR(50),
+        status VARCHAR(50) DEFAULT 'design',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Create designs table
+    CREATE TABLE IF NOT EXISTS designs (
+        id SERIAL PRIMARY KEY,
+        chip_id INTEGER REFERENCES chips(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        design_type VARCHAR(100),
+        status VARCHAR(50) DEFAULT 'draft',
+        metadata JSONB,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Create indexes
+    CREATE INDEX IF NOT EXISTS idx_chips_status ON chips(status);
+    CREATE INDEX IF NOT EXISTS idx_designs_chip_id ON designs(chip_id);
+    CREATE INDEX IF NOT EXISTS idx_designs_status ON designs(status);
+  002_users_and_roles.sql: |
+    -- Create user roles enum
+    CREATE TYPE user_role AS ENUM ('admin', 'project_manager', 'lead', 'engineer', 'customer');
+
+    -- Create users table
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(100) UNIQUE NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        full_name VARCHAR(255),
+        role user_role NOT NULL DEFAULT 'engineer',
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_login TIMESTAMP
+    );
+
+    -- Create indexes for users
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+    CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+    CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
+
+    -- Add created_by and updated_by columns to chips table
+    ALTER TABLE chips 
+    ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+
+    -- Add created_by and updated_by columns to designs table
+    ALTER TABLE designs 
+    ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+
+    -- Create indexes for foreign keys
+    CREATE INDEX IF NOT EXISTS idx_chips_created_by ON chips(created_by);
+    CREATE INDEX IF NOT EXISTS idx_chips_updated_by ON chips(updated_by);
+    CREATE INDEX IF NOT EXISTS idx_designs_created_by ON designs(created_by);
+    CREATE INDEX IF NOT EXISTS idx_designs_updated_by ON designs(updated_by);
+
+    -- Create function to update updated_at timestamp
+    CREATE OR REPLACE FUNCTION update_updated_at_column()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = CURRENT_TIMESTAMP;
+        RETURN NEW;
+    END;
+    $$ language 'plpgsql';
+
+    -- Create triggers for updated_at
+    DROP TRIGGER IF EXISTS update_users_updated_at ON users;
+    CREATE TRIGGER update_users_updated_at
+        BEFORE UPDATE ON users
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+
+    DROP TRIGGER IF EXISTS update_chips_updated_at ON chips;
+    CREATE TRIGGER update_chips_updated_at
+        BEFORE UPDATE ON chips
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+
+    DROP TRIGGER IF EXISTS update_designs_updated_at ON designs;
+    CREATE TRIGGER update_designs_updated_at
+        BEFORE UPDATE ON designs
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+  003_add_admin_user.sql: |
+    -- Add admin user with username admin1, email admin@1.com and password test@1234
+    -- Password hash for 'test@1234' using bcrypt with salt rounds 10
+    INSERT INTO users (username, email, password_hash, full_name, role, is_active) VALUES
+    ('admin1', 'admin@1.com', '$2a$10$6fuNS9.c5gNt20SsPmmTPO04289kKQcI1wr1QFiCcMt7McQTZSsQC', 'Admin User', 'admin', true)
+    ON CONFLICT (username) DO UPDATE SET
+      email = EXCLUDED.email,
+      password_hash = EXCLUDED.password_hash,
+      role = EXCLUDED.role,
+      is_active = EXCLUDED.is_active;
+  004_add_domains_table.sql: |
+    -- Create domains table for design domains
+    CREATE TABLE IF NOT EXISTS domains (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        code VARCHAR(50) NOT NULL UNIQUE,
+        description TEXT,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Create indexes for domain
+    CREATE INDEX IF NOT EXISTS idx_domains_code ON domains(code);
+    CREATE INDEX IF NOT EXISTS idx_domains_is_active ON domains(is_active);
+
+    -- Insert design domains
+    INSERT INTO domains (name, code, description, is_active) VALUES
+    ('Design Verification', 'DV', 'Design Verification (DV) domain for verifying chip designs', true),
+    ('Register Transfer Level', 'RTL', 'RTL (Register Transfer Level) design domain', true),
+    ('Design for Testability', 'DFT', 'DFT (Design for Testability) domain for testability features', true),
+    ('Physical Design', 'PHYSICAL', 'Physical design domain for layout and floorplanning', true),
+    ('Analog Layout', 'ANALOG', 'Analog layout domain for analog circuit design', true)
+    ON CONFLICT (code) DO NOTHING;
+
+    -- Create trigger for updated_at
+    DROP TRIGGER IF EXISTS update_domains_updated_at ON domains;
+    CREATE TRIGGER update_domains_updated_at
+        BEFORE UPDATE ON domains
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+  005_add_domain_to_users.sql: |
+    -- Add domain_id column to users table
+    ALTER TABLE users 
+    ADD COLUMN IF NOT EXISTS domain_id INTEGER REFERENCES domains(id) ON DELETE SET NULL;
+
+    -- Create index for domain_id
+    CREATE INDEX IF NOT EXISTS idx_users_domain_id ON users(domain_id);
+  006_create_projects.sql: |
+    -- Projects core tables
+    CREATE TABLE IF NOT EXISTS projects (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        client VARCHAR(255),
+        technology_node VARCHAR(100),
+        start_date DATE,
+        target_date DATE,
+        plan TEXT,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_projects_created_by ON projects(created_by);
+
+    -- Link projects to one or more domains
+    CREATE TABLE IF NOT EXISTS project_domains (
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        domain_id INTEGER REFERENCES domains(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (project_id, domain_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_domains_domain_id ON project_domains(domain_id);
+
+    -- Keep updated_at fresh
+    DROP TRIGGER IF EXISTS update_projects_updated_at ON projects;
+    CREATE TRIGGER update_projects_updated_at
+        BEFORE UPDATE ON projects
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+

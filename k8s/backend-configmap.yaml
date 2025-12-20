@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: asi-dashboard
+data:
+  PORT: "3000"
+  NODE_ENV: "production"
+  DATABASE_URL: "postgresql://postgres:root@postgres:5432/ASI"
+  JWT_EXPIRES_IN: "7d"
+

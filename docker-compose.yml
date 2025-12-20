@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: asi_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: ASI
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql
+      - ./backend/migrations/002_users_and_roles.sql:/docker-entrypoint-initdb.d/002_users_and_roles.sql
+      - ./backend/migrations/003_add_admin_user.sql:/docker-entrypoint-initdb.d/003_add_admin_user.sql
+      - ./backend/migrations/004_add_domains_table.sql:/docker-entrypoint-initdb.d/004_add_domains_table.sql
+      - ./backend/migrations/005_add_domain_to_users.sql:/docker-entrypoint-initdb.d/005_add_domain_to_users.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - asi_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: asi_backend
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:root@postgres:5432/ASI
+      JWT_SECRET: your-secret-key-change-in-production
+      JWT_EXPIRES_IN: 7d
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    networks:
+      - asi_network
+    command: npm run dev
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: asi_frontend
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend
+    environment:
+      - API_URL=http://backend:3000
+    networks:
+      - asi_network
+
+volumes:
+  postgres_data:
+
+networks:
+  asi_network:
+    driver: bridge
+
