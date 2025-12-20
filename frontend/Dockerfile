@@ -11,12 +11,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Flutter
-ENV FLUTTER_VERSION=3.16.0
+ENV FLUTTER_VERSION=3.22.0
 ENV FLUTTER_HOME=/opt/flutter
 ENV PATH=$PATH:$FLUTTER_HOME/bin
 
 RUN git clone --branch ${FLUTTER_VERSION} https://github.com/flutter/flutter.git $FLUTTER_HOME
 RUN flutter doctor
+RUN flutter config --enable-web
 
 WORKDIR /app
 

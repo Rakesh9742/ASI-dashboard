@@ -22,13 +22,6 @@ class MyApp extends StatelessWidget {
         ),
         useMaterial3: true,
         scaffoldBackgroundColor: Colors.grey.shade50,
-        cardTheme: CardThemeData(
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          color: Colors.white,
-        ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: Colors.grey.shade50,
