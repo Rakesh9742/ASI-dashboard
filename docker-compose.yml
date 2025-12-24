@@ -36,6 +36,8 @@ services:
       DATABASE_URL: postgresql://postgres:root@postgres:5432/ASI
       JWT_SECRET: your-secret-key-change-in-production
       JWT_EXPIRES_IN: 7d
+      BACKEND_URL: ${BACKEND_URL:-http://localhost:3000}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
     ports:
       - "3000:3000"
     depends_on:
@@ -52,13 +54,17 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        API_URL: ${API_URL:-http://backend:3000}
     container_name: asi_frontend
     ports:
       - "8080:8080"
     depends_on:
       - backend
     environment:
-      - API_URL=http://backend:3000
+      - API_URL=${API_URL:-http://backend:3000}
+      - BACKEND_URL=${BACKEND_URL:-http://backend:3000}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8080}
     networks:
       - asi_network
 

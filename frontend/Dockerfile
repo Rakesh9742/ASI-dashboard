@@ -35,17 +35,30 @@ RUN flutter pub get
 # Copy source code
 COPY . .
 
-# Build for web
-RUN flutter build web --release
+# Build for web with API_URL from environment
+ARG API_URL
+RUN if [ -n "$API_URL" ]; then \
+      flutter build web --release --dart-define=API_URL=$API_URL; \
+    else \
+      flutter build web --release; \
+    fi
 
 # Use nginx to serve the web app
 FROM nginx:alpine
+
+# Install envsubst for environment variable substitution
+RUN apk add --no-cache gettext
+
 COPY --from=0 /app/build/web /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+
+# Environment variable for backend URL
+ENV BACKEND_URL=http://backend:3000
 
 EXPOSE 8080
 
-CMD ["nginx", "-g", "daemon off;"]
+# Use envsubst to substitute environment variables in nginx config
+CMD ["/bin/sh", "-c", "envsubst '$$BACKEND_URL' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
 
 
 

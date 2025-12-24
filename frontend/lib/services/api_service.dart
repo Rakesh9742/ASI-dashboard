@@ -2,16 +2,30 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // Change this to your backend URL
-  // For local development: http://localhost:3000
-  // For Docker: http://backend:3000
-  // For production: your production URL
+  // Backend URL from environment variable
+  // Set via: --dart-define=API_URL=http://your-backend-url:3000
+  // Or via environment variable in Docker/EC2
   static String get baseUrl {
+    // Try environment variable first
     const envUrl = String.fromEnvironment('API_URL', defaultValue: '');
     if (envUrl.isNotEmpty) {
-      return envUrl.endsWith('/api') ? envUrl : '$envUrl/api';
+      final url = envUrl.trim();
+      // Remove trailing slash if present
+      final cleanUrl = url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+      // Add /api if not already present
+      return cleanUrl.endsWith('/api') ? cleanUrl : '$cleanUrl/api';
     }
-    return 'http://localhost:3000/api';
+    
+    // Fallback: Try to get from window location (for web)
+    // This will use the same origin as the frontend
+    try {
+      // For web builds, use relative URL which will use the same origin
+      // The nginx will proxy to backend
+      return '/api';
+    } catch (e) {
+      // If that fails, use localhost as last resort (development only)
+      return 'http://localhost:3000/api';
+    }
   }
 
   // Helper method to get headers with optional token

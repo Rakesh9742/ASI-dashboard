@@ -42,7 +42,11 @@ class ZohoService {
   constructor() {
     this.clientId = process.env.ZOHO_CLIENT_ID || '';
     this.clientSecret = process.env.ZOHO_CLIENT_SECRET || '';
-    this.redirectUri = process.env.ZOHO_REDIRECT_URI || '';
+    
+    // Build redirect URI from BACKEND_URL if ZOHO_REDIRECT_URI is not set
+    const backendUrl = process.env.BACKEND_URL || process.env.API_URL || 'http://localhost:3000';
+    this.redirectUri = process.env.ZOHO_REDIRECT_URI || `${backendUrl}/api/zoho/callback`;
+    
     // Zoho Projects API base URL - adjust based on your data center
     // US: https://projectsapi.zoho.com
     // EU: https://projectsapi.zoho.eu
@@ -59,8 +63,17 @@ class ZohoService {
       console.error('⚠️  WARNING: ZOHO_CLIENT_SECRET is not set in environment variables');
     }
     if (!this.redirectUri) {
-      console.error('⚠️  WARNING: ZOHO_REDIRECT_URI is not set in environment variables');
+      console.error('⚠️  WARNING: ZOHO_REDIRECT_URI or BACKEND_URL is not set in environment variables');
     }
+    
+    // Log configuration for debugging (without sensitive data)
+    console.log('Zoho Service Configuration:', {
+      redirectUri: this.redirectUri,
+      apiUrl: this.apiUrl,
+      authUrl: this.authUrl,
+      hasClientId: !!this.clientId,
+      hasClientSecret: !!this.clientSecret
+    });
   }
 
   /**
@@ -387,9 +400,16 @@ class ZohoService {
       }
       
       // Last resort: Try CRM API
+      // Use ZOHO_CRM_API_URL or derive from ZOHO_API_URL
+      const crmApiUrl = process.env.ZOHO_CRM_API_URL || 
+        (this.apiUrl.includes('.in') ? 'https://www.zohoapis.in' :
+         this.apiUrl.includes('.eu') ? 'https://www.zohoapis.eu' :
+         this.apiUrl.includes('.com.au') ? 'https://www.zohoapis.com.au' :
+         'https://www.zohoapis.com');
+      
       try {
         const crmResponse = await axios.get(
-          `https://www.zohoapis.in/crm/v2/users`,
+          `${crmApiUrl}/crm/v2/users`,
           {
             headers: {
               'Authorization': `Zoho-oauthtoken ${accessToken}`,
