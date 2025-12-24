@@ -54,15 +54,14 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        API_URL: ${API_URL:-http://backend:3000}
+      # No API_URL needed - frontend uses relative URLs (/api) which nginx proxies
     container_name: asi_frontend
     ports:
       - "8080:8080"
     depends_on:
       - backend
     environment:
-      - API_URL=${API_URL:-http://backend:3000}
+      # BACKEND_URL is used by nginx to proxy /api requests
       - BACKEND_URL=${BACKEND_URL:-http://backend:3000}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8080}
     networks:

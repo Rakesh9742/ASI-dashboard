@@ -1,219 +1,45 @@
 name: CI/CD Pipeline
 
 on:
-  # Automatic triggers
   push:
     branches:
       - main
-    tags:
-      - 'v*'
-  pull_request:
-    branches:
-      - main
-  # Manual trigger with options
-  workflow_dispatch:
-    inputs:
-      component:
-        description: 'Component to build (backend, frontend, or both)'
-        required: true
-        type: choice
-        options:
-          - both
-          - backend
-          - frontend
-      tag:
-        description: 'Custom tag (optional, defaults to latest)'
-        required: false
-        type: string
-      skip_tests:
-        description: 'Skip tests and only build Docker images'
-        required: false
-        type: boolean
-        default: false
-      push:
-        description: 'Push to registry'
-        required: true
-        type: boolean
-        default: true
-
-env:
-  REGISTRY: ghcr.io
-  BACKEND_IMAGE_NAME: ${{ github.repository }}/asi-backend
-  FRONTEND_IMAGE_NAME: ${{ github.repository }}/asi-frontend
 
 jobs:
-  # Build and test backend
-  backend-test:
-    name: Test Backend
+  deploy:
+    name: Deploy to EC2
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.skip_tests != 'true' }}
-    defaults:
-      run:
-        working-directory: ./backend
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build TypeScript
-        run: npm run build
-
-      - name: Run linting (if configured)
+      - name: Configure SSH
         run: |
-          if [ -f "tsconfig.json" ]; then
-            echo "TypeScript compilation successful"
-          fi
-        continue-on-error: true
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-  # Build and test frontend
-  frontend-test:
-    name: Test Frontend
-    runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.skip_tests != 'true' }}
-    defaults:
-      run:
-        working-directory: ./frontend
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.22.0'
-          channel: 'stable'
-
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Analyze code
-        run: flutter analyze
-        continue-on-error: true
-
-      - name: Build web
-        run: flutter build web --release
-        continue-on-error: true
-
-  # Build and push Docker images
-  build-and-push:
-    name: Build and Push Docker Images
-    runs-on: ubuntu-latest
-    needs: [backend-test, frontend-test]
-    # Run if tests passed (or skipped), or if manual dispatch
-    if: |
-      (always() && (needs.backend-test.result == 'success' || needs.backend-test.result == 'skipped') && 
-       (needs.frontend-test.result == 'success' || needs.frontend-test.result == 'skipped')) ||
-      github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      packages: write
-
-    strategy:
-      fail-fast: false
-      matrix:
-        component: [backend, frontend]
-
-    steps:
-      - name: Check if should build ${{ matrix.component }}
-        id: should-build
+      - name: Deploy to EC2
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            if [ "${{ github.event.inputs.component }}" == "both" ] || [ "${{ github.event.inputs.component }}" == "${{ matrix.component }}" ]; then
-              echo "build=true" >> $GITHUB_OUTPUT
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            # Try to find the project directory
+            if [ -d "$HOME/ASI dashboard" ]; then
+              cd "$HOME/ASI dashboard"
+            elif [ -d "$HOME/ASI-dashboard" ]; then
+              cd "$HOME/ASI-dashboard"
+            elif [ -d "$HOME/asi-dashboard" ]; then
+              cd "$HOME/asi-dashboard"
+            elif [ -d "/var/www/asi-dashboard" ]; then
+              cd "/var/www/asi-dashboard"
             else
-              echo "build=false" >> $GITHUB_OUTPUT
+              echo "❌ Project directory not found. Please update the path in the workflow."
+              exit 1
             fi
-          else
-            echo "build=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Checkout code
-        if: steps.should-build.outputs.build == 'true'
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        if: steps.should-build.outputs.build == 'true'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Container Registry
-        if: steps.should-build.outputs.build == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Determine image tag
-        if: steps.should-build.outputs.build == 'true'
-        id: image-tag
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
-            echo "tag=latest" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Extract metadata (tags, labels) for ${{ matrix.component }}
-        if: steps.should-build.outputs.build == 'true' && github.event_name != 'workflow_dispatch'
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ matrix.component == 'backend' && env.BACKEND_IMAGE_NAME || env.FRONTEND_IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Set tags for manual build
-        if: steps.should-build.outputs.build == 'true' && github.event_name == 'workflow_dispatch'
-        id: manual-tags
-        run: |
-          IMAGE_NAME="${{ matrix.component == 'backend' && env.BACKEND_IMAGE_NAME || env.FRONTEND_IMAGE_NAME }}"
-          TAG="${{ steps.image-tag.outputs.tag }}"
-          SHA="${{ github.sha }}"
-          echo "tags<<EOF" >> $GITHUB_OUTPUT
-          echo "${{ env.REGISTRY }}/${IMAGE_NAME}:${TAG}" >> $GITHUB_OUTPUT
-          echo "${{ env.REGISTRY }}/${IMAGE_NAME}:${SHA}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Build and push Docker image for ${{ matrix.component }}
-        if: steps.should-build.outputs.build == 'true'
-        timeout-minutes: 30
-        uses: docker/build-push-action@v5
-        with:
-          context: ./${{ matrix.component }}
-          file: ./${{ matrix.component }}/Dockerfile
-          push: ${{ github.event.inputs.push != 'false' && github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))) }}
-          tags: ${{ github.event_name == 'workflow_dispatch' && steps.manual-tags.outputs.tags || steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: ${{ github.event_name == 'workflow_dispatch' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-
-      - name: Image summary
-        if: steps.should-build.outputs.build == 'true'
-        run: |
-          echo "✅ Successfully built ${{ matrix.component }} image"
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "Tag: ${{ steps.image-tag.outputs.tag }}"
-          else
-            echo "Tags: ${{ steps.meta.outputs.tags }}"
-          fi
+            
+            echo "📂 Current directory: $(pwd)"
+            echo "🔄 Pulling latest code from main branch..."
+            git pull origin main
+            echo "✅ Successfully pulled latest code"
+          EOF

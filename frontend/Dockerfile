@@ -35,13 +35,9 @@ RUN flutter pub get
 # Copy source code
 COPY . .
 
-# Build for web with API_URL from environment
-ARG API_URL
-RUN if [ -n "$API_URL" ]; then \
-      flutter build web --release --dart-define=API_URL=$API_URL; \
-    else \
-      flutter build web --release; \
-    fi
+# Build for web - no API_URL needed, frontend uses relative URLs (/api)
+# nginx will proxy /api requests to backend
+RUN flutter build web --release
 
 # Use nginx to serve the web app
 FROM nginx:alpine

@@ -2,30 +2,14 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // Backend URL from environment variable
-  // Set via: --dart-define=API_URL=http://your-backend-url:3000
-  // Or via environment variable in Docker/EC2
+  // Backend URL - Always use relative URL (/api) for web builds
+  // nginx will proxy /api requests to the backend container
+  // This works in both Docker and production environments
   static String get baseUrl {
-    // Try environment variable first
-    const envUrl = String.fromEnvironment('API_URL', defaultValue: '');
-    if (envUrl.isNotEmpty) {
-      final url = envUrl.trim();
-      // Remove trailing slash if present
-      final cleanUrl = url.endsWith('/') ? url.substring(0, url.length - 1) : url;
-      // Add /api if not already present
-      return cleanUrl.endsWith('/api') ? cleanUrl : '$cleanUrl/api';
-    }
-    
-    // Fallback: Try to get from window location (for web)
-    // This will use the same origin as the frontend
-    try {
-      // For web builds, use relative URL which will use the same origin
-      // The nginx will proxy to backend
-      return '/api';
-    } catch (e) {
-      // If that fails, use localhost as last resort (development only)
-      return 'http://localhost:3000/api';
-    }
+    // Always use relative URL for web builds
+    // nginx proxy handles routing /api to backend
+    // This avoids CORS issues and works with Docker service names
+    return '/api';
   }
 
   // Helper method to get headers with optional token
@@ -42,8 +26,8 @@ class ApiService {
   // Health check
   Future<Map<String, dynamic>> healthCheck() async {
     try {
-      final healthUrl = baseUrl.replaceAll('/api', '');
-      final response = await http.get(Uri.parse('$healthUrl/health'));
+      // Use /health endpoint (nginx will proxy to backend)
+      final response = await http.get(Uri.parse('/health'));
       return json.decode(response.body);
     } catch (e) {
       throw Exception('Failed to connect to backend: $e');
