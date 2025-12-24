@@ -1,13 +1,17 @@
 FROM ubuntu:22.04
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install dependencies in a single layer with cleanup
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     unzip \
     xz-utils \
     zip \
     libglu1-mesa \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Flutter
@@ -15,9 +19,10 @@ ENV FLUTTER_VERSION=3.22.0
 ENV FLUTTER_HOME=/opt/flutter
 ENV PATH=$PATH:$FLUTTER_HOME/bin
 
-RUN git clone --branch ${FLUTTER_VERSION} https://github.com/flutter/flutter.git $FLUTTER_HOME
-RUN flutter doctor
-RUN flutter config --enable-web
+# Clone Flutter and configure in a single layer
+# Skip flutter doctor to speed up build (it's mainly for diagnostics)
+RUN git clone --branch ${FLUTTER_VERSION} --depth 1 https://github.com/flutter/flutter.git $FLUTTER_HOME && \
+    flutter config --enable-web --no-analytics
 
 WORKDIR /app
 

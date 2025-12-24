@@ -74,6 +74,7 @@ jobs:
           fi
 
       - name: Build Docker image for ${{ matrix.component }}
+        timeout-minutes: 30
         uses: docker/build-push-action@v5
         with:
           context: ./${{ matrix.component }}
