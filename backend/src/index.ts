@@ -8,6 +8,7 @@ import projectRoutes from './routes/project.routes';
 import dashboardRoutes from './routes/dashboard.routes';
 import authRoutes from './routes/auth.routes';
 import domainRoutes from './routes/domain.routes';
+import zohoRoutes from './routes/zoho.routes';
 import { authenticate } from './middleware/auth.middleware';
 
 dotenv.config();
@@ -19,6 +20,24 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Root route - API information
+app.get('/', (req, res) => {
+  res.json({
+    message: 'ASI Dashboard API',
+    version: '1.0.0',
+    status: 'running',
+    endpoints: {
+      health: '/health',
+      auth: '/api/auth',
+      zoho: '/api/zoho',
+      projects: '/api/projects',
+      domains: '/api/domains',
+      dashboard: '/api/dashboard',
+    },
+    documentation: 'See API documentation for details'
+  });
+});
 
 // Health check
 app.get('/health', async (req, res) => {
@@ -44,6 +63,7 @@ app.use('/api/designs', designRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/domains', domainRoutes);
+app.use('/api/zoho', zohoRoutes);
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

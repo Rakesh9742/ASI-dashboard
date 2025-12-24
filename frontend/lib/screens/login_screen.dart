@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
+import 'dart:html' as html;
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 import 'main_navigation_screen.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -14,7 +19,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
   final _formKey = GlobalKey<FormState>();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _apiService = ApiService();
   bool _isLoading = false;
+  bool _isZohoLoading = false;
   bool _obscurePassword = true;
   AnimationController? _animationController;
   Animation<double>? _fadeAnimation;
@@ -24,6 +31,61 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
   void initState() {
     super.initState();
     _initializeAnimations();
+    _setupZohoLoginListener();
+  }
+
+  void _setupZohoLoginListener() {
+    // Listen for Zoho login success message from OAuth callback
+    // Check for postMessage from OAuth callback window
+    try {
+      html.window.addEventListener('message', (event) {
+        try {
+          final messageEvent = event as html.MessageEvent;
+          print('Received message event: ${messageEvent.data}');
+          final data = messageEvent.data;
+          if (data is Map && data['type'] == 'ZOHO_LOGIN_SUCCESS') {
+            print('Zoho login success detected! Token: ${data['token']?.toString().substring(0, 20)}...');
+            print('User data: ${data['user']}');
+            _handleZohoLoginSuccess(
+              data['token'] as String, 
+              Map<String, dynamic>.from(data['user'] as Map)
+            );
+          } else {
+            print('Message received but not ZOHO_LOGIN_SUCCESS. Type: ${data is Map ? data['type'] : 'unknown'}');
+          }
+        } catch (e) {
+          print('Error handling Zoho login message: $e');
+          print('Stack trace: ${StackTrace.current}');
+        }
+      });
+      
+      // Also check localStorage periodically for Zoho login token (fallback)
+      _checkLocalStorageForZohoToken();
+    } catch (e) {
+      print('Error setting up Zoho login listener: $e');
+    }
+  }
+
+  void _checkLocalStorageForZohoToken() {
+    // Check localStorage every 2 seconds for Zoho login token (fallback method)
+    Future.delayed(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      try {
+        final token = html.window.localStorage['zoho_login_token'];
+        final userJson = html.window.localStorage['zoho_login_user'];
+        if (token != null && userJson != null) {
+          final user = json.decode(userJson) as Map<String, dynamic>;
+          html.window.localStorage.remove('zoho_login_token');
+          html.window.localStorage.remove('zoho_login_user');
+          _handleZohoLoginSuccess(token, user);
+        } else {
+          // Check again after 2 more seconds
+          _checkLocalStorageForZohoToken();
+        }
+      } catch (e) {
+        // Ignore errors
+      }
+    });
   }
 
   void _initializeAnimations() {
@@ -111,6 +173,147 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     }
   }
 
+  Future<void> _handleZohoLogin() async {
+    setState(() {
+      _isZohoLoading = true;
+    });
+
+    try {
+      // Get Zoho OAuth login URL
+      final response = await _apiService.getZohoLoginAuthUrl();
+      final authUrl = response['authUrl'] as String;
+
+      // Open OAuth URL in a popup window for proper postMessage communication
+      // Use html.window.open() instead of launchUrl for web
+      try {
+        html.window.open(
+          authUrl,
+          'zoho_oauth',
+          'width=600,height=700,scrollbars=yes,resizable=yes',
+        );
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please complete Zoho login in the popup window'),
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
+      } catch (e) {
+        // Fallback to launchUrl if window.open fails
+        final uri = Uri.parse(authUrl);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Please complete Zoho login in the browser'),
+                duration: Duration(seconds: 5),
+              ),
+            );
+          }
+        } else {
+          _showError('Could not open browser for Zoho login');
+        }
+      }
+    } catch (e) {
+      _showError('Failed to start Zoho login: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isZohoLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _handleZohoLoginSuccess(String token, Map<String, dynamic> user) async {
+    try {
+      print('Handling Zoho login success...');
+      print('Token length: ${token.length}');
+      print('User data: $user');
+      
+      setState(() {
+        _isZohoLoading = false;
+      });
+
+      // Ensure user has required fields
+      final userData = Map<String, dynamic>.from(user);
+      if (!userData.containsKey('role') || userData['role'] == null) {
+        print('Warning: User role not found, defaulting to admin');
+        userData['role'] = 'admin'; // Default to admin for Zoho users
+      }
+
+      // Save token and user to SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('auth_token', token);
+      await prefs.setString('auth_user', json.encode(userData));
+      print('Saved token and user to SharedPreferences');
+
+      // Update auth state using the notifier
+      final authNotifier = ref.read(authProvider.notifier);
+      authNotifier.updateState(AuthState(
+        isAuthenticated: true,
+        token: token,
+        user: userData,
+      ));
+      print('Updated auth state. Is authenticated: ${ref.read(authProvider).isAuthenticated}');
+
+      // Wait a bit for state to propagate
+      await Future.delayed(const Duration(milliseconds: 300));
+
+      if (mounted) {
+        // Verify auth state was updated
+        final currentAuthState = ref.read(authProvider);
+        print('Current auth state after update: isAuthenticated=${currentAuthState.isAuthenticated}, hasToken=${currentAuthState.token != null}, hasUser=${currentAuthState.user != null}');
+        
+        if (currentAuthState.isAuthenticated) {
+          // Show success message
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('✅ Login successful! Redirecting to dashboard...'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 2),
+            ),
+          );
+
+          // AuthWrapper will automatically show MainNavigationScreen when auth state changes
+          // But we can also manually navigate to ensure it happens immediately
+          print('Navigating to MainNavigationScreen...');
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const MainNavigationScreen()),
+            (route) => false, // Remove all previous routes
+          );
+          print('Navigation completed');
+        } else {
+          print('ERROR: Auth state not updated properly!');
+          _showError('Authentication state not updated. Please try again.');
+        }
+      } else {
+        print('Widget not mounted, cannot navigate');
+      }
+    } catch (e, stackTrace) {
+      print('Error in _handleZohoLoginSuccess: $e');
+      print('Stack trace: $stackTrace');
+      if (mounted) {
+        _showError('Failed to complete Zoho login: $e');
+      }
+    }
+  }
+
+  void _showError(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red.shade600,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -165,11 +368,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
         
         // Login Card
         _buildLoginCard(theme, size),
-        
-        const SizedBox(height: 24),
-        
-        // Demo Credentials
-        _buildDemoCredentials(theme),
       ],
     );
   }
@@ -313,9 +511,81 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                 },
                 theme: theme,
               ),
+              const SizedBox(height: 24),
+
+              // Divider with "OR"
+              Row(
+                children: [
+                  Expanded(child: Divider(color: Colors.grey.shade300)),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      'OR',
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  Expanded(child: Divider(color: Colors.grey.shade300)),
+                ],
+              ),
+
+              const SizedBox(height: 24),
+
+              // Zoho Login Button
+              Container(
+                height: 56,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.blue.shade600,
+                      Colors.blue.shade700,
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.blue.shade600.withOpacity(0.4),
+                      blurRadius: 15,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: ElevatedButton.icon(
+                  onPressed: _isZohoLoading ? null : _handleZohoLogin,
+                  icon: _isZohoLoading
+                      ? SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : const Icon(Icons.cloud, color: Colors.white),
+                  label: Text(
+                    _isZohoLoading ? 'Connecting...' : 'Login with Zoho',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.5,
+                      color: Colors.white,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.transparent,
+                    shadowColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                ),
+              ),
+
               const SizedBox(height: 32),
 
-              // Login Button
+              // Regular Login Button
               Container(
                 height: 56,
                 decoration: BoxDecoration(
@@ -450,108 +720,4 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     );
   }
 
-  Widget _buildDemoCredentials(ThemeData theme) {
-    return Container(
-      constraints: const BoxConstraints(maxWidth: 450),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: Colors.purple.shade600.withOpacity(0.2),
-          width: 1.5,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.purple.shade600.withOpacity(0.1),
-            blurRadius: 20,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.purple.shade600.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(
-                  Icons.info_outline_rounded,
-                  size: 20,
-                  color: Colors.purple.shade600,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'Demo Credentials',
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: Colors.purple.shade600,
-                  fontSize: 15,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _buildCredentialItem('Username', 'admin1', theme),
-          const SizedBox(height: 12),
-          _buildCredentialItem('Password', 'test@1234', theme),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCredentialItem(String label, String value, ThemeData theme) {
-    return Row(
-      children: [
-        Container(
-          width: 6,
-          height: 6,
-          decoration: BoxDecoration(
-            color: Colors.teal.shade600,
-            shape: BoxShape.circle,
-          ),
-        ),
-        const SizedBox(width: 12),
-        SizedBox(
-          width: 90,
-          child: Text(
-            '$label:',
-            style: TextStyle(
-              color: Colors.grey.shade700,
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
-        Expanded(
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.purple.shade600.withOpacity(0.05),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: Colors.purple.shade600.withOpacity(0.2),
-              ),
-            ),
-            child: Text(
-              value,
-              style: TextStyle(
-                color: Colors.purple.shade600,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                fontFamily: 'monospace',
-                letterSpacing: 0.5,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
 }

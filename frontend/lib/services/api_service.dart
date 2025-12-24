@@ -167,6 +167,37 @@ class ApiService {
     }
   }
 
+  // Delete project (admin only)
+  Future<void> deleteProject(int projectId, {String? token}) async {
+    try {
+      final url = '$baseUrl/projects/$projectId';
+      print('Deleting project: $url');
+      
+      final response = await http.delete(
+        Uri.parse(url),
+        headers: _getHeaders(token: token),
+      );
+
+      print('Delete response status: ${response.statusCode}');
+      print('Delete response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        return;
+      } else if (response.statusCode == 404) {
+        final error = json.decode(response.body);
+        throw Exception(error['error'] ?? 'Project not found');
+      } else if (response.statusCode == 403) {
+        throw Exception('Access denied. Admin role required.');
+      } else {
+        final error = json.decode(response.body);
+        throw Exception(error['error'] ?? 'Failed to delete project');
+      }
+    } catch (e) {
+      print('Error in deleteProject: $e');
+      rethrow;
+    }
+  }
+
   // Dashboard stats
   Future<Map<String, dynamic>> getDashboardStats() async {
     final response = await http.get(Uri.parse('$baseUrl/dashboard/stats'));
@@ -289,6 +320,129 @@ class ApiService {
     } else {
       final error = json.decode(response.body);
       throw Exception(error['error'] ?? 'Failed to create user');
+    }
+  }
+
+  // Zoho Integration Methods
+  Future<Map<String, dynamic>> getZohoAuthUrl({String? token}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/zoho/auth'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get Zoho auth URL');
+    }
+  }
+
+  // Zoho OAuth Login (no token required)
+  Future<Map<String, dynamic>> getZohoLoginAuthUrl() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/zoho/login-auth'),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get Zoho login URL');
+    }
+  }
+
+  Future<Map<String, dynamic>> getZohoStatus({String? token}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/zoho/status'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get Zoho status');
+    }
+  }
+
+  Future<List<dynamic>> getZohoPortals({String? token}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/zoho/portals'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get Zoho portals');
+    }
+  }
+
+  Future<Map<String, dynamic>> getZohoProjects({String? token, String? portalId}) async {
+    final uri = portalId != null
+        ? Uri.parse('$baseUrl/zoho/projects?portalId=$portalId')
+        : Uri.parse('$baseUrl/zoho/projects');
+    
+    final response = await http.get(
+      uri,
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get Zoho projects');
+    }
+  }
+
+  Future<void> disconnectZoho({String? token}) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/zoho/disconnect'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode != 200) {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to disconnect Zoho');
+    }
+  }
+
+  // Get projects with Zoho integration option
+  Future<Map<String, dynamic>> getProjectsWithZoho({String? token, bool includeZoho = false}) async {
+    final uri = includeZoho
+        ? Uri.parse('$baseUrl/projects?includeZoho=true')
+        : Uri.parse('$baseUrl/projects');
+    
+    final response = await http.get(
+      uri,
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      // Handle different response formats
+      if (data is Map) {
+        final mapData = Map<String, dynamic>.from(data);
+        // If response has 'all' key, use it; otherwise use the data directly
+        if (mapData.containsKey('all')) {
+          return mapData;
+        } else if (mapData.containsKey('local') || mapData.containsKey('zoho')) {
+          return mapData;
+        } else {
+          // If it's a map but doesn't have expected keys, return as is
+          return mapData;
+        }
+      } else if (data is List) {
+        return {'all': data, 'local': data, 'zoho': []};
+      }
+      // Fallback: wrap in a map
+      return {'all': [], 'local': [], 'zoho': []};
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to load projects');
     }
   }
 }

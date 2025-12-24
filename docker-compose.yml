@@ -15,6 +15,8 @@ services:
       - ./backend/migrations/003_add_admin_user.sql:/docker-entrypoint-initdb.d/003_add_admin_user.sql
       - ./backend/migrations/004_add_domains_table.sql:/docker-entrypoint-initdb.d/004_add_domains_table.sql
       - ./backend/migrations/005_add_domain_to_users.sql:/docker-entrypoint-initdb.d/005_add_domain_to_users.sql
+      - ./backend/migrations/006_create_projects.sql:/docker-entrypoint-initdb.d/006_create_projects.sql
+      - ./backend/migrations/007_create_zoho_integration.sql:/docker-entrypoint-initdb.d/007_create_zoho_integration.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s

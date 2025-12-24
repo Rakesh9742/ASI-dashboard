@@ -36,6 +36,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
     _loadAuthState();
   }
 
+  // Allow external state updates (for Zoho login)
+  void updateState(AuthState newState) {
+    state = newState;
+  }
+
   Future<void> _loadAuthState() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -99,6 +104,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   String? getToken() {
     return state.token;
+  }
+
+  Future<SharedPreferences> getSharedPreferences() async {
+    return await SharedPreferences.getInstance();
   }
 }
 

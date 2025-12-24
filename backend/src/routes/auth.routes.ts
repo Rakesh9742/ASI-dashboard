@@ -88,6 +88,15 @@ router.post('/login', async (req, res) => {
 
     const user = result.rows[0];
 
+    // Check if this is a Zoho OAuth user (hasn't set a password yet)
+    if (user.password_hash === 'zoho_oauth_user') {
+      return res.status(401).json({ 
+        error: 'This account uses Zoho OAuth login',
+        hint: 'Please use "Login with Zoho" button instead, or set a password in your profile settings',
+        requiresZohoAuth: true
+      });
+    }
+
     // Verify password
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
 
@@ -154,6 +163,105 @@ router.get('/me', authenticate, async (req, res) => {
     res.json(result.rows[0]);
   } catch (error: any) {
     console.error('Error fetching user profile:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Set password for Zoho OAuth users (allows them to login with username/password)
+router.post('/set-password', authenticate, async (req, res) => {
+  try {
+    const userId = (req as any).user?.id;
+    const { password } = req.body;
+
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Password is required and must be at least 6 characters' });
+    }
+
+    // Get current user
+    const userResult = await pool.query(
+      'SELECT password_hash FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Only allow setting password if user is a Zoho OAuth user (hasn't set password yet)
+    if (user.password_hash !== 'zoho_oauth_user') {
+      return res.status(400).json({ 
+        error: 'Password already set',
+        hint: 'Use the change password endpoint to update your password'
+      });
+    }
+
+    // Hash the new password
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Update user password
+    await pool.query(
+      'UPDATE users SET password_hash = $1 WHERE id = $2',
+      [passwordHash, userId]
+    );
+
+    res.json({
+      message: 'Password set successfully. You can now login with username and password.',
+      success: true
+    });
+  } catch (error: any) {
+    console.error('Error setting password:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Change password (for users who already have a password)
+router.post('/change-password', authenticate, async (req, res) => {
+  try {
+    const userId = (req as any).user?.id;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: 'Current password and new password (min 6 characters) are required' });
+    }
+
+    // Get current user
+    const userResult = await pool.query(
+      'SELECT password_hash FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Skip password verification for Zoho OAuth users (they don't have a password yet)
+    if (user.password_hash !== 'zoho_oauth_user') {
+      // Verify current password
+      const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+      if (!isValidPassword) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+    }
+
+    // Hash the new password
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    // Update user password
+    await pool.query(
+      'UPDATE users SET password_hash = $1 WHERE id = $2',
+      [passwordHash, userId]
+    );
+
+    res.json({
+      message: 'Password changed successfully',
+      success: true
+    });
+  } catch (error: any) {
+    console.error('Error changing password:', error);
     res.status(500).json({ error: error.message });
   }
 });

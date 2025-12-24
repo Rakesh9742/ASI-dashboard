@@ -4,6 +4,7 @@ import '../providers/auth_provider.dart';
 import 'dashboard_screen.dart';
 import 'user_management_screen.dart';
 import 'project_management_screen.dart';
+import 'engineer_projects_screen.dart';
 import 'login_screen.dart';
 
 class MainNavigationScreen extends ConsumerStatefulWidget {
@@ -16,17 +17,28 @@ class MainNavigationScreen extends ConsumerStatefulWidget {
 class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
   int _selectedIndex = 0;
 
-  final List<Widget> _screens = [
-    const DashboardScreen(),
-    const ProjectManagementScreen(),
-    const UserManagementScreen(),
-  ];
+  List<Widget> _getScreens(String? role) {
+    if (role == 'engineer') {
+      return [
+        const DashboardScreen(),
+        const EngineerProjectsScreen(),
+      ];
+    }
+    return [
+      const DashboardScreen(),
+      const ProjectManagementScreen(),
+      const UserManagementScreen(),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authProvider);
     final user = authState.user;
-    final isAdmin = user?['role'] == 'admin';
+    final userRole = user?['role'];
+    final isAdmin = userRole == 'admin';
+    final isEngineer = userRole == 'engineer';
+    final screens = _getScreens(userRole);
 
     return Scaffold(
       body: Row(
@@ -133,7 +145,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                           context: context,
                           icon: Icons.folder_outlined,
                           selectedIcon: Icons.folder,
-                          label: 'Projects',
+                          label: isEngineer ? 'My Projects' : 'Projects',
                           index: 1,
                           isSelected: _selectedIndex == 1,
                         ),
@@ -211,7 +223,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
           ),
           // Main Content
           Expanded(
-            child: _screens[_selectedIndex],
+            child: screens[_selectedIndex],
           ),
         ],
       ),
@@ -375,7 +387,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
   }) {
     final authState = ref.watch(authProvider);
     final user = authState.user;
-    final isAdmin = user?['role'] == 'admin';
+    final userRole = user?['role'];
+    final isAdmin = userRole == 'admin';
+    final isEngineer = userRole == 'engineer';
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12),
@@ -388,6 +402,16 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
                   content: Text('Access denied. Admin role required.'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+              return;
+            }
+            // Engineers can only access index 0 (Dashboard) and 1 (Projects)
+            if (isEngineer && index > 1) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Access denied. This section is not available for engineers.'),
                   backgroundColor: Colors.red,
                 ),
               );
@@ -489,6 +513,20 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
   }
 
   String _getAppBarTitle(int index) {
+    final userRole = ref.read(authProvider).user?['role'];
+    final isEngineer = userRole == 'engineer';
+    
+    if (isEngineer) {
+      switch (index) {
+        case 0:
+          return 'Dashboard';
+        case 1:
+          return 'My Projects';
+        default:
+          return 'ASI Dashboard';
+      }
+    }
+    
     switch (index) {
       case 0:
         return 'Dashboard';
