@@ -59,6 +59,11 @@ router.get('/', authenticate, async (req, res) => {
       offset = '0'
     } = req.query;
 
+    // Get user info from authentication
+    const userId = (req as any).user?.id;
+    const userRole = (req as any).user?.role;
+    const username = (req as any).user?.username;
+
     // Query new Physical Design schema
     // Join: projects -> blocks -> runs -> stages -> timing_metrics -> constraint_metrics
     // Also get domain from project_domains
@@ -148,6 +153,17 @@ router.get('/', authenticate, async (req, res) => {
     const params: any[] = [];
     let paramCount = 0;
 
+    // Filter by user role: engineers and customers only see their own runs
+    if (userRole === 'engineer' || userRole === 'customer') {
+      if (username) {
+        paramCount++;
+        query += ` AND LOWER(r.user_name) = LOWER($${paramCount})`;
+        params.push(username);
+        console.log(`Filtering EDA files for ${userRole} - only runs by user: ${username}`);
+      }
+    }
+    // Admin, project_manager, and lead see all runs (no filter)
+
     if (project_name) {
       paramCount++;
       query += ` AND LOWER(p.name) LIKE LOWER($${paramCount})`;
@@ -190,6 +206,15 @@ router.get('/', authenticate, async (req, res) => {
     `;
     const countParams: any[] = [];
     let countParamCount = 0;
+
+    // Apply same user filtering to count query
+    if (userRole === 'engineer' || userRole === 'customer') {
+      if (username) {
+        countParamCount++;
+        countQuery += ` AND LOWER(r.user_name) = LOWER($${countParamCount})`;
+        countParams.push(username);
+      }
+    }
 
     if (project_name) {
       countParamCount++;

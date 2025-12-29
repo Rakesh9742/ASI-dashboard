@@ -409,8 +409,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
         color: Colors.transparent,
         child: InkWell(
           onTap: () {
-            // Only allow admin to access user management
-            if (index == 2 && !isAdmin) {
+            // Only allow admin to access user management (index 3)
+            if (index == 3 && !isAdmin) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
                   content: Text('Access denied. Admin role required.'),

@@ -1,5 +1,3 @@
-// @ts-ignore - chokidar types may not be available
-import chokidar from 'chokidar';
 import path from 'path';
 import fileProcessorService from './fileProcessor.service';
 
@@ -7,16 +5,28 @@ class FileWatcherService {
   private watcher: any = null; // chokidar.FSWatcher
   private isWatching: boolean = false;
   private processingFiles: Set<string> = new Set();
+  private chokidar: any = null;
+
+  /**
+   * Dynamically import chokidar
+   */
+  private async getChokidar() {
+    if (!this.chokidar) {
+      this.chokidar = (await import('chokidar')).default;
+    }
+    return this.chokidar;
+  }
 
   /**
    * Start watching the output folder for new files
    */
-  startWatching(): void {
+  async startWatching(): Promise<void> {
     if (this.isWatching) {
       console.log('📁 File watcher is already running');
       return;
     }
 
+    const chokidar = await this.getChokidar();
     const outputFolder = fileProcessorService.getOutputFolder();
     
     console.log(`📁 Starting file watcher for folder: ${outputFolder}`);

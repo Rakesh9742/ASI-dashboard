@@ -103,12 +103,12 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🚀 ASI Dashboard API server running on port ${PORT}`);
   
   // Start file watcher for EDA output files
   try {
-    fileWatcherService.startWatching();
+    await fileWatcherService.startWatching();
     console.log('📁 File watcher started for EDA output files');
   } catch (error) {
     console.error('Failed to start file watcher:', error);
