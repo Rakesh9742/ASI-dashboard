@@ -1,0 +1,108 @@
+{
+	"info": {
+		"_postman_id": "external-api-eda-files",
+		"name": "ASI Dashboard - External API",
+		"description": "Collection for testing the External API endpoint to upload EDA output files",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Upload EDA File - External API",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 201\", function () {",
+							"    pm.response.to.have.status(201);",
+							"});",
+							"",
+							"pm.test(\"Response has success field\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData).to.have.property('success');",
+							"});",
+							"",
+							"pm.test(\"File was processed successfully\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    if (pm.response.code === 201) {",
+							"        pm.expect(jsonData.success).to.eql(true);",
+							"        pm.expect(jsonData.data).to.have.property('fileId');",
+							"    }",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "X-API-Key",
+						"value": "{{api_key}}",
+						"type": "text",
+						"description": "API Key for authentication"
+					}
+				],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "file",
+							"type": "file",
+							"src": [],
+							"description": "EDA output file (CSV or JSON)"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/api/eda-files/external/upload",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"eda-files",
+						"external",
+						"upload"
+					]
+				},
+				"description": "Upload an EDA output file (CSV or JSON) to the server. The file will be automatically processed and stored in the database.\n\n**Requirements:**\n- API Key in X-API-Key header\n- File field with CSV or JSON file\n- File must contain: project, block_name, experiment, rtl_tag, stage"
+			},
+			"response": []
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:3000",
+			"type": "string"
+		},
+		{
+			"key": "api_key",
+			"value": "sitedafilesdata",
+			"type": "string"
+		}
+	]
+}
+

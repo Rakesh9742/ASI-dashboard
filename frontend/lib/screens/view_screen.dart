@@ -1,0 +1,2242 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
+import 'package:fl_chart/fl_chart.dart';
+
+class ViewScreen extends ConsumerStatefulWidget {
+  const ViewScreen({super.key});
+
+  @override
+  ConsumerState<ViewScreen> createState() => _ViewScreenState();
+}
+
+class _ViewScreenState extends ConsumerState<ViewScreen> {
+  final ApiService _apiService = ApiService();
+  
+  // Data structure: project -> block -> rtl_tag -> experiment -> stages
+  Map<String, dynamic> _groupedData = {};
+  
+  // Selection state
+  String? _selectedProject;
+  String? _selectedBlock;
+  String? _selectedTag;
+  String? _selectedExperiment;
+  String _stageFilter = 'all';
+  
+  // Data
+  bool _isLoading = false;
+  
+  // Graph Selection State - Multiple selections
+  Set<String> _selectedMetricGroups = {'INTERNAL (R2R)'};
+  Set<String> _selectedMetricTypes = {'WNS'};
+
+  // Scroll controllers for table
+  final ScrollController _horizontalScrollController = ScrollController();
+  final ScrollController _verticalScrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadInitialData();
+  }
+
+  @override
+  void dispose() {
+    _horizontalScrollController.dispose();
+    _verticalScrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadInitialData() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final authState = ref.read(authProvider);
+      final token = authState.token;
+      
+      // Load EDA files and group them
+      final filesResponse = await _apiService.getEdaFiles(
+        token: token,
+        limit: 1000,
+      );
+      
+      final files = filesResponse['files'] ?? [];
+      
+      // Group files by project -> block -> rtl_tag -> experiment -> stages
+      final Map<String, dynamic> grouped = {};
+      
+      for (var file in files) {
+        final projectName = file['project_name'] ?? 'Unknown';
+        final blockName = file['block_name'] ?? 'Unknown';
+        final rtlTag = file['rtl_tag'] ?? 'Unknown';
+        final experiment = file['experiment'] ?? 'Unknown';
+        
+        if (!grouped.containsKey(projectName)) {
+          grouped[projectName] = {};
+        }
+        if (!grouped[projectName].containsKey(blockName)) {
+          grouped[projectName][blockName] = {};
+        }
+        if (!grouped[projectName][blockName].containsKey(rtlTag)) {
+          grouped[projectName][blockName][rtlTag] = {};
+        }
+        if (!grouped[projectName][blockName][rtlTag].containsKey(experiment)) {
+          grouped[projectName][blockName][rtlTag][experiment] = {
+            'run_directory': file['run_directory'],
+            'last_updated': file['run_end_time']?.toString() ?? file['created_at']?.toString(),
+            'stages': {},
+          };
+        }
+        
+        // Add stage data
+        final stage = file['stage'] ?? 'unknown';
+        final run = grouped[projectName][blockName][rtlTag][experiment];
+        run['stages'][stage] = {
+          'stage': stage,
+          'timestamp': file['timestamp']?.toString() ?? file['run_end_time']?.toString() ?? file['created_at']?.toString(),
+          'user_name': file['user_name'],
+          // Timing metrics
+          'internal_timing_r2r_wns': _parseNumeric(file['internal_timing_r2r_wns']),
+          'internal_timing_r2r_tns': _parseNumeric(file['internal_timing_r2r_tns']),
+          'internal_timing_r2r_nvp': _parseNumeric(file['internal_timing_r2r_nvp']),
+          'interface_timing_i2r_wns': _parseNumeric(file['interface_timing_i2r_wns']),
+          'interface_timing_i2r_tns': _parseNumeric(file['interface_timing_i2r_tns']),
+          'interface_timing_i2r_nvp': _parseNumeric(file['interface_timing_i2r_nvp']),
+          'interface_timing_r2o_wns': _parseNumeric(file['interface_timing_r2o_wns']),
+          'interface_timing_r2o_tns': _parseNumeric(file['interface_timing_r2o_tns']),
+          'interface_timing_r2o_nvp': _parseNumeric(file['interface_timing_r2o_nvp']),
+          'interface_timing_i2o_wns': _parseNumeric(file['interface_timing_i2o_wns']),
+          'interface_timing_i2o_tns': _parseNumeric(file['interface_timing_i2o_tns']),
+          'interface_timing_i2o_nvp': _parseNumeric(file['interface_timing_i2o_nvp']),
+          'hold_wns': _parseNumeric(file['hold_wns']),
+          'hold_tns': _parseNumeric(file['hold_tns']),
+          'hold_nvp': _parseNumeric(file['hold_nvp']),
+          // Constraint metrics
+          'max_tran_wns': _parseNumeric(file['max_tran_wns']),
+          'max_tran_nvp': _parseNumeric(file['max_tran_nvp']),
+          'max_cap_wns': _parseNumeric(file['max_cap_wns']),
+          'max_cap_nvp': _parseNumeric(file['max_cap_nvp']),
+          'max_fanout_wns': _parseNumeric(file['max_fanout_wns']),
+          'max_fanout_nvp': _parseNumeric(file['max_fanout_nvp']),
+          'drc_violations': _parseNumeric(file['drc_violations']),
+          'congestion_hotspot': file['congestion_hotspot']?.toString(),
+          'noise_violations': file['noise_violations']?.toString(),
+          // Power/IR/EM
+          'ir_static': file['ir_static']?.toString(),
+          'ir_dynamic': file['ir_dynamic']?.toString(),
+          'em_power': file['em_power']?.toString(),
+          'em_signal': file['em_signal']?.toString(),
+          // Physical verification
+          'pv_drc_base': file['pv_drc_base']?.toString(),
+          'pv_drc_metal': file['pv_drc_metal']?.toString(),
+          'pv_drc_antenna': file['pv_drc_antenna']?.toString(),
+          'lvs': file['lvs']?.toString(),
+          'erc': file['erc']?.toString(),
+          'r2g_lec': file['r2g_lec']?.toString(),
+          'g2g_lec': file['g2g_lec']?.toString(),
+          // Stage metrics
+          'area': _parseNumeric(file['area']),
+          'inst_count': _parseNumeric(file['inst_count']),
+          'utilization': _parseNumeric(file['utilization']),
+          'min_pulse_width': file['min_pulse_width']?.toString(),
+          'min_period': file['min_period']?.toString(),
+          'double_switching': file['double_switching']?.toString(),
+          'log_errors': _parseNumeric(file['log_errors']) ?? 0,
+          'log_warnings': _parseNumeric(file['log_warnings']) ?? 0,
+          'log_critical': _parseNumeric(file['log_critical']) ?? 0,
+          'run_status': file['run_status'] ?? 'unknown',
+          'runtime': file['runtime']?.toString() ?? '00:00:00',
+          'memory_usage': file['memory_usage']?.toString(),
+          'ai_summary': file['ai_summary']?.toString() ?? file['ai_based_overall_summary']?.toString(),
+        };
+      }
+
+      setState(() {
+        _groupedData = grouped;
+        
+        // Debug: Print grouped data structure
+        print('Grouped data keys (projects): ${grouped.keys.toList()}');
+        if (grouped.isNotEmpty) {
+          final firstProject = grouped.keys.first;
+          print('First project: $firstProject');
+          final projectData = grouped[firstProject];
+          if (projectData is Map) {
+            print('Project blocks: ${projectData.keys.toList()}');
+          }
+        }
+        
+        // Auto-select first available options
+        if (grouped.isNotEmpty) {
+          _selectedProject = grouped.keys.first;
+          final projectData = grouped[_selectedProject];
+          if (projectData is Map && projectData.isNotEmpty) {
+            _selectedBlock = projectData.keys.first;
+            final blockData = projectData[_selectedBlock];
+            if (blockData is Map && blockData.isNotEmpty) {
+              _selectedTag = blockData.keys.first;
+              final tagData = blockData[_selectedTag];
+              if (tagData is Map && tagData.isNotEmpty) {
+                _selectedExperiment = tagData.keys.first;
+              }
+            }
+          }
+        }
+        
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading data: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  dynamic _parseNumeric(dynamic value) {
+    if (value == null || value == 'N/A' || value == 'NA') return null;
+    if (value is num) return value;
+    if (value is String) {
+      if (value.toUpperCase() == 'N/A' || value.toUpperCase() == 'NA') return null;
+      final parsed = double.tryParse(value);
+      return parsed;
+    }
+    return null;
+  }
+
+  Map<String, dynamic>? _getActiveRun() {
+    if (_selectedProject == null || _selectedBlock == null || 
+        _selectedTag == null || _selectedExperiment == null) {
+      return null;
+    }
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return null;
+      final projectData = Map<String, dynamic>.from(projectValue);
+      
+      final blockValue = projectData[_selectedBlock];
+      if (blockValue is! Map) return null;
+      final blockData = Map<String, dynamic>.from(blockValue);
+      
+      final tagValue = blockData[_selectedTag];
+      if (tagValue is! Map) return null;
+      final tagData = Map<String, dynamic>.from(tagValue);
+      
+      final experimentValue = tagData[_selectedExperiment];
+      if (experimentValue is! Map) return null;
+      final experimentData = Map<String, dynamic>.from(experimentValue);
+      
+      return experimentData;
+    } catch (e) {
+      print('Error getting active run: $e');
+      return null;
+    }
+  }
+
+  List<Map<String, dynamic>> _getActiveStages() {
+    final run = _getActiveRun();
+    if (run == null) return [];
+    final stagesValue = run['stages'];
+    final stages = (stagesValue is Map) 
+        ? Map<String, dynamic>.from(stagesValue) 
+        : <String, dynamic>{};
+    
+    // Safely convert stages values to List<Map<String, dynamic>>
+    final stagesList = <Map<String, dynamic>>[];
+    for (var value in stages.values) {
+      if (value is Map<String, dynamic>) {
+        stagesList.add(value);
+      } else if (value is Map) {
+        // Convert dynamic Map to Map<String, dynamic>
+        stagesList.add(Map<String, dynamic>.from(value));
+      }
+    }
+    
+    stagesList.sort((a, b) {
+      final order = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+      final aIdx = order.indexOf(a['stage']?.toString().toLowerCase() ?? '');
+      final bIdx = order.indexOf(b['stage']?.toString().toLowerCase() ?? '');
+      if (aIdx == -1 && bIdx == -1) return 0;
+      if (aIdx == -1) return 1;
+      if (bIdx == -1) return -1;
+      return aIdx.compareTo(bIdx);
+    });
+    
+    if (_stageFilter == 'all') return stagesList;
+    return stagesList.where((s) => s['stage']?.toString().toLowerCase() == _stageFilter.toLowerCase()).toList();
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+    final authState = ref.watch(authProvider);
+    if (!authState.isAuthenticated) {
+      return const Center(child: Text('Please log in to view files.'));
+    }
+
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_groupedData.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.folder_open, size: 64, color: Colors.grey.shade400),
+            const SizedBox(height: 16),
+            Text(
+              'No data available',
+              style: TextStyle(fontSize: 18, color: Colors.grey.shade700),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final activeRun = _getActiveRun();
+    final activeStages = _getActiveStages();
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24.0),
+        child: Center(
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 1900),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildHeader(),
+                const SizedBox(height: 24),
+                _buildFilterBar(),
+                const SizedBox(height: 24),
+                _buildSummarySection(activeRun, activeStages),
+                const SizedBox(height: 24),
+                _buildComparisonMatrix(activeStages),
+                const SizedBox(height: 24),
+                _buildMetricsGraphSection(activeStages),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+
+
+  Widget _buildHeader() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_selectedProject != null || _selectedBlock != null || _selectedTag != null || _selectedExperiment != null)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            child: Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (_selectedProject != null)
+                  Text(
+                    _selectedProject!.toUpperCase(),
+                    style: const TextStyle(
+                      color: Color(0xFF2563EB),
+                      fontWeight: FontWeight.w800,
+                      fontSize: 10,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                if (_selectedBlock != null) ...[
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8.0),
+                    child: Icon(Icons.chevron_right, size: 10, color: Color(0xFF94A3B8)),
+                  ),
+                  Text(
+                    _selectedBlock!.toUpperCase(),
+                    style: const TextStyle(
+                      color: Color(0xFF94A3B8),
+                      fontWeight: FontWeight.w800,
+                      fontSize: 10,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ],
+                if (_selectedTag != null) ...[
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8.0),
+                    child: Icon(Icons.chevron_right, size: 10, color: Color(0xFF94A3B8)),
+                  ),
+                  Text(
+                    _selectedTag!.toUpperCase(),
+                    style: const TextStyle(
+                      color: Color(0xFF94A3B8),
+                      fontWeight: FontWeight.w800,
+                      fontSize: 10,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ],
+                if (_selectedExperiment != null) ...[
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8.0),
+                    child: Icon(Icons.chevron_right, size: 10, color: Color(0xFF94A3B8)),
+                  ),
+                  Text(
+                    _selectedExperiment!.toUpperCase(),
+                    style: const TextStyle(
+                      color: Color(0xFF1E293B),
+                      fontWeight: FontWeight.w800,
+                      fontSize: 10,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2563EB),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF2563EB).withOpacity(0.2),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: const Icon(Icons.memory, color: Colors.white, size: 24),
+            ),
+            const SizedBox(width: 14),
+            const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'PD Flow Dashboard',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF1E293B),
+                    letterSpacing: -0.5,
+                  ),
+                ),
+                Text(
+                  'FULL FLOW COMPARISON REPORT',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF94A3B8),
+                    letterSpacing: 1.2,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _updateCascadingFilters({String? p, String? b, String? t, String? e}) {
+    setState(() {
+      if (p != null) {
+        _selectedProject = p;
+        final projectValue = _groupedData[p];
+        if (projectValue is Map && projectValue.isNotEmpty) {
+          _selectedBlock = projectValue.keys.first;
+          final blockValue = projectValue[_selectedBlock];
+          if (blockValue is Map && blockValue.isNotEmpty) {
+            _selectedTag = blockValue.keys.first;
+            final tagValue = blockValue[_selectedTag];
+            if (tagValue is Map && tagValue.isNotEmpty) {
+              _selectedExperiment = tagValue.keys.first;
+            }
+          }
+        }
+      } else if (b != null) {
+        _selectedBlock = b;
+        final projectValue = _groupedData[_selectedProject];
+        if (projectValue is Map) {
+          final blockValue = projectValue[b];
+          if (blockValue is Map && blockValue.isNotEmpty) {
+            _selectedTag = blockValue.keys.first;
+            final tagValue = blockValue[_selectedTag];
+            if (tagValue is Map && tagValue.isNotEmpty) {
+              _selectedExperiment = tagValue.keys.first;
+            }
+          }
+        }
+      } else if (t != null) {
+        _selectedTag = t;
+        final projectValue = _groupedData[_selectedProject];
+        if (projectValue is Map) {
+          final blockValue = projectValue[_selectedBlock];
+          if (blockValue is Map) {
+            final tagValue = blockValue[t];
+            if (tagValue is Map && tagValue.isNotEmpty) {
+              _selectedExperiment = tagValue.keys.first;
+            }
+          }
+        }
+      } else if (e != null) {
+        _selectedExperiment = e;
+      }
+    });
+  }
+
+  Widget _buildFilterBar() {
+    List<String> availableBlocks = [];
+    List<String> availableTags = [];
+    List<String> availableExperiments = [];
+    
+    if (_selectedProject != null) {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is Map) {
+        final projectData = Map<String, dynamic>.from(projectValue);
+        availableBlocks = projectData.keys.toList().cast<String>();
+        
+        if (_selectedBlock != null) {
+          final blockValue = projectData[_selectedBlock];
+          if (blockValue is Map) {
+            final blockData = Map<String, dynamic>.from(blockValue);
+            availableTags = blockData.keys.toList().cast<String>();
+            
+            if (_selectedTag != null) {
+              final tagValue = blockData[_selectedTag];
+              if (tagValue is Map) {
+                final tagData = Map<String, dynamic>.from(tagValue);
+                availableExperiments = tagData.keys.toList().cast<String>();
+              }
+            }
+          }
+        }
+      }
+    }
+
+    final activeStages = _getActiveStages();
+    final stageNames = activeStages
+        .map((s) => s['stage']?.toString())
+        .where((s) => s != null && s.isNotEmpty)
+        .cast<String>()
+        .toSet()
+        .toList();
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 600;
+        final isTablet = constraints.maxWidth < 1000;
+        
+        // Ensure we have valid constraints
+        final maxWidth = constraints.maxWidth > 0 ? constraints.maxWidth : double.infinity;
+        
+        // Calculate widths with proper bounds checking
+        double calculateWidth(bool isLast) {
+          if (isMobile) {
+            return maxWidth > 40 ? maxWidth - 40 : 200.0;
+          } else if (isTablet) {
+            final width = (maxWidth - 36) / 2;
+            return width > 0 ? width : 200.0;
+          } else {
+            final width = isLast ? (maxWidth - 104) / 5 : (maxWidth - 104) / 5;
+            return width > 0 ? width : 200.0;
+          }
+        }
+        
+        return Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.03),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Wrap(
+            spacing: 16,
+            runSpacing: 16,
+            children: [
+              _buildDropdown(
+                'Project',
+                _groupedData.keys.toList().cast<String>(),
+                _selectedProject ?? '',
+                (v) => _updateCascadingFilters(p: v),
+                width: calculateWidth(false),
+              ),
+              _buildDropdown(
+                'Block Name',
+                availableBlocks,
+                _selectedBlock ?? '',
+                (v) => _updateCascadingFilters(b: v),
+                width: calculateWidth(false),
+              ),
+              _buildDropdown(
+                'RTL Version',
+                availableTags,
+                _selectedTag ?? '',
+                (v) => _updateCascadingFilters(t: v),
+                width: calculateWidth(false),
+              ),
+              _buildDropdown(
+                'Experiment',
+                availableExperiments,
+                _selectedExperiment ?? '',
+                (v) => _updateCascadingFilters(e: v),
+                width: calculateWidth(false),
+              ),
+              _buildDropdown(
+                'Stage Filter',
+                ['all', ...stageNames],
+                _stageFilter,
+                (v) => setState(() => _stageFilter = v ?? 'all'),
+                isBlue: true,
+                width: calculateWidth(true),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildDropdown(
+    String label,
+    List<String> items,
+    String value,
+    ValueChanged<String?> onChanged, {
+    bool isBlue = false,
+    double? width,
+  }) {
+    final validWidth = width != null && width > 0 ? width : null;
+    
+    return SizedBox(
+      width: validWidth,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w800,
+              color: isBlue ? const Color(0xFF2563EB) : const Color(0xFF94A3B8),
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 4),
+        Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+              color: isBlue ? const Color(0xFFEFF6FF) : const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(8),
+            ),
+            child: DropdownButtonHideUnderline(
+          child: DropdownButton<String>(
+                value: items.contains(value) ? value : (items.isNotEmpty ? items.first : null),
+            isExpanded: true,
+            style: TextStyle(
+              fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: isBlue ? Colors.blue[700] : Colors.black87,
+                ),
+                items: items.map((e) => DropdownMenuItem(
+                  value: e,
+                  child: Text(e.toUpperCase()),
+                )).toList(),
+            onChanged: items.isEmpty ? null : onChanged,
+            ),
+          ),
+        ),
+      ],
+      ),
+    );
+  }
+
+  Widget _buildSummarySection(Map<String, dynamic>? activeRun, List<Map<String, dynamic>> stages) {
+    if (activeRun == null || stages.isEmpty) return const SizedBox();
+
+    double? globalWorstSlack;
+    for (var stage in stages) {
+      final slacks = [
+        _parseNumeric(stage['internal_timing_r2r_wns']),
+        _parseNumeric(stage['interface_timing_i2r_wns']),
+        _parseNumeric(stage['interface_timing_r2o_wns']),
+        _parseNumeric(stage['interface_timing_i2o_wns']),
+        _parseNumeric(stage['hold_wns']),
+      ];
+      
+      for (var slack in slacks) {
+        if (slack != null && slack is num) {
+          if (globalWorstSlack == null || slack < globalWorstSlack) {
+            globalWorstSlack = slack.toDouble();
+          }
+        }
+      }
+    }
+
+    final lastStage = stages.last;
+    final totalWarnings = stages.fold<int>(0, (sum, s) => sum + ((s['log_warnings'] as num?)?.toInt() ?? 0));
+    final totalCritical = stages.fold<int>(0, (sum, s) => sum + ((s['log_critical'] as num?)?.toInt() ?? 0));
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Ensure we have valid constraints
+        final maxWidth = constraints.maxWidth > 0 && constraints.maxWidth.isFinite 
+            ? constraints.maxWidth 
+            : 1000.0;
+        final isMobile = maxWidth < 1000;
+        
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isMobile) ...[
+              _buildInfoGrid(activeRun, lastStage, maxWidth > 40 ? maxWidth - 40 : 200.0),
+              const SizedBox(height: 24),
+              _buildMetricsCard(globalWorstSlack, totalWarnings, totalCritical, maxWidth > 40 ? maxWidth - 40 : 200.0),
+            ] else
+              IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: _buildInfoGrid(activeRun, lastStage, ((maxWidth * 2 / 3) - 12).clamp(200.0, double.infinity)),
+                    ),
+                    const SizedBox(width: 24),
+                    Expanded(
+                      child: _buildMetricsCard(globalWorstSlack, totalWarnings, totalCritical, ((maxWidth / 3) - 12).clamp(200.0, double.infinity)),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildInfoGrid(Map<String, dynamic> activeRun, Map<String, dynamic> lastStage, double width) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            decoration: const BoxDecoration(
+              color: Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+              border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.folder_open, size: 16, color: Color(0xFF3B82F6)),
+                    SizedBox(width: 8),
+                    Text(
+                      'ACTIVE RUN SUMMARY',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF475569),
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                  ],
+                ),
+                _statusBadge(lastStage['run_status']),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                _infoRow(Icons.storage, 'Project', _selectedProject ?? 'N/A'),
+                _infoRow(Icons.memory, 'Block', _selectedBlock ?? 'N/A'),
+                _infoRow(Icons.layers, 'RTL Version', _selectedTag ?? 'N/A'),
+                _infoRow(Icons.person, 'User', lastStage['user_name']?.toString() ?? 'N/A'),
+                const Divider(height: 32, color: Color(0xFFF1F5F9)),
+                _infoRow(Icons.open_in_new, 'Run Dir', activeRun['run_directory']?.toString() ?? 'N/A', isFull: true),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMetricsCard(double? worstSlack, int warnings, int critical, double width) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 20),
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFEF2F2),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFFEE2E2)),
+            ),
+            child: Column(
+              children: [
+                const Text(
+                  'GLOBAL WORST SLACK',
+                  style: TextStyle(
+                    color: Color(0xFFEF4444),
+                    fontWeight: FontWeight.w800,
+                    fontSize: 10,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  worstSlack != null ? worstSlack.toStringAsFixed(3) : '--',
+                  style: const TextStyle(
+                    fontSize: 36,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFFB91C1C),
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Expanded(child: _metricBox('TOTAL WARNINGS', warnings.toString(), const Color(0xFFF8FAFC))),
+              const SizedBox(width: 16),
+              Expanded(child: _metricBox('TOTAL CRITICAL', critical.toString(), const Color(0xFFF8FAFC))),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _infoRow(IconData icon, String label, String value, {bool isFull = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: Row(
+        children: [
+          Icon(icon, size: 14, color: const Color(0xFF94A3B8)),
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 100,
+            child: Text(
+              label.toUpperCase(),
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF94A3B8),
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1E293B),
+                fontFamily: 'monospace',
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _metricBox(String label, String value, Color bgColor) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xFF94A3B8),
+              fontWeight: FontWeight.w800,
+              fontSize: 9,
+              letterSpacing: 1.0,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w900,
+              color: Color(0xFF334155),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusBadge(String? status) {
+    Color bg = const Color(0xFFF1F5F9);
+    Color text = const Color(0xFF64748B);
+    Color border = const Color(0xFFE2E8F0);
+    
+    final s = status?.toString().toLowerCase() ?? 'unknown';
+    if (s == 'fail') {
+      bg = const Color(0xFFFEF2F2);
+      text = const Color(0xFFDC2626);
+      border = const Color(0xFFFEE2E2);
+    } else if (s == 'success') {
+      bg = const Color(0xFFF0FDF4);
+      text = const Color(0xFF16A34A);
+      border = const Color(0xFFDCFCE7);
+    } else if (s == 'continue_with_error') {
+      bg = const Color(0xFFFFF7ED);
+      text = const Color(0xFFEA580C);
+      border = const Color(0xFFFFEDD5);
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: border),
+      ),
+      child: Text(
+        s.toUpperCase().replaceAll('_', ' '),
+        style: TextStyle(
+          color: text,
+          fontSize: 9,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetricsGraphSection(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    final allMetricGroups = ['INTERNAL (R2R)', 'INTERFACE I2R', 'INTERFACE R2O', 'INTERFACE I2O', 'HOLD'];
+    final allMetricTypes = ['WNS', 'TNS', 'NVP'];
+
+    // Generate all combinations of selected groups and types
+    final graphCombinations = <Map<String, String>>[];
+    for (var group in _selectedMetricGroups) {
+      for (var type in _selectedMetricTypes) {
+        graphCombinations.add({'group': group, 'type': type});
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.show_chart, size: 20, color: Color(0xFF0F172A)),
+                  SizedBox(width: 12),
+                  Text(
+                    'Timing Metrics Matrix Visualization',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF0F172A),
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          // Multi-select chips for Metric Groups
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'SELECT METRIC GROUPS',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF94A3B8),
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: allMetricGroups.map((group) {
+                  final isSelected = _selectedMetricGroups.contains(group);
+                  return FilterChip(
+                    label: Text(group),
+                    selected: isSelected,
+                    onSelected: (selected) {
+                      setState(() {
+                        if (selected) {
+                          _selectedMetricGroups.add(group);
+                        } else {
+                          _selectedMetricGroups.remove(group);
+                        }
+                        if (_selectedMetricGroups.isEmpty) {
+                          _selectedMetricGroups.add(allMetricGroups.first);
+                        }
+                      });
+                    },
+                    selectedColor: const Color(0xFFEFF6FF),
+                    checkmarkColor: const Color(0xFF2563EB),
+                    labelStyle: TextStyle(
+                      color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                      fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          // Multi-select chips for Metric Types
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'SELECT METRIC TYPES',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF94A3B8),
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: allMetricTypes.map((type) {
+                  final isSelected = _selectedMetricTypes.contains(type);
+                  return FilterChip(
+                    label: Text(type),
+                    selected: isSelected,
+                    onSelected: (selected) {
+                      setState(() {
+                        if (selected) {
+                          _selectedMetricTypes.add(type);
+                        } else {
+                          _selectedMetricTypes.remove(type);
+                        }
+                        if (_selectedMetricTypes.isEmpty) {
+                          _selectedMetricTypes.add(allMetricTypes.first);
+                        }
+                      });
+                    },
+                    selectedColor: const Color(0xFFEFF6FF),
+                    checkmarkColor: const Color(0xFF2563EB),
+                    labelStyle: TextStyle(
+                      color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                      fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 32),
+          // Single combined graph with all selected metrics
+          if (graphCombinations.isEmpty)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(32.0),
+                child: Text('Please select at least one metric group and type', style: TextStyle(color: Colors.grey)),
+              ),
+            )
+          else
+            _buildCombinedGraph(stages, graphCombinations),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSingleGraph(List<Map<String, dynamic>> stages, String group, String type) {
+    final points = <FlSpot>[];
+    final stageNames = <String>[];
+    
+    // Build points and stage names for all stages to maintain proper alignment
+    for (int i = 0; i < stages.length; i++) {
+      final stage = stages[i];
+      final stageName = stage['stage']?.toString() ?? 'Unknown';
+      final val = _getMetricValue(stage, group, type);
+      
+      // Always add stage name to maintain X-axis alignment
+      stageNames.add(stageName);
+      
+      // Add point - use actual value if available, otherwise 0
+      if (val != null) {
+        points.add(FlSpot(i.toDouble(), val));
+      } else {
+        // Add point with 0 value to maintain X-axis positions
+        points.add(FlSpot(i.toDouble(), 0));
+      }
+    }
+
+    Color lineColor = const Color(0xFF2563EB);
+    if (type == 'WNS') {
+      lineColor = const Color(0xFFDC2626); 
+    } else if (type == 'TNS') {
+      lineColor = const Color(0xFFF59E0B);
+    } else if (type == 'NVP') {
+      lineColor = const Color(0xFF64748B);
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '$group - $type',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF0F172A),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: points.isEmpty 
+              ? const Center(
+                  child: Text('No data', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                )
+              : LineChart(
+                  LineChartData(
+                    gridData: FlGridData(
+                      show: true,
+                      drawVerticalLine: false,
+                      getDrawingHorizontalLine: (value) => const FlLine(color: Color(0xFFE2E8F0), strokeWidth: 1),
+                    ),
+                    titlesData: FlTitlesData(
+                      bottomTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 24,
+                          interval: 1,
+                          getTitlesWidget: (value, meta) {
+                            int idx = value.toInt();
+                            if (idx >= 0 && idx < stageNames.length) {
+                              String name = stageNames[idx].replaceAll('_', ' ').toUpperCase();
+                              // Show full name if space allows, otherwise truncate
+                              if (name.length > 8) name = '${name.substring(0, 8)}..'; 
+                              return Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  name, 
+                                  style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                                ),
+                              );
+                            }
+                            return const Text('');
+                          },
+                        ),
+                      ),
+                      leftTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true, 
+                          reservedSize: 30,
+                          getTitlesWidget: (value, meta) {
+                            return Text(
+                              value.toStringAsFixed(1),
+                              style: const TextStyle(fontSize: 8, color: Color(0xFF64748B)),
+                            );
+                          },
+                        ),
+                      ),
+                      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    ),
+                    borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xFFE2E8F0))),
+                    lineBarsData: [
+                      LineChartBarData(
+                        spots: points,
+                        isCurved: true,
+                        color: lineColor,
+                        barWidth: 2,
+                        isStrokeCapRound: true,
+                        dotData: const FlDotData(show: false),
+                        belowBarData: BarAreaData(show: true, color: lineColor.withOpacity(0.1)),
+                      ),
+                    ],
+                    lineTouchData: LineTouchData(
+                      touchTooltipData: LineTouchTooltipData(
+                        tooltipBgColor: Colors.blueGrey.shade800,
+                        getTooltipItems: (touchedSpots) {
+                          return touchedSpots.map((spot) {
+                            int idx = spot.x.toInt();
+                            String stageName = idx >= 0 && idx < stageNames.length 
+                                ? stageNames[idx].toUpperCase().replaceAll('_', ' ')
+                                : 'Unknown';
+                            return LineTooltipItem(
+                              '$stageName\n$type: ${spot.y.toStringAsFixed(3)}',
+                              const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                            );
+                          }).toList();
+                        }
+                      )
+                    ),
+                    minY: points.isEmpty ? 0 : (points.map((p) => p.y).reduce((a, b) => a < b ? a : b) - 0.1),
+                    maxY: points.isEmpty ? 1 : (points.map((p) => p.y).reduce((a, b) => a > b ? a : b) + 0.1),
+                  ),
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCombinedGraph(List<Map<String, dynamic>> stages, List<Map<String, String>> combinations) {
+    final stageNames = stages.map((s) => s['stage']?.toString() ?? 'Unknown').toList();
+    
+    // Generate colors for each combination
+    final colors = [
+      const Color(0xFFDC2626), // Red
+      const Color(0xFF2563EB),  // Blue
+      const Color(0xFFF59E0B), // Orange
+      const Color(0xFF10B981),  // Green
+      const Color(0xFF8B5CF6),  // Purple
+      const Color(0xFFEC4899),  // Pink
+      const Color(0xFF06B6D4),  // Cyan
+      const Color(0xFFF97316),  // Orange Red
+      const Color(0xFF84CC16),  // Lime
+      const Color(0xFF6366F1),  // Indigo
+    ];
+    
+    // Build line data for each combination
+    final lineBarsData = <LineChartBarData>[];
+    final legendItems = <Widget>[];
+    
+    for (int i = 0; i < combinations.length; i++) {
+      final combo = combinations[i];
+      final group = combo['group']!;
+      final type = combo['type']!;
+      final points = <FlSpot>[];
+      
+      for (int j = 0; j < stages.length; j++) {
+        final stage = stages[j];
+        final val = _getMetricValue(stage, group, type);
+        // Only add points with actual values (not null)
+        if (val != null) {
+          points.add(FlSpot(j.toDouble(), val));
+        }
+      }
+      
+      final color = colors[i % colors.length];
+      final label = '$group - $type';
+      
+      lineBarsData.add(
+        LineChartBarData(
+          spots: points,
+          isCurved: true,
+          color: color,
+          barWidth: 3,
+          isStrokeCapRound: true,
+          dotData: const FlDotData(show: true),
+          belowBarData: BarAreaData(show: false),
+        ),
+      );
+      
+      legendItems.add(
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 16,
+              height: 3,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                color: color,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    
+    // Calculate min/max Y values across all lines (only from actual data points)
+    double minY = 0.0;
+    double maxY = 1.0;
+    bool hasData = false;
+    
+    for (var lineData in lineBarsData) {
+      for (var spot in lineData.spots) {
+        if (!hasData) {
+          minY = spot.y;
+          maxY = spot.y;
+          hasData = true;
+        } else {
+          if (spot.y < minY) minY = spot.y;
+          if (spot.y > maxY) maxY = spot.y;
+        }
+      }
+    }
+    
+    // Add padding to Y-axis for better visualization
+    if (hasData) {
+      final range = maxY - minY;
+      // Add 10% padding on each side, with minimum padding
+      final yPadding = (range * 0.1).clamp(0.1, (range * 0.15).abs());
+      
+      // Ensure we show zero line if values span both positive and negative
+      if (minY < 0 && maxY > 0) {
+        // If spanning zero, ensure zero is visible with padding
+        final maxAbs = minY.abs() > maxY.abs() ? minY.abs() : maxY.abs();
+        minY = -maxAbs - yPadding;
+        maxY = maxAbs + yPadding;
+      } else {
+        // Add padding to min/max
+        minY = minY - yPadding;
+        maxY = maxY + yPadding;
+      }
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Legend
+        Wrap(
+          spacing: 16,
+          runSpacing: 8,
+          children: legendItems,
+        ),
+        const SizedBox(height: 16),
+        // Combined graph
+        SizedBox(
+          height: 400,
+          child: LineChart(
+            LineChartData(
+              gridData: FlGridData(
+                show: true,
+                drawVerticalLine: true,
+                getDrawingHorizontalLine: (value) {
+                  // Highlight zero line if it's visible
+                  if (value == 0 && minY < 0 && maxY > 0) {
+                    return const FlLine(color: Color(0xFF94A3B8), strokeWidth: 1.5);
+                  }
+                  return const FlLine(color: Color(0xFFE2E8F0), strokeWidth: 1);
+                },
+                getDrawingVerticalLine: (value) => const FlLine(color: Color(0xFFE2E8F0), strokeWidth: 1),
+              ),
+              titlesData: FlTitlesData(
+                bottomTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 32,
+                    interval: 1,
+                    getTitlesWidget: (value, meta) {
+                      int idx = value.toInt();
+                      if (idx >= 0 && idx < stageNames.length) {
+                        String name = stageNames[idx].replaceAll('_', ' ').toUpperCase();
+                        if (name.length > 8) name = '${name.substring(0, 8)}..';
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            name,
+                            style: const TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                          ),
+                        );
+                      }
+                      return const Text('');
+                    },
+                  ),
+                ),
+                leftTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 50,
+                    interval: _calculateYInterval(minY, maxY),
+                    getTitlesWidget: (value, meta) {
+                      // Format based on value magnitude
+                      String label;
+                      if (value.abs() >= 1000) {
+                        label = '${(value / 1000).toStringAsFixed(1)}k';
+                      } else if (value.abs() >= 1) {
+                        label = value.toStringAsFixed(1);
+                      } else {
+                        label = value.toStringAsFixed(2);
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: Text(
+                          label,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: value == 0 && minY < 0 && maxY > 0
+                                ? const Color(0xFF94A3B8)
+                                : const Color(0xFF64748B),
+                            fontWeight: value == 0 ? FontWeight.w700 : FontWeight.w400,
+                          ),
+                          textAlign: TextAlign.right,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              ),
+              borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xFFE2E8F0))),
+              lineBarsData: lineBarsData,
+              lineTouchData: LineTouchData(
+                touchTooltipData: LineTouchTooltipData(
+                  tooltipBgColor: Colors.blueGrey.shade800,
+                  getTooltipItems: (touchedSpots) {
+                    return touchedSpots.map((spot) {
+                      int idx = spot.x.toInt();
+                      String stageName = idx >= 0 && idx < stageNames.length
+                          ? stageNames[idx].toUpperCase().replaceAll('_', ' ')
+                          : 'Unknown';
+                      final combo = combinations[spot.barIndex];
+                      return LineTooltipItem(
+                        '$stageName\n${combo['group']} - ${combo['type']}: ${spot.y.toStringAsFixed(3)}',
+                        const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                      );
+                    }).toList();
+                  },
+                ),
+              ),
+              minY: minY,
+              maxY: maxY,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  double _calculateYInterval(double minY, double maxY) {
+    final range = maxY - minY;
+    if (range <= 0) return 1.0;
+    
+    // Calculate appropriate interval based on range
+    if (range <= 0.5) return 0.1;
+    if (range <= 2) return 0.5;
+    if (range <= 10) return 1.0;
+    if (range <= 50) return 5.0;
+    if (range <= 100) return 10.0;
+    if (range <= 500) return 50.0;
+    if (range <= 1000) return 100.0;
+    return 200.0;
+  }
+
+  double? _getMetricValue(Map<String, dynamic> stage, String group, String type) {
+       String prefix = '';
+       switch (group) {
+         case 'INTERNAL (R2R)': prefix = 'internal_timing_r2r'; break;
+         case 'INTERFACE I2R': prefix = 'interface_timing_i2r'; break;
+         case 'INTERFACE R2O': prefix = 'interface_timing_r2o'; break;
+         case 'INTERFACE I2O': prefix = 'interface_timing_i2o'; break;
+         case 'HOLD': prefix = 'hold'; break;
+       }
+       String key = '${prefix}_${type.toLowerCase()}';
+       return _parseNumeric(stage[key]);
+  }
+
+  Widget _buildComparisonMatrix(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Table Title and Legend
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+              border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.table_chart_outlined, size: 20, color: Color(0xFF0F172A)),
+                        SizedBox(width: 12),
+                Text(
+                          'Stage Metrics Comparison',
+                  style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF0F172A),
+                            letterSpacing: -0.5,
+                  ),
+                ),
+              ],
+            ),
+                    IconButton(
+                      icon: const Icon(Icons.fullscreen),
+                      tooltip: 'Full Screen View',
+                      color: const Color(0xFF64748B),
+                      onPressed: () => _showFullScreenTable(stages),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _buildLegend(),
+              ],
+            ),
+          ),
+          
+          // The Table
+          _buildTableLayout(
+            stages, 
+            _horizontalScrollController, 
+            _verticalScrollController, 
+            fixedHeight: 600
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLegend() {
+    return Wrap(
+      spacing: 24,
+      runSpacing: 12,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        _legendItem('WNS', 'Worst Negative Slack', const Color(0xFFEF4444)),
+        _legendItem('TNS', 'Total Negative Slack', const Color(0xFFF59E0B)),
+        _legendItem('NVP', 'Number of Violating Paths', const Color(0xFF64748B)),
+        Container(width: 1, height: 12, color: Colors.grey[300]),
+        _legendItem('Critical', '< -0.5ns', const Color(0xFFB91C1C), isBox: true),
+        _legendItem('Warning', '< 0.0ns', const Color(0xFFEF4444), isBox: true),
+        _legendItem('Safe', '≥ 0.0ns', const Color(0xFF10B981), isBox: true),
+      ],
+    );
+  }
+
+  Widget _legendItem(String label, String desc, Color color, {bool isBox = false}) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (isBox)
+          Container(
+            width: 8,
+            height: 8,
+      decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          )
+        else
+          Text(label, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 11)),
+        const SizedBox(width: 8),
+        Text(
+          desc,
+          style: const TextStyle(
+            color: Color(0xFF64748B),
+            fontSize: 11,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // A unified header builder that creates a Column of Rows.
+  // It manually calculates widths to ensure "merged" cells (Row 1) align perfectly 
+  // with the sub-columns (Row 2) which match the Table below.
+  Widget _buildUnifiedHeader(Map<int, TableColumnWidth> colWidths) {
+    // Helper to get raw double value
+    double getW(int idx) => (colWidths[idx] as FixedColumnWidth).value;
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFFF8FAFC),
+        border: Border(bottom: BorderSide(color: Color(0xFFE2E8F0))),
+      ),
+      child: Column(
+          children: [
+          // LEVEL 1: Dimensions / Groups
+          Row(
+              children: [
+              _buildHeaderCell('STAGE INFO', width: getW(0) + getW(1), isMain: true),
+              _buildHeaderCell('INTERNAL (R2R)', width: getW(2) + getW(3) + getW(4), isMain: true, color: Colors.blue[50]),
+              _buildHeaderCell('INTERFACE I2R', width: getW(5) + getW(6) + getW(7), isMain: true, color: Colors.indigo[50]),
+              _buildHeaderCell('INTERFACE R2O', width: getW(8) + getW(9) + getW(10), isMain: true, color: Colors.purple[50]),
+              _buildHeaderCell('INTERFACE I2O', width: getW(11) + getW(12) + getW(13), isMain: true, color: Colors.indigo[50]),
+              _buildHeaderCell('HOLD', width: getW(14) + getW(15) + getW(16), isMain: true),
+              _buildHeaderCell('CONSTRAINTS', width: (getW(17) + getW(18)) + (getW(19) + getW(20)) + (getW(21) + getW(22)), isMain: true, color: Colors.orange[50]),
+              _buildHeaderCell('INTEGRITY', width: getW(23) + getW(24) + getW(25) + getW(26), isMain: true),
+              _buildHeaderCell('POWER / IR', width: getW(27) + getW(28) + getW(29) + getW(30), isMain: true),
+              _buildHeaderCell('PHYSICAL VERIF', width: getW(31) + getW(32) + getW(33), isMain: true),
+              _buildHeaderCell('SIGNOFF', width: getW(34) + getW(35) + getW(36) + getW(37), isMain: true),
+              _buildHeaderCell('PHYSICAL STATS', width: getW(38) + getW(39) + getW(40), isMain: true),
+              _buildHeaderCell('LOGS', width: getW(41) + getW(42) + getW(43), isMain: true),
+              _buildHeaderCell('AI SUM', width: getW(44), isMain: true),
+              _buildHeaderCell('RESOURCES', width: getW(45) + getW(46), isMain: true),
+            ],
+          ),
+          Divider(height: 1, color: Colors.grey.withOpacity(0.2)),
+          // LEVEL 2: Specific Metrics
+          Row(
+            children: [
+              _buildHeaderCell('Stage', width: getW(0)),
+              _buildHeaderCell('Status', width: getW(1)),
+              
+              // Internal
+              _buildHeaderCell('WNS', width: getW(2)),
+              _buildHeaderCell('TNS', width: getW(3)),
+              _buildHeaderCell('NVP', width: getW(4), isLastInGroup: true),
+
+              // I2R
+              _buildHeaderCell('WNS', width: getW(5)),
+              _buildHeaderCell('TNS', width: getW(6)),
+              _buildHeaderCell('NVP', width: getW(7), isLastInGroup: true),
+
+              // R2O
+              _buildHeaderCell('WNS', width: getW(8)),
+              _buildHeaderCell('TNS', width: getW(9)),
+              _buildHeaderCell('NVP', width: getW(10), isLastInGroup: true),
+
+              // I2O
+              _buildHeaderCell('WNS', width: getW(11)),
+              _buildHeaderCell('TNS', width: getW(12)),
+              _buildHeaderCell('NVP', width: getW(13), isLastInGroup: true),
+              
+              // Hold
+              _buildHeaderCell('WNS', width: getW(14)),
+              _buildHeaderCell('TNS', width: getW(15)),
+              _buildHeaderCell('NVP', width: getW(16), isLastInGroup: true),
+
+              // Constraints (Max Tran, Max Cap, Max Fanout)
+              _buildHeaderCell('Tran WNS', width: getW(17)),
+              _buildHeaderCell('Tran NVP', width: getW(18)),
+              _buildHeaderCell('Cap WNS', width: getW(19)),
+              _buildHeaderCell('Cap NVP', width: getW(20)),
+              _buildHeaderCell('Fan WNS', width: getW(21)),
+              _buildHeaderCell('Fan NVP', width: getW(22), isLastInGroup: true),
+              
+              // Integrity
+              _buildHeaderCell('Noise', width: getW(23)),
+              _buildHeaderCell('Pulse', width: getW(24)),
+              _buildHeaderCell('Period', width: getW(25)),
+              _buildHeaderCell('Dbl Sw', width: getW(26), isLastInGroup: true),
+
+              // Power
+              _buildHeaderCell('Static', width: getW(27)),
+              _buildHeaderCell('Dynamic', width: getW(28)),
+              _buildHeaderCell('Pwr', width: getW(29)),
+              _buildHeaderCell('Sig', width: getW(30), isLastInGroup: true),
+
+              // PV
+              _buildHeaderCell('Base', width: getW(31)),
+              _buildHeaderCell('Metal', width: getW(32)),
+              _buildHeaderCell('Antenna', width: getW(33), isLastInGroup: true),
+
+              // Signoff
+              _buildHeaderCell('LVS', width: getW(34)),
+              _buildHeaderCell('ERC', width: getW(35)),
+              _buildHeaderCell('R2G', width: getW(36)),
+              _buildHeaderCell('G2G', width: getW(37), isLastInGroup: true),
+
+              // Physicals
+              _buildHeaderCell('Area', width: getW(38)),
+              _buildHeaderCell('Inst', width: getW(39)),
+              _buildHeaderCell('Util', width: getW(40), isLastInGroup: true),
+
+              // Logs
+              _buildHeaderCell('Err', width: getW(41)),
+              _buildHeaderCell('War', width: getW(42)),
+              _buildHeaderCell('Crit', width: getW(43), isLastInGroup: true),
+
+              _buildHeaderCell('Summary', width: getW(44), isLastInGroup: true),
+              
+              // Resources
+              _buildHeaderCell('Mem', width: getW(45)),
+              _buildHeaderCell('Time', width: getW(46)),
+              ],
+            ),
+          ],
+        ),
+    );
+  }
+
+  Widget _buildHeaderCell(String text, {
+    required double width,
+    bool isMain = false,
+    bool isLastInGroup = false,
+    Color? color,
+  }) {
+    return Container(
+      width: width,
+      height: isMain ? 40 : 32,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: color ?? Colors.transparent,
+            border: Border(
+          right: BorderSide(
+            color: isLastInGroup || isMain ? const Color(0xFFCBD5E1) : const Color(0xFFE2E8F0),
+            width: isLastInGroup ? 1.5 : 1.0,
+          ),
+        ),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: isMain ? 11 : 10,
+          fontWeight: isMain ? FontWeight.w800 : FontWeight.w600,
+          color: isMain ? const Color(0xFF334155) : const Color(0xFF64748B),
+          letterSpacing: 0.5,
+        ),
+        textAlign: TextAlign.center,
+      ),
+    );
+  }
+
+  Map<int, TableColumnWidth> _buildColumnWidths() {
+    final widths = <int, TableColumnWidth>{};
+    // Stage (0)
+    widths[0] = const FixedColumnWidth(160);
+    // Status (1)
+    widths[1] = const FixedColumnWidth(120); // Wider for better pill
+
+    // 2-4: Internal
+    widths[2] = const FixedColumnWidth(80);
+    widths[3] = const FixedColumnWidth(80);
+    widths[4] = const FixedColumnWidth(60);
+
+    // 5-7: I2R
+    widths[5] = const FixedColumnWidth(80);
+    widths[6] = const FixedColumnWidth(80);
+    widths[7] = const FixedColumnWidth(60);
+
+    // 8-10: R2O
+    widths[8] = const FixedColumnWidth(80);
+    widths[9] = const FixedColumnWidth(80);
+    widths[10] = const FixedColumnWidth(60);
+
+    // 11-13: I2O
+    widths[11] = const FixedColumnWidth(80);
+    widths[12] = const FixedColumnWidth(80);
+    widths[13] = const FixedColumnWidth(60);
+
+    // 14-16: Hold
+    widths[14] = const FixedColumnWidth(80);
+    widths[15] = const FixedColumnWidth(80);
+    widths[16] = const FixedColumnWidth(60);
+    
+    // 17-22: Constraints
+    for (int i = 17; i <= 22; i++) widths[i] = const FixedColumnWidth(70);
+    
+    // 23-26: Integrity
+    for (int i = 23; i <= 26; i++) widths[i] = const FixedColumnWidth(70);
+    
+    // 27-30: Power
+    for (int i = 27; i <= 30; i++) widths[i] = const FixedColumnWidth(70);
+    
+    // 31-33: PV
+    for (int i = 31; i <= 33; i++) widths[i] = const FixedColumnWidth(70);
+    
+    // 34-37: Signoff
+    for (int i = 34; i <= 37; i++) widths[i] = const FixedColumnWidth(70);
+    
+    // 38-40: Physicals
+    widths[38] = const FixedColumnWidth(80);
+    widths[39] = const FixedColumnWidth(80);
+    widths[40] = const FixedColumnWidth(70);
+
+    // 41-43: Logs
+    widths[41] = const FixedColumnWidth(50);
+    widths[42] = const FixedColumnWidth(50);
+    widths[43] = const FixedColumnWidth(50);
+
+    // 44: AI
+    widths[44] = const FixedColumnWidth(150);
+
+    // 45-46: Resources
+    widths[45] = const FixedColumnWidth(80);
+    widths[46] = const FixedColumnWidth(80);
+
+    return widths;
+  }
+
+  Widget _buildStatusCell(String? status) {
+    String s = (status ?? 'unknown').toLowerCase();
+    
+    Color color;
+    Color bg;
+    IconData icon;
+    String label;
+
+    switch (s) {
+      case 'success':
+        color = const Color(0xFF16A34A);
+        bg = const Color(0xFFDCFCE7);
+        icon = Icons.check_circle_outline;
+        label = 'SUCCESS';
+        break;
+      case 'fail':
+        color = const Color(0xFFDC2626);
+        bg = const Color(0xFFFEF2F2);
+        icon = Icons.error_outline;
+        label = 'FAILED';
+        break;
+      case 'continue_with_error':
+        color = const Color(0xFFEA580C);
+        bg = const Color(0xFFFFF7ED);
+        icon = Icons.warning_amber_rounded;
+        label = 'ERRORS';
+        break;
+      default:
+        color = const Color(0xFF64748B);
+        bg = const Color(0xFFF1F5F9);
+        icon = Icons.help_outline;
+        label = s.toUpperCase().replaceAll('_', ' ');
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withOpacity(0.2)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 6),
+          Text(
+            label,
+        style: TextStyle(
+          color: color,
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.5,
+        ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  TableRow _buildTableRow(Map<String, dynamic> s) {
+    // Formatting date
+    final timestamp = s['timestamp']?.toString() ?? '';
+    final timeDisplay = timestamp.length > 5 ? timestamp.replaceAll('T', ' ').substring(0, 16) : timestamp;
+
+    return TableRow(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+        border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+          ),
+      children: [
+        // Stage Name & Time
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                (s['stage']?.toString() ?? '–').toUpperCase(),
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 13,
+                  color: Color(0xFF0F172A),
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Icon(Icons.access_time, size: 10, color: Color(0xFF94A3B8)),
+                  const SizedBox(width: 4),
+              Text(
+                    timeDisplay,
+                    style: const TextStyle(fontSize: 10, color: Color(0xFF94A3B8)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        
+        // Status
+        Container(
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: _buildStatusCell(s['run_status']),
+        ),
+
+        // Internal
+        _dataCell(s['internal_timing_r2r_wns'], isTiming: true, bg: Colors.blue[50]),
+        _dataCell(s['internal_timing_r2r_tns'], isTiming: true, bg: Colors.blue[50]),
+        _dataCell(s['internal_timing_r2r_nvp'], bg: Colors.blue[50], borderRight: true),
+
+        // I2R
+        _dataCell(s['interface_timing_i2r_wns'], isTiming: true, bg: Colors.indigo[50]),
+        _dataCell(s['interface_timing_i2r_tns'], isTiming: true, bg: Colors.indigo[50]),
+        _dataCell(s['interface_timing_i2r_nvp'], bg: Colors.indigo[50], borderRight: true),
+
+        // R2O
+        _dataCell(s['interface_timing_r2o_wns'], isTiming: true, bg: Colors.purple[50]),
+        _dataCell(s['interface_timing_r2o_tns'], isTiming: true, bg: Colors.purple[50]),
+        _dataCell(s['interface_timing_r2o_nvp'], bg: Colors.purple[50], borderRight: true),
+
+        // I2O
+        _dataCell(s['interface_timing_i2o_wns'], isTiming: true, bg: Colors.indigo[50]),
+        _dataCell(s['interface_timing_i2o_tns'], isTiming: true, bg: Colors.indigo[50]),
+        _dataCell(s['interface_timing_i2o_nvp'], bg: Colors.indigo[50], borderRight: true),
+
+        // Hold
+        _dataCell(s['hold_wns'], isTiming: true),
+        _dataCell(s['hold_tns'], isTiming: true),
+        _dataCell(s['hold_nvp'], borderRight: true),
+
+        // Constraints
+        _dataCell(s['max_tran_wns'], isTiming: true, bg: Colors.orange[50]),
+        _dataCell(s['max_tran_nvp'], bg: Colors.orange[50]),
+        _dataCell(s['max_cap_wns'], isTiming: true, bg: Colors.orange[50]),
+        _dataCell(s['max_cap_nvp'], bg: Colors.orange[50]),
+        _dataCell(s['max_fanout_wns'], isTiming: true, bg: Colors.orange[50]),
+        _dataCell(s['max_fanout_nvp'], bg: Colors.orange[50], borderRight: true),
+
+        // Integrity
+        _dataCell(s['noise_violations']),
+        _dataCell(s['min_pulse_width']),
+        _dataCell(s['min_period']),
+        _dataCell(s['double_switching'], borderRight: true),
+
+        // Power
+        _dataCell(s['ir_static']),
+        _dataCell(s['ir_dynamic']),
+        _dataCell(s['em_power']),
+        _dataCell(s['em_signal'], borderRight: true),
+
+        // PV
+        _dataCell(s['pv_drc_base']),
+        _dataCell(s['pv_drc_metal']),
+        _dataCell(s['pv_drc_antenna'], borderRight: true),
+
+        // Signoff
+        _dataCell(s['lvs']),
+        _dataCell(s['erc']),
+        _dataCell(s['r2g_lec']),
+        _dataCell(s['g2g_lec'], borderRight: true),
+
+        // Physicals
+        _dataCell(s['area']),
+        _dataCell(s['inst_count']),
+        _dataCell(s['utilization'], borderRight: true),
+
+        // Logs
+        _dataCell(s['log_errors'], textColor: Colors.red[700], isBold: true),
+        _dataCell(s['log_warnings'], textColor: Colors.amber[700], isBold: true),
+        _dataCell(s['log_critical'], textColor: Colors.red[900], isBold: true, borderRight: true),
+
+        // AI Summary
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          alignment: Alignment.centerLeft,
+          decoration: const BoxDecoration(
+            border: Border(right: BorderSide(color: Color(0xFFE2E8F0))),
+          ),
+          child: Text(
+            s['ai_summary']?.toString() ?? '',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontStyle: FontStyle.italic),
+          ),
+        ),
+
+        // Resources
+        _dataCell(s['memory_usage']),
+        _dataCell(s['runtime']),
+      ],
+    );
+  }
+
+  Widget _dataCell(
+    dynamic value, {
+    bool isTiming = false,
+    Color? bg,
+    bool borderRight = false,
+    Color? textColor,
+    bool isBold = false,
+  }) {
+    // Parsing logic
+    String display = '—';
+    Color? finalTextColor = textColor ?? const Color(0xFF334155);
+    FontWeight fontWeight = isBold ? FontWeight.w700 : FontWeight.w400;
+
+    if (value != null && value.toString().isNotEmpty && value.toString() != 'N/A' && value.toString() != 'NA') {
+      if (isTiming && value is num) {
+        display = value.toStringAsFixed(3);
+        if (value < -0.0001) {
+          finalTextColor = const Color(0xFFDC2626); // Red for violations
+          fontWeight = FontWeight.w700;
+        } else if (value >= 0) {
+          finalTextColor = const Color(0xFF059669); // Green for safe
+        }
+      } else if (value is num) {
+        display = value % 1 == 0 ? value.toInt().toString() : value.toStringAsFixed(2);
+      } else {
+        display = value.toString();
+      }
+    } else {
+      finalTextColor = const Color(0xFFCBD5E1); // Light grey for empty
+    }
+
+    return Container(
+      height: 48, // Fixed height for rows
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: bg?.withOpacity(0.3) ?? Colors.transparent,
+        border: Border(
+          right: borderRight ? const BorderSide(color: Color(0xFF94A3B8), width: 0.5) : const BorderSide(color: Color(0xFFF1F5F9)),
+        ),
+      ),
+      child: Text(
+        display,
+        style: TextStyle(
+          fontSize: 11,
+          fontFamily: 'monospace',
+          color: finalTextColor,
+          fontWeight: fontWeight,
+        ),
+      ),
+    );
+  }
+
+  void _showFullScreenTable(List<Map<String, dynamic>> stages) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          appBar: AppBar(
+            title: const Text(
+              'Stage Metrics Comparison - Full Screen',
+              style: TextStyle(color: Color(0xFF0F172A), fontWeight: FontWeight.bold),
+            ),
+            backgroundColor: Colors.white,
+            foregroundColor: const Color(0xFF0F172A),
+            elevation: 1,
+          ),
+          body: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildLegend(),
+                const SizedBox(height: 24),
+                Expanded(
+                  child: _ScrollControllerProvider(
+                    builder: (h, v) => _buildTableLayout(stages, h, v),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTableLayout(
+    List<Map<String, dynamic>> stages,
+    ScrollController hCtrl,
+    ScrollController vCtrl, {
+    double? fixedHeight,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columnWidths = _buildColumnWidths();
+        double totalWidth = 0;
+        for (var width in columnWidths.values) {
+          if (width is FixedColumnWidth) {
+            totalWidth += width.value;
+          }
+        }
+        final minTableWidth = totalWidth;
+        final maxWidth = constraints.maxWidth > 0 && constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : minTableWidth;
+
+        Widget content = Scrollbar(
+          controller: hCtrl,
+          thumbVisibility: true,
+          trackVisibility: true,
+          thickness: 8,
+          child: SingleChildScrollView(
+            controller: hCtrl,
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: totalWidth < maxWidth ? maxWidth : totalWidth,
+              child: Column(
+                children: [
+                  _buildUnifiedHeader(columnWidths),
+                  Expanded(
+                    child: Scrollbar(
+                      controller: vCtrl,
+                      thumbVisibility: true,
+                      thickness: 8,
+                      child: SingleChildScrollView(
+                        controller: vCtrl,
+                        child: Table(
+                          columnWidths: columnWidths,
+                          defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+                          border: const TableBorder(
+                            horizontalInside: BorderSide(color: Color(0xFFF1F5F9)),
+                          ),
+                          children: stages.map((s) => _buildTableRow(s)).toList(),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+
+        if (fixedHeight != null) {
+          return SizedBox(height: fixedHeight, child: content);
+        }
+        return content;
+      },
+    );
+  }
+}
+
+class _ScrollControllerProvider extends StatefulWidget {
+  final Widget Function(ScrollController h, ScrollController v) builder;
+
+  const _ScrollControllerProvider({required this.builder});
+
+  @override
+  State<_ScrollControllerProvider> createState() => _ScrollControllerProviderState();
+}
+
+class _ScrollControllerProviderState extends State<_ScrollControllerProvider> {
+  late final ScrollController _hResult;
+  late final ScrollController _vResult;
+
+  @override
+  void initState() {
+    super.initState();
+    _hResult = ScrollController();
+    _vResult = ScrollController();
+  }
+
+  @override
+  void dispose() {
+    _hResult.dispose();
+    _vResult.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return widget.builder(_hResult, _vResult);
+  }
+}

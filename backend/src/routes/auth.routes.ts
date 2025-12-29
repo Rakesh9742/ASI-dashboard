@@ -90,7 +90,7 @@ router.post('/login', async (req, res) => {
 
     // Check if this is a Zoho OAuth user (hasn't set a password yet)
     if (user.password_hash === 'zoho_oauth_user') {
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'This account uses Zoho OAuth login',
         hint: 'Please use "Login with Zoho" button instead, or set a password in your profile settings',
         requiresZohoAuth: true
@@ -113,7 +113,7 @@ router.post('/login', async (req, res) => {
     // Generate JWT token
     const jwtSecret = process.env.JWT_SECRET || 'your-secret-key';
     const jwtExpiresIn = process.env.JWT_EXPIRES_IN || '7d';
-    
+
     const token = jwt.sign(
       {
         id: user.id,
@@ -146,7 +146,7 @@ router.post('/login', async (req, res) => {
 router.get('/me', authenticate, async (req, res) => {
   try {
     const userId = (req as any).user?.id;
-    
+
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -191,7 +191,7 @@ router.post('/set-password', authenticate, async (req, res) => {
 
     // Only allow setting password if user is a Zoho OAuth user (hasn't set password yet)
     if (user.password_hash !== 'zoho_oauth_user') {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Password already set',
         hint: 'Use the change password endpoint to update your password'
       });
@@ -266,8 +266,8 @@ router.post('/change-password', authenticate, async (req, res) => {
   }
 });
 
-// Get all users (admin only)
-router.get('/users', authenticate, authorize('admin'), async (req, res) => {
+// Get all users (accessible by team members)
+router.get('/users', authenticate, authorize('admin', 'project_manager', 'lead', 'engineer'), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.domain_id, 

@@ -1,0 +1,55 @@
+{
+  "project": "test_project",
+  "domain": "PD",
+  "block_name": "test_block",
+  "experiment": "exp_001",
+  "rtl_tag": "v1.0.0",
+  "user_name": "test_user",
+  "run_directory": "/test/run",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "stages": {
+    "syn": {
+      "area": 1000000,
+      "inst_count": 50000,
+      "utilization": 75.5,
+      "run_status": "pass",
+      "runtime": "3600",
+      "internal_timing_r2r_wns": -0.5,
+      "internal_timing_r2r_tns": -100,
+      "internal_timing_r2r_nvp": 10,
+      "log_errors": 0,
+      "log_warnings": 5,
+      "log_critical": 0,
+      "min_pulse_width": 0.1,
+      "min_period": 1.0,
+      "double_switching": 0
+    },
+    "place": {
+      "area": 1000000,
+      "inst_count": 50000,
+      "utilization": 75.5,
+      "run_status": "pass",
+      "runtime": "7200",
+      "internal_timing_r2r_wns": -0.3,
+      "internal_timing_r2r_tns": -50,
+      "internal_timing_r2r_nvp": 5,
+      "log_errors": 0,
+      "log_warnings": 3,
+      "log_critical": 0
+    },
+    "route": {
+      "area": 1000000,
+      "inst_count": 50000,
+      "utilization": 75.5,
+      "run_status": "pass",
+      "runtime": "10800",
+      "internal_timing_r2r_wns": -0.2,
+      "internal_timing_r2r_tns": -30,
+      "internal_timing_r2r_nvp": 3,
+      "log_errors": 0,
+      "log_warnings": 2,
+      "log_critical": 0
+    }
+  }
+}
+

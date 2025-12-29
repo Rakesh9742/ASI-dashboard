@@ -2,13 +2,25 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // Backend URL - Always use relative URL (/api) for web builds
-  // nginx will proxy /api requests to the backend container
-  // This works in both Docker and production environments
+  // Backend URL - Use full URL for local development, relative for production
+  // In development (Flutter dev server), use http://localhost:3000/api
+  // In production (nginx), use relative /api which nginx proxies
   static String get baseUrl {
-    // Always use relative URL for web builds
-    // nginx proxy handles routing /api to backend
-    // This avoids CORS issues and works with Docker service names
+    // Check if we're running in a browser (web)
+    // In Flutter web dev server, we need to use full backend URL
+    // In production builds served by nginx, use relative URLs
+    try {
+      // Check if we're in development by looking at the current URL
+      // If running on localhost with a high port (Flutter dev server), use full URL
+      final uri = Uri.base;
+      if (uri.host == 'localhost' && uri.port > 8000) {
+        // Flutter dev server - use full backend URL
+        return 'http://localhost:3000/api';
+      }
+    } catch (e) {
+      // If we can't determine, default to relative URL
+    }
+    // Production mode or Docker - use relative URL (nginx will proxy)
     return '/api';
   }
 
@@ -26,8 +38,12 @@ class ApiService {
   // Health check
   Future<Map<String, dynamic>> healthCheck() async {
     try {
-      // Use /health endpoint (nginx will proxy to backend)
-      final response = await http.get(Uri.parse('/health'));
+      // Use full URL in development, relative in production
+      final uri = Uri.base;
+      final healthUrl = (uri.host == 'localhost' && uri.port > 8000) 
+          ? 'http://localhost:3000/health' 
+          : '/health';
+      final response = await http.get(Uri.parse(healthUrl));
       return json.decode(response.body);
     } catch (e) {
       throw Exception('Failed to connect to backend: $e');
@@ -198,30 +214,79 @@ class ApiService {
 
   // Dashboard stats
   Future<Map<String, dynamic>> getDashboardStats() async {
-    final response = await http.get(Uri.parse('$baseUrl/dashboard/stats'));
-    if (response.statusCode == 200) {
-      return json.decode(response.body);
-    } else {
-      throw Exception('Failed to load dashboard stats');
+    try {
+      final response = await http.get(Uri.parse('$baseUrl/dashboard/stats'));
+      
+      // Check if response is JSON
+      if (response.headers['content-type']?.contains('application/json') != true) {
+        // If not JSON, likely an HTML error page
+        throw Exception('Backend server returned non-JSON response. Is the server running?');
+      }
+      
+      if (response.statusCode == 200) {
+        try {
+          return json.decode(response.body);
+        } catch (e) {
+          // Response body is not valid JSON
+          throw Exception('Invalid JSON response from server: ${response.body.substring(0, 100)}...');
+        }
+      } else {
+        // Try to parse error response
+        try {
+          final error = json.decode(response.body);
+          throw Exception(error['error'] ?? 'Failed to load dashboard stats');
+        } catch (e) {
+          throw Exception('Failed to load dashboard stats (Status: ${response.statusCode})');
+        }
+      }
+    } catch (e) {
+      if (e.toString().contains('Failed host lookup') || 
+          e.toString().contains('Connection refused') ||
+          e.toString().contains('Network is unreachable')) {
+        throw Exception('Cannot connect to backend server. Please make sure the backend is running on port 3000.');
+      }
+      rethrow;
     }
   }
 
   // Authentication
   Future<Map<String, dynamic>> login(String username, String password) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/auth/login'),
-      headers: {'Content-Type': 'application/json'},
-      body: json.encode({
-        'username': username,
-        'password': password,
-      }),
-    );
-    
-    if (response.statusCode == 200) {
-      return json.decode(response.body);
-    } else {
-      final error = json.decode(response.body);
-      throw Exception(error['error'] ?? 'Login failed');
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/auth/login'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'username': username,
+          'password': password,
+        }),
+      );
+      
+      // Check if response is JSON
+      if (response.headers['content-type']?.contains('application/json') != true) {
+        throw Exception('Backend server returned non-JSON response. Is the server running?');
+      }
+      
+      if (response.statusCode == 200) {
+        try {
+          return json.decode(response.body);
+        } catch (e) {
+          throw Exception('Invalid JSON response from server');
+        }
+      } else {
+        try {
+          final error = json.decode(response.body);
+          throw Exception(error['error'] ?? 'Login failed');
+        } catch (e) {
+          throw Exception('Login failed (Status: ${response.statusCode})');
+        }
+      }
+    } catch (e) {
+      if (e.toString().contains('Failed host lookup') || 
+          e.toString().contains('Connection refused') ||
+          e.toString().contains('Network is unreachable')) {
+        throw Exception('Cannot connect to backend server. Please make sure the backend is running on port 3000.');
+      }
+      rethrow;
     }
   }
 
@@ -442,6 +507,121 @@ class ApiService {
       final error = json.decode(response.body);
       throw Exception(error['error'] ?? 'Failed to load projects');
     }
+  }
+
+  // EDA Output Files Methods
+  Future<Map<String, dynamic>> getEdaFiles({
+    String? token,
+    String? projectName,
+    String? domainName,
+    int? projectId,
+    int? domainId,
+    String? processingStatus,
+    String? filePath,
+    int limit = 50,
+    int offset = 0,
+  }) async {
+    final queryParams = <String, String>{
+      'limit': limit.toString(),
+      'offset': offset.toString(),
+    };
+    
+    if (projectName != null) queryParams['project_name'] = projectName;
+    if (domainName != null) queryParams['domain_name'] = domainName;
+    if (projectId != null) queryParams['project_id'] = projectId.toString();
+    if (domainId != null) queryParams['domain_id'] = domainId.toString();
+    if (processingStatus != null) queryParams['processing_status'] = processingStatus;
+    if (filePath != null) queryParams['file_path'] = filePath;
+
+    final uri = Uri.parse('$baseUrl/eda-files').replace(queryParameters: queryParams);
+    
+    final response = await http.get(
+      uri,
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to load EDA files');
+    }
+  }
+
+  Future<Map<String, dynamic>> getEdaFile(int id, {String? token}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/eda-files/$id'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to load EDA file');
+    }
+  }
+
+  Future<Map<String, dynamic>> uploadEdaFile(
+    List<int> fileBytes,
+    String fileName, {
+    String? token,
+  }) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/eda-files/upload'),
+    );
+    
+    request.headers.addAll(_getHeaders(token: token));
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'file',
+        fileBytes,
+        filename: fileName,
+      ),
+    );
+
+    final streamedResponse = await request.send();
+    final response = await http.Response.fromStream(streamedResponse);
+    
+    if (response.statusCode == 201) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to upload file');
+    }
+  }
+
+  Future<Map<String, dynamic>> getEdaFilesStats({String? token}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/eda-files/stats/summary'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to load stats');
+    }
+  }
+
+  Future<Map<String, dynamic>> deleteEdaFile(int id, {String? token, bool deleteFile = false}) async {
+    final uri = Uri.parse('$baseUrl/eda-files/$id').replace(
+      queryParameters: {'deleteFile': deleteFile.toString()},
+    );
+    
+    final response = await http.delete(
+      uri,
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode != 200) {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to delete file');
+    }
+    
+    return json.decode(response.body);
   }
 }
 

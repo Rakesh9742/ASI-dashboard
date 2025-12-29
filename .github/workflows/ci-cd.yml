@@ -17,29 +17,24 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          # Write SSH key with proper formatting
+          echo "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+          # Add EC2 host to known_hosts
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          # Test key format
+          ssh-keygen -l -f ~/.ssh/deploy_key || echo "Warning: Key format check failed"
 
       - name: Deploy to EC2
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-            # Try to find the project directory
-            if [ -d "$HOME/ASI dashboard" ]; then
-              cd "$HOME/ASI dashboard"
-            elif [ -d "$HOME/ASI-dashboard" ]; then
-              cd "$HOME/ASI-dashboard"
-            elif [ -d "$HOME/asi-dashboard" ]; then
-              cd "$HOME/asi-dashboard"
-            elif [ -d "/var/www/asi-dashboard" ]; then
-              cd "/var/www/asi-dashboard"
-            else
-              echo "❌ Project directory not found. Please update the path in the workflow."
-              exit 1
-            fi
-            
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o LogLevel=ERROR \
+              ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
+            cd /home/asi/ASI-dashboard
             echo "📂 Current directory: $(pwd)"
             echo "🔄 Pulling latest code from main branch..."
             git pull origin main
             echo "✅ Successfully pulled latest code"
-          EOF
+          ENDSSH

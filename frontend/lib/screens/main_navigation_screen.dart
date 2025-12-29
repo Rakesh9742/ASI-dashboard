@@ -5,6 +5,7 @@ import 'dashboard_screen.dart';
 import 'user_management_screen.dart';
 import 'project_management_screen.dart';
 import 'engineer_projects_screen.dart';
+import 'view_screen.dart';
 import 'login_screen.dart';
 
 class MainNavigationScreen extends ConsumerStatefulWidget {
@@ -22,11 +23,13 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
       return [
         const DashboardScreen(),
         const EngineerProjectsScreen(),
+        const ViewScreen(),
       ];
     }
     return [
       const DashboardScreen(),
       const ProjectManagementScreen(),
+      const ViewScreen(),
       const UserManagementScreen(),
     ];
   }
@@ -149,6 +152,15 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                           index: 1,
                           isSelected: _selectedIndex == 1,
                         ),
+                        const SizedBox(height: 8),
+                        _buildNavItem(
+                          context: context,
+                          icon: Icons.visibility_outlined,
+                          selectedIcon: Icons.visibility,
+                          label: 'View',
+                          index: isEngineer ? 2 : 2,
+                          isSelected: _selectedIndex == (isEngineer ? 2 : 2),
+                        ),
                         if (isAdmin) ...[
                           const SizedBox(height: 8),
                           _buildNavItem(
@@ -156,8 +168,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                             icon: Icons.people_outline,
                             selectedIcon: Icons.people,
                             label: 'Users',
-                            index: 2,
-                            isSelected: _selectedIndex == 2,
+                            index: 3,
+                            isSelected: _selectedIndex == 3,
                           ),
                         ],
                       ],
@@ -407,8 +419,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
               );
               return;
             }
-            // Engineers can only access index 0 (Dashboard) and 1 (Projects)
-            if (isEngineer && index > 1) {
+            // Engineers can only access index 0 (Dashboard), 1 (Projects), and 2 (View)
+            if (isEngineer && index > 2) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
                   content: Text('Access denied. This section is not available for engineers.'),
@@ -522,6 +534,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
           return 'Dashboard';
         case 1:
           return 'My Projects';
+        case 2:
+          return 'View';
         default:
           return 'ASI Dashboard';
       }
@@ -533,6 +547,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
       case 1:
         return 'Project Management';
       case 2:
+        return 'View';
+      case 3:
         return 'User Management';
       default:
         return 'ASI Dashboard';
