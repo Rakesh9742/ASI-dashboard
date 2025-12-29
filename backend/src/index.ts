@@ -20,23 +20,33 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 // Configure CORS to allow frontend URL from environment
-// In development, allow all localhost origins (for Flutter web dev server)
-// In production, use specific FRONTEND_URL
 const isDevelopment = process.env.NODE_ENV !== 'production';
-const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:8080';
+const frontendUrl = process.env.FRONTEND_URL;
+
+if (!frontendUrl) {
+  console.warn('⚠️  FRONTEND_URL is not set in .env file. CORS may not work correctly.');
+}
 
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    // In development, allow any localhost origin
-    if (isDevelopment && origin.startsWith('http://localhost:')) {
-      return callback(null, true);
+    // In development, allow localhost origins (for Flutter web dev server)
+    // This checks if FRONTEND_URL from env contains localhost
+    if (isDevelopment && frontendUrl) {
+      try {
+        const frontendHost = new URL(frontendUrl).hostname;
+        if (frontendHost === 'localhost' && (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:'))) {
+          return callback(null, true);
+        }
+      } catch (e) {
+        // If FRONTEND_URL is invalid, fall through to exact match check
+      }
     }
     
-    // In production or if FRONTEND_URL is set, check against allowed origin
-    if (origin === frontendUrl) {
+    // Check against allowed origin from environment variable
+    if (frontendUrl && origin === frontendUrl) {
       return callback(null, true);
     }
     
