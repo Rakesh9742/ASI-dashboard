@@ -32,24 +32,40 @@ app.use(cors({
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    // In development, allow localhost origins (for Flutter web dev server)
-    // This checks if FRONTEND_URL from env contains localhost
-    if (isDevelopment && frontendUrl) {
-      try {
-        const frontendHost = new URL(frontendUrl).hostname;
-        if (frontendHost === 'localhost' && (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:'))) {
-          return callback(null, true);
-        }
-      } catch (e) {
-        // If FRONTEND_URL is invalid, fall through to exact match check
+    // In development, be more permissive
+    if (isDevelopment) {
+      // Allow all localhost origins in development
+      if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:') || origin.startsWith('http://127.0.0.1:') || origin.startsWith('https://127.0.0.1:')) {
+        return callback(null, true);
       }
     }
     
+    // Normalize URLs for comparison (remove trailing slashes)
+    const normalizeUrl = (url: string) => url.replace(/\/$/, '');
+    
     // Check against allowed origin from environment variable
-    if (frontendUrl && origin === frontendUrl) {
-      return callback(null, true);
+    if (frontendUrl) {
+      const normalizedOrigin = normalizeUrl(origin);
+      const normalizedFrontendUrl = normalizeUrl(frontendUrl);
+      
+      if (normalizedOrigin === normalizedFrontendUrl) {
+        return callback(null, true);
+      }
+      
+      // Also check if origin matches without protocol (for flexibility)
+      try {
+        const originUrl = new URL(origin);
+        const frontendUrlObj = new URL(frontendUrl);
+        if (originUrl.hostname === frontendUrlObj.hostname && originUrl.port === frontendUrlObj.port) {
+          return callback(null, true);
+        }
+      } catch (e) {
+        // Invalid URL format, continue to error
+      }
     }
     
+    // Log rejected origin for debugging
+    console.warn(`🚫 CORS blocked origin: ${origin} (expected: ${frontendUrl || 'not set'})`);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true
