@@ -32,31 +32,47 @@ app.use(cors({
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    // In development, be more permissive
+    // Normalize URLs for comparison (remove trailing slashes and normalize protocol)
+    const normalizeUrl = (url: string) => {
+      let normalized = url.replace(/\/$/, '');
+      // Normalize http/https for comparison
+      normalized = normalized.replace(/^https?:\/\//, '');
+      return normalized;
+    };
+    
+    // In development, be more permissive - allow all localhost origins
     if (isDevelopment) {
-      // Allow all localhost origins in development
-      if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:') || origin.startsWith('http://127.0.0.1:') || origin.startsWith('https://127.0.0.1:')) {
+      if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:') || 
+          origin.startsWith('http://127.0.0.1:') || origin.startsWith('https://127.0.0.1:')) {
         return callback(null, true);
       }
     }
     
-    // Normalize URLs for comparison (remove trailing slashes)
-    const normalizeUrl = (url: string) => url.replace(/\/$/, '');
-    
-    // Check against allowed origin from environment variable
+    // Check against allowed origin from environment variable (works for both dev and production)
     if (frontendUrl) {
       const normalizedOrigin = normalizeUrl(origin);
       const normalizedFrontendUrl = normalizeUrl(frontendUrl);
       
+      // Exact match after normalization
       if (normalizedOrigin === normalizedFrontendUrl) {
         return callback(null, true);
       }
       
-      // Also check if origin matches without protocol (for flexibility)
+      // Also check if origin matches by hostname and port (protocol-agnostic)
       try {
         const originUrl = new URL(origin);
         const frontendUrlObj = new URL(frontendUrl);
-        if (originUrl.hostname === frontendUrlObj.hostname && originUrl.port === frontendUrlObj.port) {
+        
+        // Match by hostname and port (allows http/https flexibility)
+        if (originUrl.hostname === frontendUrlObj.hostname && 
+            originUrl.port === frontendUrlObj.port) {
+          return callback(null, true);
+        }
+        
+        // Also check without port (default ports)
+        const originPort = originUrl.port || (originUrl.protocol === 'https:' ? '443' : '80');
+        const frontendPort = frontendUrlObj.port || (frontendUrlObj.protocol === 'https:' ? '443' : '80');
+        if (originUrl.hostname === frontendUrlObj.hostname && originPort === frontendPort) {
           return callback(null, true);
         }
       } catch (e) {
@@ -65,7 +81,7 @@ app.use(cors({
     }
     
     // Log rejected origin for debugging
-    console.warn(`🚫 CORS blocked origin: ${origin} (expected: ${frontendUrl || 'not set'})`);
+    console.warn(`🚫 CORS blocked origin: ${origin} (expected: ${frontendUrl || 'not set'}, NODE_ENV: ${process.env.NODE_ENV || 'not set'})`);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true
