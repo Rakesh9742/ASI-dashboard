@@ -48,13 +48,13 @@ CREATE TABLE IF NOT EXISTS stages (
     run_status VARCHAR(50),                   -- pass / fail / continue_with_error
     runtime VARCHAR(20),
     memory_usage VARCHAR(50),
-    log_errors INT DEFAULT 0,
-    log_warnings INT DEFAULT 0,
-    log_critical INT DEFAULT 0,
-    area FLOAT,
-    inst_count INT,
-    utilization FLOAT,
-    metal_density_max FLOAT,                  -- Some stages have this (e.g., route, postroute)
+    log_errors VARCHAR(50) DEFAULT '0',
+    log_warnings VARCHAR(50) DEFAULT '0',
+    log_critical VARCHAR(50) DEFAULT '0',
+    area VARCHAR(50),
+    inst_count VARCHAR(50),
+    utilization VARCHAR(50),
+    metal_density_max VARCHAR(50),                  -- Some stages have this (e.g., route, postroute)
     min_pulse_width VARCHAR(50),              -- Can be "N/A" or value
     min_period VARCHAR(50),                    -- Can be "N/A" or value
     double_switching VARCHAR(50),             -- Can be "N/A" or value
@@ -69,21 +69,21 @@ CREATE TABLE IF NOT EXISTS stages (
 CREATE TABLE IF NOT EXISTS stage_timing_metrics (
     id SERIAL PRIMARY KEY,
     stage_id INT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
-    internal_r2r_wns FLOAT,
-    internal_r2r_tns FLOAT,
-    internal_r2r_nvp INT,
-    interface_i2r_wns FLOAT,
-    interface_i2r_tns FLOAT,
-    interface_i2r_nvp INT,
-    interface_r2o_wns FLOAT,
-    interface_r2o_tns FLOAT,
-    interface_r2o_nvp INT,
-    interface_i2o_wns FLOAT,
-    interface_i2o_tns FLOAT,
-    interface_i2o_nvp INT,
-    hold_wns FLOAT,
-    hold_tns FLOAT,
-    hold_nvp INT,
+    internal_r2r_wns VARCHAR(50),
+    internal_r2r_tns VARCHAR(50),
+    internal_r2r_nvp VARCHAR(50),
+    interface_i2r_wns VARCHAR(50),
+    interface_i2r_tns VARCHAR(50),
+    interface_i2r_nvp VARCHAR(50),
+    interface_r2o_wns VARCHAR(50),
+    interface_r2o_tns VARCHAR(50),
+    interface_r2o_nvp VARCHAR(50),
+    interface_i2o_wns VARCHAR(50),
+    interface_i2o_tns VARCHAR(50),
+    interface_i2o_nvp VARCHAR(50),
+    hold_wns VARCHAR(50),
+    hold_tns VARCHAR(50),
+    hold_nvp VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (stage_id)
 );
@@ -94,13 +94,13 @@ CREATE TABLE IF NOT EXISTS stage_timing_metrics (
 CREATE TABLE IF NOT EXISTS stage_constraint_metrics (
     id SERIAL PRIMARY KEY,
     stage_id INT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
-    max_tran_wns FLOAT,
-    max_tran_nvp INT,
-    max_cap_wns FLOAT,
-    max_cap_nvp INT,
-    max_fanout_wns FLOAT,
-    max_fanout_nvp INT,
-    drc_violations INT,
+    max_tran_wns VARCHAR(50),
+    max_tran_nvp VARCHAR(50),
+    max_cap_wns VARCHAR(50),
+    max_cap_nvp VARCHAR(50),
+    max_fanout_wns VARCHAR(50),
+    max_fanout_nvp VARCHAR(50),
+    drc_violations VARCHAR(50),
     congestion_hotspot VARCHAR(100),
     noise_violations VARCHAR(100),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -115,9 +115,9 @@ CREATE TABLE IF NOT EXISTS path_groups (
     stage_id INT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
     group_type VARCHAR(10) NOT NULL,          -- setup / hold
     group_name VARCHAR(100) NOT NULL,         -- reg2reg, in2reg, reg2out, in2out, all, ClockGate, cg_enable_group_clk
-    wns FLOAT,
-    tns FLOAT,
-    nvp INT,
+    wns VARCHAR(50),
+    tns VARCHAR(50),
+    nvp VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (stage_id, group_type, group_name)
 );
@@ -129,9 +129,9 @@ CREATE TABLE IF NOT EXISTS drv_violations (
     id SERIAL PRIMARY KEY,
     stage_id INT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
     violation_type VARCHAR(50) NOT NULL,     -- max_transition, min_transition, max_capacitance, min_capacitance, max_fanout, min_fanout
-    wns FLOAT,
-    tns FLOAT,
-    nvp INT,
+    wns VARCHAR(50),
+    tns VARCHAR(50),
+    nvp VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (stage_id, violation_type)
 );

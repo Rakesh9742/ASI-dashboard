@@ -25,10 +25,15 @@ class ProjectList extends ConsumerWidget {
 
         // Show top 5 recent projects
         final recentProjects = List.from(projects)..sort((a, b) {
-           // Sort by creation or start date descending if available
-           // Assuming higher ID is newer if no date, or parsing start_date
-           String? dateA = a['start_date'];
-           String? dateB = b['start_date'];
+           // Sort by created_at date descending (most recent first)
+           String? dateA = a['created_at'];
+           String? dateB = b['created_at'];
+           if (dateA != null && dateB != null) {
+             return dateB.compareTo(dateA);
+           }
+           // If no created_at, fall back to start_date or id
+           dateA = a['start_date'];
+           dateB = b['start_date'];
            if (dateA != null && dateB != null) {
              return dateB.compareTo(dateA);
            }
@@ -62,10 +67,16 @@ class ProjectList extends ConsumerWidget {
                   children: [
                     if (project['client'] != null)
                       Text('Client: ${project['client']}', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-                    Text(
-                      'Tech: ${project['technology_node'] ?? 'N/A'}',
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                    ),
+                    if (project['created_at'] != null)
+                      Text(
+                        _formatDate(project['created_at']),
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                      )
+                    else if (project['start_date'] != null)
+                      Text(
+                        _formatDate(project['start_date']),
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                      ),
                   ],
                 ),
                 trailing: Column(
@@ -112,6 +123,21 @@ class ProjectList extends ConsumerWidget {
       case 'delayed': return Colors.red;
       case 'active': return Colors.blue;
       default: return Colors.blue;
+    }
+  }
+
+  String _formatDate(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return '';
+    
+    try {
+      final date = DateTime.parse(dateString);
+      // Always show the actual date: "Created on Jan 15, 2024"
+      final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return 'Created on ${months[date.month - 1]} ${date.day}, ${date.year}';
+    } catch (e) {
+      // If parsing fails, try to return a formatted version
+      return 'Created: $dateString';
     }
   }
 }

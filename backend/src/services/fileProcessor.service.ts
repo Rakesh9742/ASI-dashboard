@@ -728,15 +728,90 @@ class FileProcessorService {
   }
 
   /**
-   * Find domain ID from domain name
+   * Map normalized domain name to standard domain name
+   */
+  private mapToStandardDomain(normalized: string): string {
+    // Handle numeric/invalid domains (like timestamps) - return empty to skip
+    if (/^\d+$/.test(normalized)) {
+      return ''; // Skip invalid numeric domains
+    }
+    
+    // Map "pd" abbreviation to Physical Design
+    if (normalized === 'pd' || normalized === 'physical') {
+      return 'physical design';
+    }
+    
+    // Map all variations to the 4 standard domains
+    if (normalized.includes('physical') && (normalized.includes('design') || normalized.includes('domain'))) {
+      return 'physical design';
+    } else if (normalized.includes('design') && normalized.includes('verification')) {
+      return 'design verification';
+    } else if (normalized.includes('register') && normalized.includes('transfer') && normalized.includes('level')) {
+      return 'register transfer level';
+    } else if (normalized.includes('rtl')) {
+      return 'register transfer level';
+    } else if (normalized.includes('testability') || normalized.includes('dft')) {
+      return 'design for testability';
+    } else if (normalized.includes('analog') && normalized.includes('layout')) {
+      return 'analog layout';
+    }
+    
+    return normalized;
+  }
+
+  /**
+   * Normalize domain name to handle typos and variations
+   */
+  private normalizeDomainName(domainName: string): string {
+    // Remove extra spaces and convert to lowercase
+    let normalized = domainName.trim().toLowerCase().replace(/\s+/g, ' ');
+    
+    // Fix common typos
+    normalized = normalized
+      .replace(/phyiscal/g, 'physical')      // Fix: phyiscal -> physical
+      .replace(/deisgn/g, 'design')          // Fix: deisgn -> design
+      .replace(/desing/g, 'design')          // Fix: desing -> design
+      .replace(/desgin/g, 'design')          // Fix: desgin -> design
+      .replace(/verifcation/g, 'verification')  // Fix: verifcation -> verification
+      .replace(/verificaton/g, 'verification'); // Fix: verificaton -> verification
+    
+    // Handle "physical domain" -> "physical design" (common typo)
+    if (normalized.includes('physical') && normalized.includes('domain')) {
+      normalized = normalized.replace(/domain/g, 'design');
+    }
+    
+    // Handle "design _verification" -> "design verification" (extra space/underscore)
+    normalized = normalized.replace(/_/g, ' ').replace(/\s+/g, ' ');
+    
+    // Map to standard domain name
+    normalized = this.mapToStandardDomain(normalized.trim());
+    
+    return normalized.trim();
+  }
+
+  /**
+   * Find domain ID from domain name (with typo handling)
    */
   async findDomainId(domainName: string): Promise<number | null> {
     if (!domainName) return null;
     
     try {
-      const result = await pool.query(
-        'SELECT id FROM domains WHERE LOWER(name) = LOWER($1) OR LOWER(code) = LOWER($1) AND is_active = true',
+      const normalized = this.normalizeDomainName(domainName);
+      
+      // First try exact match (case-insensitive)
+      let result = await pool.query(
+        'SELECT id FROM domains WHERE (LOWER(TRIM(name)) = LOWER($1) OR LOWER(code) = LOWER($1)) AND is_active = true',
         [domainName]
+      );
+      
+      if (result.rows.length > 0) {
+        return result.rows[0].id;
+      }
+      
+      // Then try normalized match (handles typos)
+      result = await pool.query(
+        'SELECT id FROM domains WHERE LOWER(TRIM(name)) = $1 AND is_active = true',
+        [normalized]
       );
       
       return result.rows.length > 0 ? result.rows[0].id : null;
@@ -791,10 +866,10 @@ class FileProcessorService {
         throw new Error('No data to save');
       }
 
-      // Get project and domain from first row
+      // Get project from file data, domain from filename (or file data as fallback)
       const firstRow = processedData[0];
-      const projectName = filenameProject || firstRow.project_name || null;
-      const domainName = filenameDomain || firstRow.domain_name || null;
+      const projectName = firstRow.project_name || null; // Project name comes from file data only
+      const domainName = filenameDomain || firstRow.domain_name || null; // Domain from filename takes priority
 
       if (!projectName) {
         throw new Error('Project name is required');
@@ -802,7 +877,74 @@ class FileProcessorService {
 
       console.log(`📄 [NEW SCHEMA] Saving to new Physical Design schema - Project: "${projectName}", Domain: "${domainName}"`);
 
-      // 1. Find or get project ID
+      // 1. Find or create domain ID (if domain name is provided)
+      let domainId: number | null = null;
+      if (domainName) {
+        // Normalize domain name: trim and handle typos
+        const normalizedDomainName = domainName.trim();
+        const normalizedForMatching = this.normalizeDomainName(normalizedDomainName);
+        
+        // Try to find existing domain (with typo handling)
+        domainId = await this.findDomainId(normalizedDomainName);
+        
+        if (!domainId) {
+          // Check if a similar domain exists (normalized match) to avoid duplicates
+          const similarDomainCheck = await client.query(
+            'SELECT id, name FROM domains WHERE LOWER(TRIM(name)) = $1 AND is_active = true',
+            [normalizedForMatching]
+          );
+          
+          if (similarDomainCheck.rows.length > 0) {
+            // Use existing domain with similar name (case-insensitive match)
+            domainId = similarDomainCheck.rows[0].id;
+            const existingName = similarDomainCheck.rows[0].name;
+            console.log(`\n${'='.repeat(60)}`);
+            console.log(`✅ [DOMAIN FOUND] Found similar domain (case-insensitive match):`);
+            console.log(`   Requested: "${normalizedDomainName}"`);
+            console.log(`   Found: "${existingName}" (ID: ${domainId})`);
+            console.log(`${'='.repeat(60)}\n`);
+          } else {
+            // Create domain if it doesn't exist
+            // Generate a code from the domain name (uppercase, replace spaces with underscores)
+            const domainCode = normalizedDomainName.toUpperCase().replace(/\s+/g, '_').substring(0, 50);
+            try {
+              const domainResult = await client.query(
+                'INSERT INTO domains (name, code, description, is_active) VALUES ($1, $2, $3, $4) RETURNING id',
+                [normalizedDomainName, domainCode, `Domain: ${normalizedDomainName}`, true]
+              );
+              domainId = domainResult.rows[0].id;
+              console.log(`\n${'='.repeat(60)}`);
+              console.log(`✅ [DOMAIN CREATED] New domain saved to database:`);
+              console.log(`   Domain Name: "${normalizedDomainName}"`);
+              console.log(`   Domain Code: "${domainCode}"`);
+              console.log(`   Domain ID: ${domainId}`);
+              console.log(`${'='.repeat(60)}\n`);
+            } catch (error: any) {
+              // If domain already exists (unique constraint), try to find it again
+              if (error.code === '23505') { // Unique violation
+                domainId = await this.findDomainId(normalizedDomainName);
+                if (domainId) {
+                  console.log(`\n${'='.repeat(60)}`);
+                  console.log(`✅ [DOMAIN FOUND] Existing domain found in database:`);
+                  console.log(`   Domain Name: "${normalizedDomainName}"`);
+                  console.log(`   Domain ID: ${domainId}`);
+                  console.log(`${'='.repeat(60)}\n`);
+                }
+              } else {
+                console.warn(`⚠️  [NEW SCHEMA] Could not create domain "${normalizedDomainName}":`, error.message);
+              }
+            }
+          }
+        } else {
+          console.log(`\n${'='.repeat(60)}`);
+          console.log(`✅ [DOMAIN FOUND] Existing domain found in database:`);
+          console.log(`   Domain Name: "${normalizedDomainName}"`);
+          console.log(`   Domain ID: ${domainId}`);
+          console.log(`${'='.repeat(60)}\n`);
+        }
+      }
+
+      // 2. Find or get project ID
       let projectId = await this.findProjectId(projectName);
       if (!projectId && projectName) {
         // Create project if it doesn't exist
@@ -818,13 +960,46 @@ class FileProcessorService {
         throw new Error(`Project "${projectName}" not found and could not be created`);
       }
 
-      // 2. Get block name from first row
+      // 2.5. Link domain to project if domain exists (for dashboard domain distribution)
+      if (domainId && projectId) {
+        try {
+          // Check if link already exists (project_domains uses composite primary key, no id column)
+          const linkCheck = await client.query(
+            'SELECT project_id, domain_id FROM project_domains WHERE project_id = $1 AND domain_id = $2',
+            [projectId, domainId]
+          );
+          
+          if (linkCheck.rows.length === 0) {
+            // Create link between project and domain (composite primary key handles conflicts)
+            await client.query(
+              'INSERT INTO project_domains (project_id, domain_id) VALUES ($1, $2) ON CONFLICT (project_id, domain_id) DO NOTHING',
+              [projectId, domainId]
+            );
+            console.log(`\n${'='.repeat(60)}`);
+            console.log(`✅ [DOMAIN LINK] Linked domain to project:`);
+            console.log(`   Domain: "${domainName}" (ID: ${domainId})`);
+            console.log(`   Project: "${projectName}" (ID: ${projectId})`);
+            console.log(`${'='.repeat(60)}\n`);
+          } else {
+            console.log(`📄 [NEW SCHEMA] Domain "${domainName}" already linked to project "${projectName}"`);
+          }
+        } catch (error: any) {
+          // Log but don't fail if linking fails (table might not exist yet)
+          console.warn(`⚠️  [NEW SCHEMA] Could not link domain to project:`, error.message);
+          // Check if table exists, if not, we'll skip linking (table will be created by migration)
+          if (error.code === '42P01') { // Table does not exist
+            console.warn(`⚠️  [NEW SCHEMA] project_domains table does not exist. Please run migration 006_create_projects.sql`);
+          }
+        }
+      }
+
+      // 3. Get block name from first row
       const blockName = firstRow.block_name;
       if (!blockName) {
         throw new Error('Block name is required');
       }
 
-      // 3. Find or create block
+      // 4. Find or create block
       let blockResult = await client.query(
         'SELECT id FROM blocks WHERE project_id = $1 AND block_name = $2',
         [projectId, blockName]
@@ -843,7 +1018,7 @@ class FileProcessorService {
         console.log(`📄 [NEW SCHEMA] Created new block: ${blockName} (ID: ${blockId})`);
       }
 
-      // 4. Get run info from first row
+      // 5. Get run info from first row
       const experiment = firstRow.experiment;
       const rtlTag = firstRow.rtl_tag;
       const userName = firstRow.user_name;
@@ -854,7 +1029,7 @@ class FileProcessorService {
         throw new Error('Experiment and RTL tag are required');
       }
 
-      // 5. Find or create run
+      // 6. Find or create run
       let runResult = await client.query(
         'SELECT id FROM runs WHERE block_id = $1 AND experiment = $2 AND rtl_tag = $3',
         [blockId, experiment, rtlTag]
@@ -878,7 +1053,7 @@ class FileProcessorService {
         console.log(`📄 [NEW SCHEMA] Created new run: ${experiment}/${rtlTag} (ID: ${runId})`);
       }
 
-      // 6. Process each stage
+      // 7. Process each stage
       let firstStageId: number | null = null;
       for (const stageData of processedData) {
         const stageName = stageData.stage;
@@ -924,13 +1099,13 @@ class FileProcessorService {
             stageData.run_status || null,
             stageData.runtime || null,
             stageData.memory_usage || null,
-            this.parseNumeric(stageData.log_errors) || 0,
-            this.parseNumeric(stageData.log_warnings) || 0,
-            this.parseNumeric(stageData.log_critical) || 0,
-            this.parseNumeric(stageData.area),
-            this.parseNumeric(stageData.inst_count),
-            this.parseNumeric(stageData.utilization),
-            this.parseNumeric(stageData.metal_density_max),
+            this.parseToString(stageData.log_errors) || '0',
+            this.parseToString(stageData.log_warnings) || '0',
+            this.parseToString(stageData.log_critical) || '0',
+            this.parseToString(stageData.area),
+            this.parseToString(stageData.inst_count),
+            this.parseToString(stageData.utilization),
+            this.parseToString(stageData.metal_density_max),
             stageData.min_pulse_width || null,
             stageData.min_period || null,
             stageData.double_switching || null,
@@ -1006,23 +1181,30 @@ class FileProcessorService {
     return null;
   }
 
+  private parseToString(value: any): string | null {
+    if (value === null || value === undefined) return null;
+    if (value === 'N/A' || value === 'NA') return 'N/A';
+    // Convert to string, preserving the original format
+    return String(value);
+  }
+
   private async saveTimingMetrics(client: any, stageId: number, stageData: any): Promise<void> {
     const timingData = {
-      internal_r2r_wns: this.parseNumeric(stageData.internal_timing_r2r_wns),
-      internal_r2r_tns: this.parseNumeric(stageData.internal_timing_r2r_tns),
-      internal_r2r_nvp: this.parseNumeric(stageData.internal_timing_r2r_nvp),
-      interface_i2r_wns: this.parseNumeric(stageData.interface_timing_i2r_wns),
-      interface_i2r_tns: this.parseNumeric(stageData.interface_timing_i2r_tns),
-      interface_i2r_nvp: this.parseNumeric(stageData.interface_timing_i2r_nvp),
-      interface_r2o_wns: this.parseNumeric(stageData.interface_timing_r2o_wns),
-      interface_r2o_tns: this.parseNumeric(stageData.interface_timing_r2o_tns),
-      interface_r2o_nvp: this.parseNumeric(stageData.interface_timing_r2o_nvp),
-      interface_i2o_wns: this.parseNumeric(stageData.interface_timing_i2o_wns),
-      interface_i2o_tns: this.parseNumeric(stageData.interface_timing_i2o_tns),
-      interface_i2o_nvp: this.parseNumeric(stageData.interface_timing_i2o_nvp),
-      hold_wns: this.parseNumeric(stageData.hold_wns),
-      hold_tns: this.parseNumeric(stageData.hold_tns),
-      hold_nvp: this.parseNumeric(stageData.hold_nvp),
+      internal_r2r_wns: this.parseToString(stageData.internal_timing_r2r_wns),
+      internal_r2r_tns: this.parseToString(stageData.internal_timing_r2r_tns),
+      internal_r2r_nvp: this.parseToString(stageData.internal_timing_r2r_nvp),
+      interface_i2r_wns: this.parseToString(stageData.interface_timing_i2r_wns),
+      interface_i2r_tns: this.parseToString(stageData.interface_timing_i2r_tns),
+      interface_i2r_nvp: this.parseToString(stageData.interface_timing_i2r_nvp),
+      interface_r2o_wns: this.parseToString(stageData.interface_timing_r2o_wns),
+      interface_r2o_tns: this.parseToString(stageData.interface_timing_r2o_tns),
+      interface_r2o_nvp: this.parseToString(stageData.interface_timing_r2o_nvp),
+      interface_i2o_wns: this.parseToString(stageData.interface_timing_i2o_wns),
+      interface_i2o_tns: this.parseToString(stageData.interface_timing_i2o_tns),
+      interface_i2o_nvp: this.parseToString(stageData.interface_timing_i2o_nvp),
+      hold_wns: this.parseToString(stageData.hold_wns),
+      hold_tns: this.parseToString(stageData.hold_tns),
+      hold_nvp: this.parseToString(stageData.hold_nvp),
     };
 
     await client.query(
@@ -1074,13 +1256,13 @@ class FileProcessorService {
 
   private async saveConstraintMetrics(client: any, stageId: number, stageData: any): Promise<void> {
     const constraintData = {
-      max_tran_wns: this.parseNumeric(stageData.max_tran_wns),
-      max_tran_nvp: this.parseNumeric(stageData.max_tran_nvp),
-      max_cap_wns: this.parseNumeric(stageData.max_cap_wns),
-      max_cap_nvp: this.parseNumeric(stageData.max_cap_nvp),
-      max_fanout_wns: this.parseNumeric(stageData.max_fanout_wns),
-      max_fanout_nvp: this.parseNumeric(stageData.max_fanout_nvp),
-      drc_violations: this.parseNumeric(stageData.drc_violations),
+      max_tran_wns: this.parseToString(stageData.max_tran_wns),
+      max_tran_nvp: this.parseToString(stageData.max_tran_nvp),
+      max_cap_wns: this.parseToString(stageData.max_cap_wns),
+      max_cap_nvp: this.parseToString(stageData.max_cap_nvp),
+      max_fanout_wns: this.parseToString(stageData.max_fanout_wns),
+      max_fanout_nvp: this.parseToString(stageData.max_fanout_nvp),
+      drc_violations: this.parseToString(stageData.drc_violations),
       congestion_hotspot: stageData.congestion_hotspot || null,
       noise_violations: stageData.noise_violations || null,
     };
@@ -1127,9 +1309,9 @@ class FileProcessorService {
         const pathGroupData = {
           group_type: 'setup',
           group_name: groupName,
-          wns: this.parseNumeric(group.wns),
-          tns: this.parseNumeric(group.tns),
-          nvp: this.parseNumeric(group.nvp),
+          wns: this.parseToString(group.wns),
+          tns: this.parseToString(group.tns),
+          nvp: this.parseToString(group.nvp),
         };
         
         await client.query(
@@ -1157,9 +1339,9 @@ class FileProcessorService {
         const pathGroupData = {
           group_type: 'hold',
           group_name: groupName,
-          wns: this.parseNumeric(group.wns),
-          tns: this.parseNumeric(group.tns),
-          nvp: this.parseNumeric(group.nvp),
+          wns: this.parseToString(group.wns),
+          tns: this.parseToString(group.tns),
+          nvp: this.parseToString(group.nvp),
         };
         
         await client.query(
@@ -1193,9 +1375,9 @@ class FileProcessorService {
         const violation = violationData as any;
         const drvData = {
           violation_type: violationType,
-          wns: this.parseNumeric(violation.wns),
-          tns: this.parseNumeric(violation.tns),
-          nvp: this.parseNumeric(violation.nvp),
+          wns: this.parseToString(violation.wns),
+          tns: this.parseToString(violation.tns),
+          nvp: this.parseToString(violation.nvp),
         };
         
         await client.query(
@@ -1322,9 +1504,9 @@ class FileProcessorService {
       // Get the first row's project and domain info (assuming all rows have same project/domain)
       const firstRow = processedData[0] || {};
       
-      // Priority: Use filename extraction first, then fall back to CSV data
-      const projectName = filenameProject || firstRow.project_name || null;
-      const domainName = filenameDomain || firstRow.domain_name || null;
+      // Project name comes from file data only, domain from filename (or file data as fallback)
+      const projectName = firstRow.project_name || null; // Project from file data only
+      const domainName = filenameDomain || firstRow.domain_name || null; // Domain from filename takes priority
       
       console.log(`📄 [FILE PROCESSOR] Final values - Project: "${projectName}", Domain: "${domainName}"`);
       console.log(`📄 [FILE PROCESSOR] Saving ${processedData.length} stage(s) to database`);
@@ -1427,29 +1609,43 @@ class FileProcessorService {
   }
 
   /**
-   * Extract project name and domain name from filename
-   * Format: projectname_domainname.csv or projectname_domainname.json
+   * Extract domain name from filename
+   * Format: projectname.domainname.json or projectname_domainname.json
+   * Returns only the domain name (everything after the first dot or underscore)
    */
-  private extractProjectAndDomainFromFilename(fileName: string): { projectName: string | null; domainName: string | null } {
+  private extractDomainFromFilename(fileName: string): string | null {
     // Remove file extension
     const nameWithoutExt = path.basename(fileName, path.extname(fileName));
     
-    // Split by underscore
-    const parts = nameWithoutExt.split('_');
+    // Try splitting by dot first (e.g., "proj.physical domain.json")
+    let parts: string[] = [];
+    let separator: string = '';
     
-    if (parts.length >= 2) {
-      // First part is project name
-      const projectName = parts[0].trim();
-      // Rest of the parts joined together is domain name
-      const domainName = parts.slice(1).join('_').trim();
-      
-      console.log(`📄 [FILE PROCESSOR] Extracted from filename - Project: "${projectName}", Domain: "${domainName}"`);
-      
-      return { projectName, domainName };
+    if (nameWithoutExt.includes('.')) {
+      // Split by dot
+      parts = nameWithoutExt.split('.');
+      separator = '.';
+    } else if (nameWithoutExt.includes('_')) {
+      // Split by underscore
+      parts = nameWithoutExt.split('_');
+      separator = '_';
+    } else {
+      console.log(`⚠️  [FILE PROCESSOR] Could not extract domain from filename: ${fileName} (no dot or underscore found)`);
+      return null;
     }
     
-    console.log(`⚠️  [FILE PROCESSOR] Could not extract project/domain from filename: ${fileName}`);
-    return { projectName: null, domainName: null };
+    if (parts.length >= 2) {
+      // Everything after the first separator is the domain name
+      const domainName = parts.slice(1).join(separator).trim();
+      
+      if (domainName) {
+        console.log(`📄 [FILE PROCESSOR] Extracted domain from filename: "${domainName}"`);
+        return domainName;
+      }
+    }
+    
+    console.log(`⚠️  [FILE PROCESSOR] Could not extract domain from filename: ${fileName}`);
+    return null;
   }
 
   /**
@@ -1464,8 +1660,18 @@ class FileProcessorService {
     console.log(`\n📄 [FILE PROCESSOR] Starting to process file: ${fileName}`);
     console.log(`📄 [FILE PROCESSOR] File type: ${fileExt}, Size: ${fileSize} bytes`);
     
-    // Extract project and domain from filename
-    const { projectName: filenameProject, domainName: filenameDomain } = this.extractProjectAndDomainFromFilename(fileName);
+    // Extract only domain from filename (project name will come from file data)
+    const filenameDomain = this.extractDomainFromFilename(fileName);
+    
+    // Print extracted domain prominently in terminal
+    if (filenameDomain) {
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`🌐 [DOMAIN EXTRACTION] Domain extracted from filename: "${filenameDomain}"`);
+      console.log(`   File: ${fileName}`);
+      console.log(`${'='.repeat(60)}\n`);
+    } else {
+      console.log(`\n⚠️  [DOMAIN EXTRACTION] No domain found in filename: ${fileName}\n`);
+    }
 
     let processedData: ProcessedFileData[];
 
@@ -1510,14 +1716,13 @@ class FileProcessorService {
         });
       }
       
-      // Override project/domain from filename if extracted
-      if (filenameProject || filenameDomain) {
-        console.log(`📄 [FILE PROCESSOR] Overriding with filename values - Project: "${filenameProject}", Domain: "${filenameDomain}"`);
-        // Update all rows with filename-extracted values
+      // Override domain from filename if extracted (project name comes from file data)
+      if (filenameDomain) {
+        console.log(`📄 [FILE PROCESSOR] Overriding domain with filename value: "${filenameDomain}"`);
+        // Update all rows with filename-extracted domain (keep project from file data)
         processedData = processedData.map(row => ({
           ...row,
-          project_name: filenameProject || row.project_name,
-          domain_name: filenameDomain || row.domain_name,
+          domain_name: filenameDomain,
         }));
       }
 
@@ -1530,7 +1735,7 @@ class FileProcessorService {
         fileSize,
         processedData,
         uploadedBy,
-        filenameProject || undefined,
+        undefined, // Project name comes from file data, not filename
         filenameDomain || undefined
       );
       console.log(`✅ [FILE PROCESSOR] Successfully saved file to database with ID: ${fileId}`);

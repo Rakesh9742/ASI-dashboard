@@ -224,6 +224,18 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                                 letterSpacing: 0.5,
                               ),
                             ),
+                            if (user?['domain_name'] != null) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                'Active Domain: ${user?['domain_name']}',
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.7),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w400,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -338,6 +350,17 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                             letterSpacing: 0.5,
                           ),
                         ),
+                        if (user?['domain_name'] != null) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            'Active Domain: ${user?['domain_name']}',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey.shade500,
+                              fontWeight: FontWeight.w400,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ],

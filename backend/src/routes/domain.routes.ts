@@ -3,11 +3,11 @@ import { pool } from '../config/database';
 
 const router = express.Router();
 
-// Get all domains
+// Get all domains (only active ones)
 router.get('/', async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT * FROM domains ORDER BY name ASC'
+      'SELECT * FROM domains WHERE is_active = true ORDER BY name ASC'
     );
     res.json(result.rows);
   } catch (error: any) {

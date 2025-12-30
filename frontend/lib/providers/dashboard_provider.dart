@@ -61,8 +61,31 @@ class DashboardNotifier extends StateNotifier<AsyncValue<Map<String, dynamic>>> 
       // Calculate Project Stats
       final totalProjects = projects.length;
       
-      // Calculate Domain Stats
-      final totalDomains = domains.length;
+      // Calculate Domain Stats - count unique active domains (normalize to handle typos)
+      final uniqueDomains = <String>{};
+      final domainDebugList = <String>[];
+      for (var d in domains) {
+        final name = d['name'] as String?;
+        final isActive = d['is_active'] as bool? ?? true;
+        if (name != null && name.isNotEmpty && isActive) {
+          // Normalize domain name to group typos together
+          final normalized = _normalizeDomainName(name);
+          // Only add if normalization returned a valid domain (not empty)
+          if (normalized.isNotEmpty) {
+            uniqueDomains.add(normalized);
+            domainDebugList.add('"$name" -> "$normalized"');
+          } else {
+            domainDebugList.add('"$name" -> SKIPPED (invalid)');
+          }
+        }
+      }
+      final totalDomains = uniqueDomains.length;
+      
+      // Debug: Print all domains for troubleshooting
+      print('📊 [DOMAIN COUNT] Total domains from API: ${domains.length}');
+      print('📊 [DOMAIN COUNT] Unique normalized domains: $totalDomains');
+      print('📊 [DOMAIN COUNT] Domain mappings: ${domainDebugList.join(", ")}');
+      print('📊 [DOMAIN COUNT] Unique normalized list: ${uniqueDomains.toList()}');
 
       // Construct the stats object expected by the UI
       final stats = {
@@ -149,7 +172,30 @@ final dashboardChartDataProvider = FutureProvider<Map<String, dynamic>>((ref) as
   try {
     final projects = await apiService.getProjects(token: token);
     final domains = await apiService.getDomains(token: token);
-    return _calculateChartData(projects, domains);
+    
+    // Also fetch EDA files to get domain distribution from actual file data
+    Map<String, int> edaDomainCounts = <String, int>{};
+    try {
+      final edaFilesResponse = await apiService.getEdaFiles(token: token, limit: 1000);
+      final edaFiles = edaFilesResponse['files'] ?? [];
+      
+      // Count domains from EDA files (will be normalized in _calculateChartData)
+      for (var file in edaFiles) {
+        final domainName = file['domain_name'] as String?;
+        if (domainName != null && domainName.isNotEmpty) {
+          // Store original name, normalization will happen in _calculateChartData
+          edaDomainCounts[domainName] = (edaDomainCounts[domainName] ?? 0) + 1;
+        }
+      }
+      
+      if (edaDomainCounts.isNotEmpty) {
+        print('✅ [DOMAIN CHART] Found ${edaDomainCounts.length} domains from EDA files: $edaDomainCounts');
+      }
+    } catch (e) {
+      print('⚠️ [DOMAIN CHART] Could not fetch EDA files for domain distribution: $e');
+    }
+    
+    return _calculateChartData(projects, domains, edaDomainCounts);
   } catch (e) {
     print('Error loading chart data: $e');
     // Return empty data on error to avoid breaking the UI
@@ -160,26 +206,152 @@ final dashboardChartDataProvider = FutureProvider<Map<String, dynamic>>((ref) as
   }
 });
 
-Map<String, dynamic> _calculateChartData(List<dynamic> projects, List<dynamic> domains) {
-  // 1. Domain Distribution
-  final domainNames = {for (var d in domains) d['id']: d['name']};
-  final domainCounts = <String, int>{};
+// Map normalized domain names to standard domain names
+String _mapToStandardDomain(String normalized) {
+  // Handle numeric/invalid domains (like timestamps) - skip them
+  if (RegExp(r'^\d+$').hasMatch(normalized)) {
+    return ''; // Return empty to skip invalid numeric domains
+  }
   
+  // Map "pd" abbreviation to Physical Design
+  if (normalized == 'pd' || normalized == 'physical') {
+    return 'physical design';
+  }
+  
+  // Map all variations to the standard domains (order matters - check more specific first)
+  
+  // Physical Design variations (check first as it's most common)
+  if (normalized.contains('physical') && (normalized.contains('design') || normalized.contains('domain'))) {
+    return 'physical design';
+  }
+  
+  // Design Verification variations
+  if (normalized.contains('design') && normalized.contains('verification')) {
+    return 'design verification';
+  }
+  
+  // Register Transfer Level / RTL variations
+  if ((normalized.contains('register') && normalized.contains('transfer') && normalized.contains('level')) || 
+      normalized.contains('rtl')) {
+    return 'register transfer level';
+  }
+  
+  // Design for Testability / DFT variations
+  if (normalized.contains('testability') || normalized.contains('dft')) {
+    return 'design for testability';
+  }
+  
+  // Analog Layout variations
+  if (normalized.contains('analog') && normalized.contains('layout')) {
+    return 'analog layout';
+  }
+  
+  // If no match found, return empty to skip invalid domains
+  return '';
+}
+
+// Normalize domain name to handle typos and variations
+String _normalizeDomainName(String name) {
+  // Remove extra spaces and convert to lowercase
+  String normalized = name.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+  
+  // Fix common typos
+  normalized = normalized
+      .replaceAll('phyiscal', 'physical')      // Fix: phyiscal -> physical
+      .replaceAll('deisgn', 'design')          // Fix: deisgn -> design
+      .replaceAll('desing', 'design')          // Fix: desing -> design
+      .replaceAll('desgin', 'design')          // Fix: desgin -> design
+      .replaceAll('verifcation', 'verification')  // Fix: verifcation -> verification
+      .replaceAll('verificaton', 'verification')  // Fix: verificaton -> verification
+      .replaceAll('verificaiton', 'verification'); // Fix: verificaiton -> verification
+  
+  // Handle "physical domain" -> "physical design" (common typo)
+  if (normalized.contains('physical') && normalized.contains('domain')) {
+    normalized = normalized.replaceAll('domain', 'design');
+  }
+  
+  // Handle "design _verification" -> "design verification" (extra space/underscore)
+  normalized = normalized.replaceAll('_', ' ').replaceAll(RegExp(r'\s+'), ' ');
+  
+  // Map to standard domain names
+  normalized = _mapToStandardDomain(normalized.trim());
+  
+  return normalized.trim();
+}
+
+Map<String, dynamic> _calculateChartData(List<dynamic> projects, List<dynamic> domains, [Map<String, int>? edaDomainCounts]) {
+  // 1. Domain Distribution
+  // Create a map of normalized domain names to their canonical (display) names
+  final domainNameMap = <String, String>{}; // normalized -> canonical
+  final domainNames = {for (var d in domains) d['id']: d['name']};
+  
+  // Build normalized name mapping from domains table
+  for (var d in domains) {
+    final canonicalName = d['name'] as String?;
+    if (canonicalName != null && canonicalName.isNotEmpty) {
+      final normalized = _normalizeDomainName(canonicalName);
+      // Use the first occurrence as canonical name (prefer proper case from database)
+      if (!domainNameMap.containsKey(normalized)) {
+        domainNameMap[normalized] = canonicalName.trim();
+      }
+    }
+  }
+  
+  final domainCounts = <String, int>{}; // Use normalized keys for counting
+  
+  // First, try to get domains from projects
   for (var p in projects) {
     // Handle both List<int> and List<dynamic> for domain_ids
     final pDomains = p['domain_ids'];
-    if (pDomains is List) {
+    if (pDomains is List && pDomains.isNotEmpty) {
        for (var id in pDomains) {
          final name = domainNames[id] ?? 'Unknown';
-         domainCounts[name] = (domainCounts[name] ?? 0) + 1;
+         if (name != 'Unknown' && name.isNotEmpty) {
+           final normalized = _normalizeDomainName(name);
+           final canonical = domainNameMap[normalized] ?? name.trim();
+           domainNameMap[normalized] = canonical; // Ensure canonical name is set
+           domainCounts[normalized] = (domainCounts[normalized] ?? 0) + 1;
+         }
        }
-    } else if (p['domains'] is List) {
+    } else if (p['domains'] is List && (p['domains'] as List).isNotEmpty) {
       // Handle the case where domains are already populated (from backend)
       for (var d in p['domains']) {
          final name = d['name'] ?? 'Unknown';
-         domainCounts[name] = (domainCounts[name] ?? 0) + 1;
+         if (name != null && name != 'Unknown' && name.toString().isNotEmpty) {
+           final normalized = _normalizeDomainName(name.toString());
+           final canonical = domainNameMap[normalized] ?? name.toString().trim();
+           domainNameMap[normalized] = canonical; // Ensure canonical name is set
+           domainCounts[normalized] = (domainCounts[normalized] ?? 0) + 1;
+         }
       }
     }
+  }
+  
+  // Merge EDA file domain counts (normalize them first)
+  if (edaDomainCounts != null && edaDomainCounts.isNotEmpty) {
+    for (var entry in edaDomainCounts.entries) {
+      // Normalize the domain name from EDA files to handle typos
+      final normalized = _normalizeDomainName(entry.key);
+      // Find canonical name from domains table or use the normalized key
+      final canonical = domainNameMap[normalized] ?? normalized;
+      domainNameMap[normalized] = canonical;
+      domainCounts[normalized] = (domainCounts[normalized] ?? 0) + entry.value;
+    }
+  }
+  
+  // Convert back to canonical names for display (remove duplicates)
+  final finalDomainCounts = <String, int>{};
+  for (var entry in domainCounts.entries) {
+    final canonical = domainNameMap[entry.key] ?? entry.key;
+    // Use canonical name, but if multiple normalized names map to same canonical, sum them
+    finalDomainCounts[canonical] = (finalDomainCounts[canonical] ?? 0) + entry.value;
+  }
+  
+  // Debug: Print domain counts for troubleshooting
+  if (finalDomainCounts.isEmpty) {
+    print('⚠️ [DOMAIN CHART] No domains found. Projects: ${projects.length}, EDA domains: ${edaDomainCounts?.length ?? 0}');
+  } else {
+    print('✅ [DOMAIN CHART] Domain distribution (deduplicated): $finalDomainCounts');
   }
 
   // 2. Project Trend (Last 6 months)
@@ -215,7 +387,7 @@ Map<String, dynamic> _calculateChartData(List<dynamic> projects, List<dynamic> d
   }
 
   return {
-    'domainDistribution': domainCounts,
+    'domainDistribution': finalDomainCounts,
     'projectTrend': trendData,
   };
 }

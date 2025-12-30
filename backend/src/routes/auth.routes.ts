@@ -152,7 +152,11 @@ router.get('/me', authenticate, async (req, res) => {
     }
 
     const result = await pool.query(
-      'SELECT id, username, email, full_name, role, is_active, created_at, last_login FROM users WHERE id = $1',
+      `SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.created_at, u.last_login,
+              u.domain_id, d.name as domain_name, d.code as domain_code
+       FROM users u
+       LEFT JOIN domains d ON u.domain_id = d.id
+       WHERE u.id = $1`,
       [userId]
     );
 

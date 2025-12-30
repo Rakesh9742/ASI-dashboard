@@ -526,13 +526,40 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       }
     }
 
-    final activeStages = _getActiveStages();
-    final stageNames = activeStages
-        .map((s) => s['stage']?.toString())
-        .where((s) => s != null && s.isNotEmpty)
-        .cast<String>()
-        .toSet()
-        .toList();
+    // Get all stages (not filtered) for the dropdown options
+    final run = _getActiveRun();
+    List<String> stageNames = [];
+    if (run != null) {
+      final stagesValue = run['stages'];
+      final stages = (stagesValue is Map) 
+          ? Map<String, dynamic>.from(stagesValue) 
+          : <String, dynamic>{};
+      
+      // Get all stage names from all stages
+      for (var value in stages.values) {
+        if (value is Map) {
+          final stageMap = value is Map<String, dynamic> 
+              ? value 
+              : Map<String, dynamic>.from(value);
+          final stageName = stageMap['stage']?.toString();
+          if (stageName != null && stageName.isNotEmpty) {
+            stageNames.add(stageName);
+          }
+        }
+      }
+      // Remove duplicates and sort
+      stageNames = stageNames.toSet().toList();
+      // Sort by stage order
+      final order = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+      stageNames.sort((a, b) {
+        final aIdx = order.indexOf(a.toLowerCase());
+        final bIdx = order.indexOf(b.toLowerCase());
+        if (aIdx == -1 && bIdx == -1) return a.compareTo(b);
+        if (aIdx == -1) return 1;
+        if (bIdx == -1) return -1;
+        return aIdx.compareTo(bIdx);
+      });
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1303,43 +1330,59 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         }
       }
       
-      final color = colors[i % colors.length];
-      final label = '$group - $type';
-      
-      lineBarsData.add(
-        LineChartBarData(
-          spots: points,
-          isCurved: true,
-          color: color,
-          barWidth: 3,
-          isStrokeCapRound: true,
-          dotData: const FlDotData(show: true),
-          belowBarData: BarAreaData(show: false),
-        ),
-      );
-      
-      legendItems.add(
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 16,
-              height: 3,
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.circular(2),
+      // Only add line data if there are points to display
+      if (points.isNotEmpty) {
+        final color = colors[i % colors.length];
+        final label = '$group - $type';
+        
+        lineBarsData.add(
+          LineChartBarData(
+            spots: points,
+            isCurved: true,
+            color: color,
+            barWidth: 3,
+            isStrokeCapRound: true,
+            dotData: const FlDotData(show: true),
+            belowBarData: BarAreaData(show: false),
+          ),
+        );
+        
+        legendItems.add(
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 16,
+                height: 3,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 11,
-                color: color,
-                fontWeight: FontWeight.w600,
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: color,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
+        );
+      }
+    }
+    
+    // Check if we have any data to display
+    if (lineBarsData.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text(
+            'No data available for the selected metrics and stages',
+            style: TextStyle(color: Colors.grey),
+          ),
         ),
       );
     }
@@ -1366,7 +1409,18 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     if (hasData) {
       final range = maxY - minY;
       // Add 10% padding on each side, with minimum padding
-      final yPadding = (range * 0.1).clamp(0.1, (range * 0.15).abs());
+      // Handle case when range is 0 or very small
+      double yPadding;
+      if (range == 0) {
+        // When all values are the same, use a percentage of the absolute value
+        final absValue = minY.abs();
+        yPadding = absValue > 0 ? absValue * 0.1 : 0.1;
+      } else {
+        // Normal case: clamp between 10% and 15% of range, but ensure minimum
+        final minPadding = range * 0.1;
+        final maxPadding = range * 0.15;
+        yPadding = minPadding.clamp(0.1, maxPadding);
+      }
       
       // Ensure we show zero line if values span both positive and negative
       if (minY < 0 && maxY > 0) {
@@ -1488,6 +1542,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
               ),
               minY: minY,
               maxY: maxY,
+              minX: 0,
+              maxX: stages.length > 1 ? (stages.length - 1).toDouble() : (stages.length > 0 ? 1.0 : 1.0),
             ),
           ),
         ),
