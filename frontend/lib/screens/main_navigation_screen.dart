@@ -49,8 +49,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
         children: [
           // Professional Sidebar Navigation
           AnimatedContainer(
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOut,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
             width: _isSidebarOpen ? 280 : 0,
             child: _isSidebarOpen
                 ? Container(
@@ -105,27 +105,34 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                         ),
                       ),
                       const SizedBox(width: 12),
-                      const Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'ASI Dashboard',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 0.5,
+                      Flexible(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'ASI Dashboard',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 0.5,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
                             ),
-                          ),
-                          Text(
-                            'Control Panel',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w300,
+                            Text(
+                              'Control Panel',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w300,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -148,6 +155,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                           label: 'Dashboard',
                           index: 0,
                           isSelected: _selectedIndex == 0,
+                          isAdmin: isAdmin,
+                          isEngineer: isEngineer,
                         ),
                         const SizedBox(height: 8),
                         _buildNavItem(
@@ -157,6 +166,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                           label: isEngineer ? 'My Projects' : 'Projects',
                           index: 1,
                           isSelected: _selectedIndex == 1,
+                          isAdmin: isAdmin,
+                          isEngineer: isEngineer,
                         ),
                         const SizedBox(height: 8),
                         _buildNavItem(
@@ -166,6 +177,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                           label: 'View',
                           index: isEngineer ? 2 : 2,
                           isSelected: _selectedIndex == (isEngineer ? 2 : 2),
+                          isAdmin: isAdmin,
+                          isEngineer: isEngineer,
                         ),
                         if (isAdmin) ...[
                           const SizedBox(height: 8),
@@ -176,6 +189,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                             label: 'Users',
                             index: 3,
                             isSelected: _selectedIndex == 3,
+                            isAdmin: isAdmin,
+                            isEngineer: isEngineer,
                           ),
                         ],
                       ],
@@ -211,6 +226,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             Text(
                               user?['full_name'] ?? user?['username'] ?? 'User',
@@ -220,6 +236,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                                 fontWeight: FontWeight.w600,
                               ),
                               overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
                             ),
                             Text(
                               user?['role']?.toUpperCase() ?? 'USER',
@@ -229,6 +246,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                                 fontWeight: FontWeight.w500,
                                 letterSpacing: 0.5,
                               ),
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
                             ),
                             if (user?['domain_name'] != null) ...[
                               const SizedBox(height: 4),
@@ -240,6 +259,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                                   fontWeight: FontWeight.w400,
                                 ),
                                 overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
                               ),
                             ],
                           ],
@@ -292,8 +312,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
             child: IconButton(
               icon: Icon(Icons.refresh, color: Colors.grey.shade700),
               onPressed: () {
-                // Refresh current screen
-                setState(() {});
+                // Refresh current screen by refreshing the current screen's data
+                // This will be handled by individual screens if needed
               },
               tooltip: 'Refresh',
             ),
@@ -350,38 +370,47 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                       ),
                     ),
                     const SizedBox(width: 12),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          user?['full_name'] ?? user?['username'] ?? 'User',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15,
+                    Flexible(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            user?['full_name'] ?? user?['username'] ?? 'User',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
                           ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          user?['role']?.toUpperCase() ?? 'USER',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey.shade600,
-                            fontWeight: FontWeight.w500,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                        if (user?['domain_name'] != null) ...[
                           const SizedBox(height: 2),
                           Text(
-                            'Active Domain: ${user?['domain_name']}',
+                            user?['role']?.toUpperCase() ?? 'USER',
                             style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.grey.shade500,
-                              fontWeight: FontWeight.w400,
+                              fontSize: 11,
+                              color: Colors.grey.shade600,
+                              fontWeight: FontWeight.w500,
+                              letterSpacing: 0.5,
                             ),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
                           ),
+                          if (user?['domain_name'] != null) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              'Active Domain: ${user?['domain_name']}',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: Colors.grey.shade500,
+                                fontWeight: FontWeight.w400,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
+                          ],
                         ],
-                      ],
+                      ),
                     ),
                   ],
                 ),
@@ -439,13 +468,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     required String label,
     required int index,
     required bool isSelected,
+    required bool isAdmin,
+    required bool isEngineer,
   }) {
-    final authState = ref.watch(authProvider);
-    final user = authState.user;
-    final userRole = user?['role'];
-    final isAdmin = userRole == 'admin';
-    final isEngineer = userRole == 'engineer';
-
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12),
       child: Material(
@@ -479,8 +504,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
           },
           borderRadius: BorderRadius.circular(12),
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            curve: Curves.easeInOut,
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOut,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             decoration: BoxDecoration(
               color: isSelected
@@ -498,7 +523,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
               children: [
                 // Active Indicator
                 AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
+                  duration: const Duration(milliseconds: 150),
                   width: 4,
                   height: 24,
                   decoration: BoxDecoration(
@@ -516,17 +541,13 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                   ),
                 ),
                 const SizedBox(width: 16),
-                // Icon
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 200),
-                  child: Icon(
-                    isSelected ? selectedIcon : icon,
-                    key: ValueKey(isSelected),
-                    color: isSelected
-                        ? Colors.purple.shade300
-                        : Colors.white.withOpacity(0.7),
-                    size: 24,
-                  ),
+                // Icon - simplified without AnimatedSwitcher
+                Icon(
+                  isSelected ? selectedIcon : icon,
+                  color: isSelected
+                      ? Colors.purple.shade300
+                      : Colors.white.withOpacity(0.7),
+                  size: 24,
                 ),
                 const SizedBox(width: 16),
                 // Label

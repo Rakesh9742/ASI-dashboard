@@ -523,6 +523,520 @@ router.post('/external/upload', authenticateApiKey, upload.single('file'), async
 });
 
 /**
+ * POST /api/eda-files/external/replace-stage
+ * External API endpoint for developers to delete and replace a specific stage
+ * Requires API key authentication via X-API-Key header
+ * Accepts file upload (CSV or JSON) and query/form parameters: project, block_name, experiment, rtl_tag, stage_name
+ * Processes the uploaded file and replaces the specified stage with data from the file
+ */
+router.post('/external/replace-stage', authenticateApiKey, upload.single('file'), async (req: express.Request, res) => {
+  const client = await pool.connect();
+  
+  try {
+    // Get uploaded file
+    const file = (req as any).file as Express.Multer.File;
+    if (!file) {
+      return res.status(400).json({ 
+        error: 'No file uploaded',
+        message: 'Please provide a file in the request. Use multipart/form-data with field name "file".'
+      });
+    }
+
+    // Extract identifiers from query params or form fields
+    const projectName = req.body.project || req.query.project;
+    const blockName = req.body.block_name || req.query.block_name;
+    const experiment = req.body.experiment || req.query.experiment;
+    const rtlTag = req.body.rtl_tag || req.query.rtl_tag;
+    const stageName = req.body.stage_name || req.query.stage_name;
+
+    // Validate required parameters
+    if (!projectName || !blockName || !experiment || !rtlTag || !stageName) {
+      // Delete the uploaded file if validation fails
+      try {
+        fs.unlinkSync(file.path);
+      } catch (e) {
+        // Ignore deletion errors
+      }
+      return res.status(400).json({
+        error: 'Missing required parameters',
+        message: 'Please provide: project, block_name, experiment, rtl_tag, and stage_name',
+        required: ['project', 'block_name', 'experiment', 'rtl_tag', 'stage_name'],
+        note: 'You can provide these as query parameters or form fields along with the file upload'
+      });
+    }
+
+    const fileName = file.originalname;
+    const filePath = file.path;
+    const fileSize = file.size;
+    const fileType = path.extname(fileName).toLowerCase().slice(1);
+
+    console.log(`🔄 [EXTERNAL API] Replace stage request: ${projectName}/${blockName}/${experiment}/${rtlTag}/${stageName}`);
+    console.log(`📤 [EXTERNAL API] File received: ${fileName} (${fileSize} bytes, type: ${fileType})`);
+
+    // Validate file type
+    if (fileType !== 'csv' && fileType !== 'json') {
+      // Delete the uploaded file
+      try {
+        fs.unlinkSync(filePath);
+      } catch (e) {
+        // Ignore deletion errors
+      }
+      return res.status(400).json({
+        error: 'Invalid file type',
+        message: 'Only CSV and JSON files are allowed',
+        received: fileType,
+        allowed: ['csv', 'json']
+      });
+    }
+
+    // Process the file to extract stage data
+    let processedData: any[];
+    try {
+      if (fileType === 'csv') {
+        processedData = await fileProcessorService.processCSVFile(filePath);
+      } else {
+        processedData = await fileProcessorService.processJSONFile(filePath);
+      }
+
+      if (processedData.length === 0) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch (e) {
+          // Ignore deletion errors
+        }
+        return res.status(400).json({
+          error: 'No data found in file',
+          message: 'The uploaded file does not contain any valid stage data'
+        });
+      }
+
+      console.log(`📄 [EXTERNAL API] Processed ${processedData.length} stage(s) from file`);
+    } catch (parseError: any) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (e) {
+        // Ignore deletion errors
+      }
+      return res.status(400).json({
+        error: 'File parsing failed',
+        message: parseError.message || 'Failed to parse the uploaded file'
+      });
+    }
+
+    // Find the stage data that matches the requested stage_name
+    // The file might contain multiple stages, we need to find the one matching stage_name
+    let stageData = processedData.find(row => 
+      row.stage && row.stage.toLowerCase() === stageName.toLowerCase()
+    );
+
+    // If not found by stage name, use the first row (assuming single stage file)
+    if (!stageData && processedData.length === 1) {
+      stageData = processedData[0];
+      // Override the stage name with the requested one
+      stageData.stage = stageName;
+      console.log(`📄 [EXTERNAL API] Using first row from file, setting stage to: ${stageName}`);
+    }
+
+    if (!stageData) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (e) {
+        // Ignore deletion errors
+      }
+      return res.status(400).json({
+        error: 'Stage not found in file',
+        message: `The uploaded file does not contain data for stage "${stageName}"`,
+        available_stages: processedData.map(row => row.stage).filter(s => s).join(', ') || 'none'
+      });
+    }
+
+    // Override identifiers from query/form params to ensure they match
+    stageData.project_name = projectName;
+    stageData.block_name = blockName;
+    stageData.experiment = experiment;
+    stageData.rtl_tag = rtlTag;
+    stageData.stage = stageName;
+
+    console.log(`📄 [EXTERNAL API] Using stage data for replacement:`, {
+      project: stageData.project_name,
+      block: stageData.block_name,
+      experiment: stageData.experiment,
+      rtl_tag: stageData.rtl_tag,
+      stage: stageData.stage
+    });
+
+    await client.query('BEGIN');
+
+    // 1. Find project
+    const projectResult = await client.query(
+      'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
+      [projectName]
+    );
+
+    if (projectResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        error: 'Project not found',
+        message: `Project "${projectName}" does not exist`
+      });
+    }
+
+    const projectId = projectResult.rows[0].id;
+
+    // 2. Find block
+    const blockResult = await client.query(
+      'SELECT id FROM blocks WHERE project_id = $1 AND LOWER(block_name) = LOWER($2)',
+      [projectId, blockName]
+    );
+
+    if (blockResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        error: 'Block not found',
+        message: `Block "${blockName}" not found in project "${projectName}"`
+      });
+    }
+
+    const blockId = blockResult.rows[0].id;
+
+    // 3. Find run
+    const runResult = await client.query(
+      'SELECT id FROM runs WHERE block_id = $1 AND experiment = $2 AND rtl_tag = $3',
+      [blockId, experiment, rtlTag]
+    );
+
+    if (runResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        error: 'Run not found',
+        message: `Run with experiment "${experiment}" and rtl_tag "${rtlTag}" not found`
+      });
+    }
+
+    const runId = runResult.rows[0].id;
+
+    // 4. Find and delete existing stage (CASCADE will delete related records)
+    const existingStageResult = await client.query(
+      'SELECT id FROM stages WHERE run_id = $1 AND stage_name = $2',
+      [runId, stageName]
+    );
+
+    if (existingStageResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        error: 'Stage not found',
+        message: `Stage "${stageName}" not found in the specified run`
+      });
+    }
+
+    const oldStageId = existingStageResult.rows[0].id;
+
+    // Delete the stage (CASCADE will handle related tables)
+    await client.query(
+      'DELETE FROM stages WHERE id = $1',
+      [oldStageId]
+    );
+
+    console.log(`🗑️  [EXTERNAL API] Deleted old stage: ${stageName} (ID: ${oldStageId})`);
+
+    // 5. Parse timestamp from stage data
+    const timestamp = stageData.run_end_time || stageData.timestamp 
+      ? new Date(stageData.run_end_time || stageData.timestamp) 
+      : new Date();
+
+    // Helper functions for parsing (same as fileProcessor)
+    const parseToString = (value: any): string | null => {
+      if (value === null || value === undefined) return null;
+      if (value === 'N/A' || value === 'NA') return 'N/A';
+      return String(value);
+    };
+
+    // 6. Insert new stage
+    const stageResult = await client.query(
+      `INSERT INTO stages (
+        run_id, stage_name, timestamp, stage_directory, run_status, runtime, memory_usage,
+        log_errors, log_warnings, log_critical, area, inst_count, utilization,
+        metal_density_max, min_pulse_width, min_period, double_switching
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      RETURNING id`,
+      [
+        runId,
+        stageName,
+        timestamp,
+        stageData.stage_directory || null,
+        stageData.run_status || null,
+        stageData.runtime || null,
+        stageData.memory_usage || null,
+        parseToString(stageData.log_errors) || '0',
+        parseToString(stageData.log_warnings) || '0',
+        parseToString(stageData.log_critical) || '0',
+        parseToString(stageData.area),
+        parseToString(stageData.inst_count),
+        parseToString(stageData.utilization),
+        parseToString(stageData.metal_density_max),
+        stageData.min_pulse_width || null,
+        stageData.min_period || null,
+        stageData.double_switching || null,
+      ]
+    );
+
+    const newStageId = stageResult.rows[0].id;
+    console.log(`✅ [EXTERNAL API] Created new stage: ${stageName} (ID: ${newStageId})`);
+
+    // 7. Save timing metrics if provided
+    if (stageData.internal_timing_r2r_wns !== undefined || 
+        stageData.interface_timing_i2r_wns !== undefined ||
+        stageData.hold_wns !== undefined) {
+      await client.query(
+        `INSERT INTO stage_timing_metrics (
+          stage_id, internal_r2r_wns, internal_r2r_tns, internal_r2r_nvp,
+          interface_i2r_wns, interface_i2r_tns, interface_i2r_nvp,
+          interface_r2o_wns, interface_r2o_tns, interface_r2o_nvp,
+          interface_i2o_wns, interface_i2o_tns, interface_i2o_nvp,
+          hold_wns, hold_tns, hold_nvp
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        ON CONFLICT (stage_id) DO UPDATE SET
+          internal_r2r_wns = EXCLUDED.internal_r2r_wns,
+          internal_r2r_tns = EXCLUDED.internal_r2r_tns,
+          internal_r2r_nvp = EXCLUDED.internal_r2r_nvp,
+          interface_i2r_wns = EXCLUDED.interface_i2r_wns,
+          interface_i2r_tns = EXCLUDED.interface_i2r_tns,
+          interface_i2r_nvp = EXCLUDED.interface_i2r_nvp,
+          interface_r2o_wns = EXCLUDED.interface_r2o_wns,
+          interface_r2o_tns = EXCLUDED.interface_r2o_tns,
+          interface_r2o_nvp = EXCLUDED.interface_r2o_nvp,
+          interface_i2o_wns = EXCLUDED.interface_i2o_wns,
+          interface_i2o_tns = EXCLUDED.interface_i2o_tns,
+          interface_i2o_nvp = EXCLUDED.interface_i2o_nvp,
+          hold_wns = EXCLUDED.hold_wns,
+          hold_tns = EXCLUDED.hold_tns,
+          hold_nvp = EXCLUDED.hold_nvp`,
+        [
+          newStageId,
+          parseToString(stageData.internal_timing_r2r_wns),
+          parseToString(stageData.internal_timing_r2r_tns),
+          parseToString(stageData.internal_timing_r2r_nvp),
+          parseToString(stageData.interface_timing_i2r_wns),
+          parseToString(stageData.interface_timing_i2r_tns),
+          parseToString(stageData.interface_timing_i2r_nvp),
+          parseToString(stageData.interface_timing_r2o_wns),
+          parseToString(stageData.interface_timing_r2o_tns),
+          parseToString(stageData.interface_timing_r2o_nvp),
+          parseToString(stageData.interface_timing_i2o_wns),
+          parseToString(stageData.interface_timing_i2o_tns),
+          parseToString(stageData.interface_timing_i2o_nvp),
+          parseToString(stageData.hold_wns),
+          parseToString(stageData.hold_tns),
+          parseToString(stageData.hold_nvp),
+        ]
+      );
+    }
+
+    // 8. Save constraint metrics if provided
+    if (stageData.max_tran_wns !== undefined || stageData.drc_violations !== undefined) {
+      await client.query(
+        `INSERT INTO stage_constraint_metrics (
+          stage_id, max_tran_wns, max_tran_nvp, max_cap_wns, max_cap_nvp,
+          max_fanout_wns, max_fanout_nvp, drc_violations, congestion_hotspot, noise_violations
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (stage_id) DO UPDATE SET
+          max_tran_wns = EXCLUDED.max_tran_wns,
+          max_tran_nvp = EXCLUDED.max_tran_nvp,
+          max_cap_wns = EXCLUDED.max_cap_wns,
+          max_cap_nvp = EXCLUDED.max_cap_nvp,
+          max_fanout_wns = EXCLUDED.max_fanout_wns,
+          max_fanout_nvp = EXCLUDED.max_fanout_nvp,
+          drc_violations = EXCLUDED.drc_violations,
+          congestion_hotspot = EXCLUDED.congestion_hotspot,
+          noise_violations = EXCLUDED.noise_violations`,
+        [
+          newStageId,
+          parseToString(stageData.max_tran_wns),
+          parseToString(stageData.max_tran_nvp),
+          parseToString(stageData.max_cap_wns),
+          parseToString(stageData.max_cap_nvp),
+          parseToString(stageData.max_fanout_wns),
+          parseToString(stageData.max_fanout_nvp),
+          parseToString(stageData.drc_violations),
+          stageData.congestion_hotspot || null,
+          stageData.noise_violations || null,
+        ]
+      );
+    }
+
+    // 9. Save power/IR/EM checks if provided
+    if (stageData.ir_static !== undefined || stageData.em_power !== undefined) {
+      await client.query(
+        `INSERT INTO power_ir_em_checks (
+          stage_id, ir_static, ir_dynamic, em_power, em_signal
+        ) VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (stage_id) DO UPDATE SET
+          ir_static = EXCLUDED.ir_static,
+          ir_dynamic = EXCLUDED.ir_dynamic,
+          em_power = EXCLUDED.em_power,
+          em_signal = EXCLUDED.em_signal`,
+        [
+          newStageId,
+          parseToString(stageData.ir_static),
+          parseToString(stageData.ir_dynamic),
+          parseToString(stageData.em_power),
+          parseToString(stageData.em_signal),
+        ]
+      );
+    }
+
+    // 10. Save physical verification if provided
+    if (stageData.pv_drc_base !== undefined || stageData.lvs !== undefined) {
+      await client.query(
+        `INSERT INTO physical_verification (
+          stage_id, pv_drc_base, pv_drc_metal, pv_drc_antenna, lvs, erc, r2g_lec, g2g_lec
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (stage_id) DO UPDATE SET
+          pv_drc_base = EXCLUDED.pv_drc_base,
+          pv_drc_metal = EXCLUDED.pv_drc_metal,
+          pv_drc_antenna = EXCLUDED.pv_drc_antenna,
+          lvs = EXCLUDED.lvs,
+          erc = EXCLUDED.erc,
+          r2g_lec = EXCLUDED.r2g_lec,
+          g2g_lec = EXCLUDED.g2g_lec`,
+        [
+          newStageId,
+          parseToString(stageData.pv_drc_base),
+          parseToString(stageData.pv_drc_metal),
+          parseToString(stageData.pv_drc_antenna),
+          parseToString(stageData.lvs),
+          parseToString(stageData.erc),
+          parseToString(stageData.r2g_lec),
+          parseToString(stageData.g2g_lec),
+        ]
+      );
+    }
+
+    // 11. Save path groups if provided
+    if (stageData.setup_path_groups || stageData.hold_path_groups) {
+      // Save setup path groups
+      if (stageData.setup_path_groups && typeof stageData.setup_path_groups === 'object') {
+        for (const [groupName, groupData] of Object.entries(stageData.setup_path_groups)) {
+          const group = groupData as any;
+          await client.query(
+            `INSERT INTO path_groups (stage_id, group_type, group_name, wns, tns, nvp)
+             VALUES ($1, 'setup', $2, $3, $4, $5)
+             ON CONFLICT (stage_id, group_type, group_name) DO UPDATE SET
+               wns = EXCLUDED.wns, tns = EXCLUDED.tns, nvp = EXCLUDED.nvp`,
+            [
+              newStageId,
+              groupName,
+              parseToString(group.wns),
+              parseToString(group.tns),
+              parseToString(group.nvp),
+            ]
+          );
+        }
+      }
+
+      // Save hold path groups
+      if (stageData.hold_path_groups && typeof stageData.hold_path_groups === 'object') {
+        for (const [groupName, groupData] of Object.entries(stageData.hold_path_groups)) {
+          const group = groupData as any;
+          await client.query(
+            `INSERT INTO path_groups (stage_id, group_type, group_name, wns, tns, nvp)
+             VALUES ($1, 'hold', $2, $3, $4, $5)
+             ON CONFLICT (stage_id, group_type, group_name) DO UPDATE SET
+               wns = EXCLUDED.wns, tns = EXCLUDED.tns, nvp = EXCLUDED.nvp`,
+            [
+              newStageId,
+              groupName,
+              parseToString(group.wns),
+              parseToString(group.tns),
+              parseToString(group.nvp),
+            ]
+          );
+        }
+      }
+    }
+
+    // 12. Save DRV violations if provided
+    if (stageData.drv_violations && typeof stageData.drv_violations === 'object') {
+      for (const [violationType, violationData] of Object.entries(stageData.drv_violations)) {
+        const violation = violationData as any;
+        await client.query(
+          `INSERT INTO drv_violations (stage_id, violation_type, wns, tns, nvp)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (stage_id, violation_type) DO UPDATE SET
+             wns = EXCLUDED.wns, tns = EXCLUDED.tns, nvp = EXCLUDED.nvp`,
+          [
+            newStageId,
+            violationType,
+            parseToString(violation.wns),
+            parseToString(violation.tns),
+            parseToString(violation.nvp),
+          ]
+        );
+      }
+    }
+
+    // 13. Save AI summary if provided
+    if (stageData.ai_summary || stageData.ai_based_overall_summary) {
+      await client.query(
+        `INSERT INTO ai_summaries (stage_id, summary_text)
+         VALUES ($1, $2)
+         ON CONFLICT (stage_id) DO UPDATE SET summary_text = EXCLUDED.summary_text`,
+        [newStageId, stageData.ai_summary || stageData.ai_based_overall_summary]
+      );
+    }
+
+    await client.query('COMMIT');
+    client.release();
+
+    // Clean up uploaded file
+    try {
+      fs.unlinkSync(filePath);
+      console.log(`🗑️  [EXTERNAL API] Cleaned up uploaded file: ${fileName}`);
+    } catch (e) {
+      console.warn(`⚠️  [EXTERNAL API] Could not delete uploaded file: ${fileName}`, e);
+    }
+
+    console.log(`✅ [EXTERNAL API] Successfully replaced stage: ${stageName}`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Stage deleted and replaced successfully',
+      data: {
+        project: projectName,
+        block_name: blockName,
+        experiment: experiment,
+        rtl_tag: rtlTag,
+        stage_name: stageName,
+        old_stage_id: oldStageId,
+        new_stage_id: newStageId,
+        file_name: fileName,
+        replaced_at: new Date().toISOString()
+      }
+    });
+  } catch (error: any) {
+    await client.query('ROLLBACK');
+    client.release();
+    
+    // Clean up uploaded file on error
+    const file = (req as any).file as Express.Multer.File;
+    if (file) {
+      try {
+        fs.unlinkSync(file.path);
+      } catch (e) {
+        // Ignore deletion errors
+      }
+    }
+    
+    console.error(`❌ [EXTERNAL API] Error replacing stage:`, error);
+    res.status(500).json({
+      success: false,
+      error: 'Stage replacement failed',
+      message: error.message || 'An unexpected error occurred'
+    });
+  }
+});
+
+/**
  * GET /api/eda-files/stats/summary
  * Get summary statistics of processed files
  */
