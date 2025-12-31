@@ -17,6 +17,7 @@ class MainNavigationScreen extends ConsumerStatefulWidget {
 
 class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
   int _selectedIndex = 0;
+  bool _isSidebarOpen = true;
 
   List<Widget> _getScreens(String? role) {
     if (role == 'engineer') {
@@ -47,26 +48,31 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
       body: Row(
         children: [
           // Professional Sidebar Navigation
-          Container(
-            width: 280,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Colors.grey.shade900,
-                  Colors.grey.shade800,
-                ],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.2),
-                  blurRadius: 10,
-                  offset: const Offset(2, 0),
-                ),
-              ],
-            ),
-            child: Column(
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+            width: _isSidebarOpen ? 280 : 0,
+            child: _isSidebarOpen
+                ? Container(
+                    clipBehavior: Clip.hardEdge,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Colors.grey.shade900,
+                          Colors.grey.shade800,
+                        ],
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.2),
+                          blurRadius: 10,
+                          offset: const Offset(2, 0),
+                        ),
+                      ],
+                    ),
+                    child: Column(
               children: [
                 // Logo/Brand Section
                 Container(
@@ -244,6 +250,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                 ),
               ],
             ),
+                  )
+                : const SizedBox.shrink(),
           ),
           // Main Content
           Expanded(
@@ -252,6 +260,18 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
         ],
       ),
       appBar: AppBar(
+        leading: IconButton(
+          icon: Icon(
+            _isSidebarOpen ? Icons.menu_open : Icons.menu,
+            color: Colors.grey.shade900,
+          ),
+          onPressed: () {
+            setState(() {
+              _isSidebarOpen = !_isSidebarOpen;
+            });
+          },
+          tooltip: _isSidebarOpen ? 'Close sidebar' : 'Open sidebar',
+        ),
         title: Text(
           _getAppBarTitle(_selectedIndex),
           style: const TextStyle(
@@ -454,6 +474,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
             }
             setState(() {
               _selectedIndex = index;
+              _isSidebarOpen = false; // Close sidebar when item is selected
             });
           },
           borderRadius: BorderRadius.circular(12),

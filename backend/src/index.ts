@@ -53,8 +53,9 @@ app.use(cors({
       const normalizedOrigin = normalizeUrl(origin);
       const normalizedFrontendUrl = normalizeUrl(frontendUrl);
       
-      // Exact match after normalization
+      // Exact match after normalization (protocol-agnostic)
       if (normalizedOrigin === normalizedFrontendUrl) {
+        console.log(`✅ CORS allowed origin: ${origin} (matched normalized: ${normalizedOrigin})`);
         return callback(null, true);
       }
       
@@ -63,20 +64,23 @@ app.use(cors({
         const originUrl = new URL(origin);
         const frontendUrlObj = new URL(frontendUrl);
         
-        // Match by hostname and port (allows http/https flexibility)
-        if (originUrl.hostname === frontendUrlObj.hostname && 
-            originUrl.port === frontendUrlObj.port) {
-          return callback(null, true);
-        }
+        // Get ports (handle default ports)
+        const getPort = (url: URL) => {
+          if (url.port) return url.port;
+          return url.protocol === 'https:' ? '443' : '80';
+        };
         
-        // Also check without port (default ports)
-        const originPort = originUrl.port || (originUrl.protocol === 'https:' ? '443' : '80');
-        const frontendPort = frontendUrlObj.port || (frontendUrlObj.protocol === 'https:' ? '443' : '80');
+        const originPort = getPort(originUrl);
+        const frontendPort = getPort(frontendUrlObj);
+        
+        // Match by hostname and port (allows http/https flexibility)
         if (originUrl.hostname === frontendUrlObj.hostname && originPort === frontendPort) {
+          console.log(`✅ CORS allowed origin: ${origin} (matched hostname: ${originUrl.hostname}, port: ${originPort})`);
           return callback(null, true);
         }
       } catch (e) {
         // Invalid URL format, continue to error
+        console.warn(`⚠️  Invalid URL format in CORS check: ${origin}`, e);
       }
     }
     

@@ -8,4 +8,6 @@ data:
   NODE_ENV: "production"
   DATABASE_URL: "postgresql://postgres:root@postgres:5432/ASI"
   JWT_EXPIRES_IN: "7d"
+  BACKEND_URL: "http://13.204.252.101:3000"
+  FRONTEND_URL: "http://13.204.252.101:8080"
 

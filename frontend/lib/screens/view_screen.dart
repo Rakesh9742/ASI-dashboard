@@ -215,23 +215,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           }
         }
         
-        // Auto-select first available options
-        if (grouped.isNotEmpty) {
-          _selectedProject = grouped.keys.first;
-          final projectData = grouped[_selectedProject];
-          if (projectData is Map && projectData.isNotEmpty) {
-            _selectedBlock = projectData.keys.first;
-            final blockData = projectData[_selectedBlock];
-            if (blockData is Map && blockData.isNotEmpty) {
-              _selectedTag = blockData.keys.first;
-              final tagData = blockData[_selectedTag];
-              if (tagData is Map && tagData.isNotEmpty) {
-                _selectedExperiment = tagData.keys.first;
-              }
-            }
-          }
-        }
-        
+        // Don't auto-select - user must select project manually
         _isLoading = false;
       });
     } catch (e) {
@@ -768,9 +752,10 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           _buildDropdown(
             'Project',
             projectNames,
-            _selectedProject ?? '',
+            _selectedProject,
             (v) => _updateProject(v),
             width: 300,
+            placeholder: 'Select Project',
           ),
           if (_selectedProject != null) ...[
             if (_isLoadingDomains)
@@ -802,9 +787,10 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
               _buildDropdown(
                 'Domain',
                 _availableDomainsForProject,
-                _selectedDomain ?? '',
+                _selectedDomain,
                 (v) => _updateDomain(v),
                 width: 300,
+                placeholder: 'Select Domain',
               ),
             if (_selectedProject != null && _availableDomainsForProject.isEmpty && !_isLoadingDomains)
               Container(
@@ -966,12 +952,15 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   Widget _buildDropdown(
     String label,
     List<String> items,
-    String value,
+    String? value,
     ValueChanged<String?> onChanged, {
     bool isBlue = false,
     double? width,
+    String? placeholder,
   }) {
     final validWidth = width != null && width > 0 ? width : null;
+    final hasValue = value != null && value.isNotEmpty && items.contains(value);
+    final displayValue = hasValue ? value : null;
     
     return SizedBox(
       width: validWidth,
@@ -997,8 +986,18 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             ),
             child: DropdownButtonHideUnderline(
           child: DropdownButton<String>(
-                value: items.contains(value) ? value : (items.isNotEmpty ? items.first : null),
+                value: displayValue,
             isExpanded: true,
+            hint: placeholder != null 
+                ? Text(
+                    placeholder,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.grey.shade600,
+                    ),
+                  )
+                : null,
             style: TextStyle(
               fontSize: 12,
                   fontWeight: FontWeight.w600,
