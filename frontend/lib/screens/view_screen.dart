@@ -35,6 +35,9 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   // Graph Selection State - Multiple selections
   Set<String> _selectedMetricGroups = {'INTERNAL (R2R)'};
   Set<String> _selectedMetricTypes = {'WNS'};
+  
+  // Visualization type: 'graph' or 'heatmap'
+  String _visualizationType = 'graph';
 
   // Scroll controllers for table
   final ScrollController _horizontalScrollController = ScrollController();
@@ -402,7 +405,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                   const SizedBox(height: 24),
                   _buildLeadView(activeStages),
                 ] else if (_viewType == 'manager') ...[
-                  _buildManagerView(activeStages),
+                  _buildManagerView(),
                 ],
               ],
             ),
@@ -1458,7 +1461,26 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             ],
           ),
           const SizedBox(height: 32),
-          // Single combined graph with all selected metrics
+          // Visualization type selector
+          Row(
+            children: [
+              const Text(
+                'VIEW TYPE:',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF94A3B8),
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(width: 16),
+              _buildVisualizationTypeChip('Graph', 'graph'),
+              const SizedBox(width: 8),
+              _buildVisualizationTypeChip('Heat Map', 'heatmap'),
+            ],
+          ),
+          const SizedBox(height: 24),
+          // Single combined graph or heat map with all selected metrics
           if (graphCombinations.isEmpty)
             const Center(
               child: Padding(
@@ -1466,10 +1488,283 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                 child: Text('Please select at least one metric group and type', style: TextStyle(color: Colors.grey)),
               ),
             )
+          else if (_visualizationType == 'heatmap')
+            _buildHeatMap(stages, graphCombinations)
           else
             _buildCombinedGraph(stages, graphCombinations),
         ],
       ),
+    );
+  }
+  
+  Widget _buildVisualizationTypeChip(String label, String value) {
+    final isSelected = _visualizationType == value;
+    return GestureDetector(
+      onTap: () => setState(() => _visualizationType = value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFE2E8F0),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: isSelected ? Colors.white : const Color(0xFF64748B),
+          ),
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildHeatMap(List<Map<String, dynamic>> stages, List<Map<String, String>> combinations) {
+    if (stages.isEmpty || combinations.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text('No data available for heat map', style: TextStyle(color: Colors.grey)),
+        ),
+      );
+    }
+    
+    final stageNames = stages.map((s) => s['stage']?.toString() ?? 'Unknown').toList();
+    
+    // Build heat map data: rows = metric combinations, columns = stages
+    final heatMapData = <List<double?>>[];
+    final rowLabels = <String>[];
+    
+    for (var combo in combinations) {
+      final group = combo['group']!;
+      final type = combo['type']!;
+      final row = <double?>[];
+      
+      for (var stage in stages) {
+        final val = _getMetricValue(stage, group, type);
+        row.add(val);
+      }
+      
+      // Only add row if it has at least one value
+      if (row.any((v) => v != null)) {
+        heatMapData.add(row);
+        rowLabels.add('$group - $type');
+      }
+    }
+    
+    if (heatMapData.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text('No data available for the selected metrics', style: TextStyle(color: Colors.grey)),
+        ),
+      );
+    }
+    
+    // Calculate min/max for color scaling
+    double? minVal;
+    double? maxVal;
+    for (var row in heatMapData) {
+      for (var val in row) {
+        if (val != null) {
+          if (minVal == null || val < minVal) minVal = val;
+          if (maxVal == null || val > maxVal) maxVal = val;
+        }
+      }
+    }
+    
+    // If all values are the same, add some range for visualization
+    if (minVal != null && maxVal != null && minVal == maxVal) {
+      final absVal = minVal.abs();
+      minVal = minVal - (absVal > 0 ? absVal * 0.1 : 0.1);
+      maxVal = maxVal + (absVal > 0 ? absVal * 0.1 : 0.1);
+    }
+    
+    final range = (maxVal ?? 1.0) - (minVal ?? 0.0);
+    
+    // Color function: red for negative/bad, green for positive/good (for WNS/TNS)
+    // For NVP, reverse: green for low, red for high
+    Color getColorForValue(double? value, String type) {
+      if (value == null) return Colors.grey.shade200;
+      
+      // Normalize value to 0-1 range
+      final normalized = range > 0 ? ((value - (minVal ?? 0.0)) / range).clamp(0.0, 1.0) : 0.5;
+      
+      if (type == 'NVP') {
+        // For NVP: low is good (green), high is bad (red)
+        if (normalized < 0.33) {
+          return Color.lerp(const Color(0xFF10B981), const Color(0xFFFEF3C7), normalized * 3)!;
+        } else if (normalized < 0.67) {
+          return Color.lerp(const Color(0xFFFEF3C7), const Color(0xFFF59E0B), (normalized - 0.33) * 3)!;
+        } else {
+          return Color.lerp(const Color(0xFFF59E0B), const Color(0xFFDC2626), (normalized - 0.67) * 3)!;
+        }
+      } else {
+        // For WNS/TNS: negative is bad (red), positive is good (green)
+        if (normalized < 0.33) {
+          return Color.lerp(const Color(0xFFDC2626), const Color(0xFFF59E0B), normalized * 3)!;
+        } else if (normalized < 0.67) {
+          return Color.lerp(const Color(0xFFF59E0B), const Color(0xFFFEF3C7), (normalized - 0.33) * 3)!;
+        } else {
+          return Color.lerp(const Color(0xFFFEF3C7), const Color(0xFF10B981), (normalized - 0.67) * 3)!;
+        }
+      }
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Color scale legend
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Color Scale',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      height: 20,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(4),
+                        gradient: LinearGradient(
+                          colors: [
+                            const Color(0xFFDC2626),
+                            const Color(0xFFF59E0B),
+                            const Color(0xFFFEF3C7),
+                            const Color(0xFF10B981),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Min: ${minVal?.toStringAsFixed(2) ?? "N/A"}',
+                    style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Max: ${maxVal?.toStringAsFixed(2) ?? "N/A"}',
+                    style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        // Heat map table
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SingleChildScrollView(
+            child: Table(
+              border: TableBorder.all(color: const Color(0xFFE2E8F0), width: 1),
+              defaultColumnWidth: const FixedColumnWidth(100),
+              children: [
+                // Header row with stage names
+                TableRow(
+                  decoration: const BoxDecoration(color: Color(0xFFF8FAFC)),
+                  children: [
+                    const TableCell(
+                      child: Padding(
+                        padding: EdgeInsets.all(12),
+                        child: Text(
+                          'Metric',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 11,
+                            color: Color(0xFF0F172A),
+                          ),
+                        ),
+                      ),
+                    ),
+                    ...stageNames.map((stage) => TableCell(
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(
+                          stage.toUpperCase().replaceAll('_', ' '),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 10,
+                            color: Color(0xFF64748B),
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    )).toList(),
+                  ],
+                ),
+                // Data rows
+                ...List.generate(heatMapData.length, (rowIdx) {
+                  final row = heatMapData[rowIdx];
+                  final label = rowLabels[rowIdx];
+                  final type = combinations[rowIdx]['type']!;
+                  
+                  return TableRow(
+                    children: [
+                      TableCell(
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          color: Colors.white,
+                          child: Text(
+                            label,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 10,
+                              color: Color(0xFF0F172A),
+                            ),
+                          ),
+                        ),
+                      ),
+                      ...List.generate(row.length, (colIdx) {
+                        final value = row[colIdx];
+                        final color = getColorForValue(value, type);
+                        
+                        return TableCell(
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            color: color,
+                            child: Center(
+                              child: Text(
+                                value != null ? value.toStringAsFixed(2) : '–',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 11,
+                                  color: value != null 
+                                      ? (value < 0 ? Colors.white : const Color(0xFF0F172A))
+                                      : Colors.grey.shade600,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
+                  );
+                }),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -2584,17 +2879,118 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
 
   // Lead View - Filtered table with specific columns
   Widget _buildLeadView(List<Map<String, dynamic>> stages) {
-    if (stages.isEmpty) return const SizedBox();
+    if (_selectedProject == null) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text(
+            'Please select a project to view lead dashboard',
+            style: TextStyle(color: Colors.grey, fontSize: 16),
+          ),
+        ),
+      );
+    }
 
+    // Get all stages for the selected project/block
+    final allProjectStages = _selectedBlock != null 
+        ? _getAllStagesForBlock() 
+        : _getAllStagesForProject();
+    
+    // Get milestone progress and block summary
+    final milestoneProgress = _getMilestoneProgress(allProjectStages);
+    final blockSummary = _getBlockStagesSummary(allProjectStages);
+    final blockHealth = allProjectStages.isNotEmpty 
+        ? _calculateBlockHealthIndex(allProjectStages) 
+        : 0.0;
+
+    return Column(
+      children: [
+        // Summary cards row
+        Row(
+          children: [
+            Expanded(
+              child: _buildLeadCard(
+                'Milestone Progress',
+                _buildMilestoneProgress(milestoneProgress),
+              ),
+            ),
+            const SizedBox(width: 24),
+            Expanded(
+              child: _buildLeadCard(
+                'Block Stages Summary',
+                _buildBlockStagesSummary(blockSummary),
+              ),
+            ),
+            const SizedBox(width: 24),
+            Expanded(
+              child: _buildLeadCard(
+                'Block Health',
+                _buildBlockHealthCard(blockHealth),
+              ),
+            ),
+          ],
+        ),
+        if (stages.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 16,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+                    border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.table_chart_outlined, size: 20, color: Color(0xFF0F172A)),
+                      SizedBox(width: 12),
+                      Text(
+                        'Lead View - Stage Metrics Comparison',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF0F172A),
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _buildLeadTable(stages),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+  
+  Widget _buildLeadCard(String title, Widget content) {
     return Container(
+      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 16,
+            color: Colors.black.withOpacity(0.02),
+            blurRadius: 10,
             offset: const Offset(0, 4),
           ),
         ],
@@ -2602,32 +2998,534 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
-              border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+          Text(
+            title.toUpperCase(),
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF94A3B8),
+              letterSpacing: 1.0,
             ),
-            child: const Row(
+          ),
+          const SizedBox(height: 16),
+          content,
+        ],
+      ),
+    );
+  }
+  
+  // Get all stages for the selected block
+  List<Map<String, dynamic>> _getAllStagesForBlock() {
+    if (_selectedProject == null || _selectedBlock == null) return [];
+    
+    final allStages = <Map<String, dynamic>>[];
+    
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return [];
+      
+      final projectData = Map<String, dynamic>.from(projectValue);
+      final blockValue = projectData[_selectedBlock];
+      if (blockValue is! Map) return [];
+      
+      final blockData = Map<String, dynamic>.from(blockValue);
+      
+      // Iterate through all RTL tags
+      for (var rtlTag in blockData.keys) {
+        final tagValue = blockData[rtlTag];
+        if (tagValue is! Map) continue;
+        
+        final tagData = Map<String, dynamic>.from(tagValue);
+        
+        // Iterate through all experiments
+        for (var experiment in tagData.keys) {
+          final expValue = tagData[experiment];
+          if (expValue is! Map) continue;
+          
+          final expData = Map<String, dynamic>.from(expValue);
+          final stages = expData['stages'];
+          if (stages is! Map) continue;
+          
+          final stagesMap = Map<String, dynamic>.from(stages);
+          
+          // Add all stages from this experiment
+          for (var stageData in stagesMap.values) {
+            if (stageData is Map<String, dynamic>) {
+              final stageWithContext = Map<String, dynamic>.from(stageData);
+              stageWithContext['block_name'] = _selectedBlock;
+              stageWithContext['rtl_tag'] = rtlTag;
+              stageWithContext['experiment'] = experiment;
+              allStages.add(stageWithContext);
+            } else if (stageData is Map) {
+              final stageWithContext = Map<String, dynamic>.from(stageData);
+              stageWithContext['block_name'] = _selectedBlock;
+              stageWithContext['rtl_tag'] = rtlTag;
+              stageWithContext['experiment'] = experiment;
+              allStages.add(stageWithContext);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('Error getting all stages for block: $e');
+    }
+    
+    return allStages;
+  }
+  
+  // Get milestone progress
+  Map<String, dynamic> _getMilestoneProgress(List<Map<String, dynamic>> stages) {
+    final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+    final milestoneData = <String, Map<String, dynamic>>{};
+    
+    // Initialize all milestones
+    for (var stage in stageOrder) {
+      milestoneData[stage] = {
+        'stage': stage,
+        'completed': 0,
+        'pending': 0,
+        'failed': 0,
+        'in_progress': 0,
+      };
+    }
+    
+    // Count statuses for each stage
+    for (var stageData in stages) {
+      final stageName = stageData['stage']?.toString().toLowerCase() ?? '';
+      final status = stageData['run_status']?.toString().toLowerCase() ?? 'unknown';
+      
+      if (milestoneData.containsKey(stageName)) {
+        if (status == 'pass' || status == 'completed') {
+          milestoneData[stageName]!['completed'] = (milestoneData[stageName]!['completed'] as int) + 1;
+        } else if (status == 'fail' || status == 'failed') {
+          milestoneData[stageName]!['failed'] = (milestoneData[stageName]!['failed'] as int) + 1;
+        } else if (status == 'continue_with_error' || status == 'in_progress') {
+          milestoneData[stageName]!['in_progress'] = (milestoneData[stageName]!['in_progress'] as int) + 1;
+        } else {
+          milestoneData[stageName]!['pending'] = (milestoneData[stageName]!['pending'] as int) + 1;
+        }
+      }
+    }
+    
+    // Calculate totals
+    int totalCompleted = 0;
+    int totalPending = 0;
+    int totalFailed = 0;
+    int totalInProgress = 0;
+    
+    for (var data in milestoneData.values) {
+      totalCompleted += data['completed'] as int;
+      totalPending += data['pending'] as int;
+      totalFailed += data['failed'] as int;
+      totalInProgress += data['in_progress'] as int;
+    }
+    
+    return {
+      'milestones': milestoneData,
+      'total': {
+        'completed': totalCompleted,
+        'pending': totalPending,
+        'failed': totalFailed,
+        'in_progress': totalInProgress,
+        'total': totalCompleted + totalPending + totalFailed + totalInProgress,
+      },
+    };
+  }
+  
+  // Get block stages summary
+  Map<String, dynamic> _getBlockStagesSummary(List<Map<String, dynamic>> stages) {
+    final blockStages = <String, Set<String>>{};
+    final blockStatuses = <String, Map<String, int>>{};
+    
+    for (var stageData in stages) {
+      final blockName = stageData['block_name']?.toString() ?? 'Unknown';
+      final stageName = stageData['stage']?.toString() ?? 'Unknown';
+      final status = stageData['run_status']?.toString().toLowerCase() ?? 'unknown';
+      
+      if (!blockStages.containsKey(blockName)) {
+        blockStages[blockName] = <String>{};
+        blockStatuses[blockName] = {
+          'pass': 0,
+          'fail': 0,
+          'continue_with_error': 0,
+          'unknown': 0,
+        };
+      }
+      
+      blockStages[blockName]!.add(stageName);
+      
+      if (status == 'pass' || status == 'completed') {
+        blockStatuses[blockName]!['pass'] = (blockStatuses[blockName]!['pass'] ?? 0) + 1;
+      } else if (status == 'fail' || status == 'failed') {
+        blockStatuses[blockName]!['fail'] = (blockStatuses[blockName]!['fail'] ?? 0) + 1;
+      } else if (status == 'continue_with_error') {
+        blockStatuses[blockName]!['continue_with_error'] = (blockStatuses[blockName]!['continue_with_error'] ?? 0) + 1;
+      } else {
+        blockStatuses[blockName]!['unknown'] = (blockStatuses[blockName]!['unknown'] ?? 0) + 1;
+      }
+    }
+    
+    return {
+      'blocks': blockStages.map((key, value) => MapEntry(key, {
+        'stages': value.toList(),
+        'stageCount': value.length,
+        'statuses': blockStatuses[key] ?? {},
+      })),
+      'totalBlocks': blockStages.length,
+    };
+  }
+  
+  Widget _buildMilestoneProgress(Map<String, dynamic> progressData) {
+    final milestones = progressData['milestones'] as Map<String, dynamic>;
+    final total = progressData['total'] as Map<String, dynamic>;
+    final totalCount = total['total'] as int;
+    
+    if (totalCount == 0) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16.0),
+          child: Text(
+            'No milestone data available',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ),
+      );
+    }
+    
+    final completedPercent = totalCount > 0 
+        ? ((total['completed'] as int) / totalCount * 100).round()
+        : 0;
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Overall progress
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _buildStatusIndicator('Completed', total['completed'] as int, const Color(0xFF10B981)),
+            _buildStatusIndicator('In Progress', total['in_progress'] as int, const Color(0xFFF59E0B)),
+            _buildStatusIndicator('Failed', total['failed'] as int, const Color(0xFFDC2626)),
+            _buildStatusIndicator('Pending', total['pending'] as int, const Color(0xFF94A3B8)),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Progress bar
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Icon(Icons.table_chart_outlined, size: 20, color: Color(0xFF0F172A)),
-                SizedBox(width: 12),
-                Text(
-                  'Lead View - Stage Metrics Comparison',
+                const Text(
+                  'Overall Progress',
                   style: TextStyle(
-                    fontSize: 16,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF0F172A),
+                  ),
+                ),
+                Text(
+                  '$completedPercent%',
+                  style: const TextStyle(
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFF0F172A),
-                    letterSpacing: -0.5,
                   ),
                 ),
               ],
             ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: completedPercent / 100,
+                minHeight: 8,
+                backgroundColor: const Color(0xFFE2E8F0),
+                valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF10B981)),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Milestone breakdown
+        ...milestones.values.take(5).map((milestone) {
+          final stage = milestone['stage'] as String;
+          final completed = milestone['completed'] as int;
+          final milestoneTotal = (milestone['completed'] as int) + 
+                       (milestone['pending'] as int) + 
+                       (milestone['failed'] as int) + 
+                       (milestone['in_progress'] as int);
+          final percent = milestoneTotal > 0 ? (completed / milestoneTotal * 100).round() : 0;
+          
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 80,
+                  child: Text(
+                    stage.toUpperCase(),
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: milestoneTotal > 0 ? completed / milestoneTotal : 0,
+                      minHeight: 6,
+                      backgroundColor: const Color(0xFFE2E8F0),
+                      valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF10B981)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '$percent%',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ],
+    );
+  }
+  
+  Widget _buildStatusIndicator(String label, int count, Color color) {
+    return Column(
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
           ),
-          _buildLeadTable(stages),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          count.toString(),
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 9,
+            color: Color(0xFF64748B),
+          ),
+        ),
+      ],
+    );
+  }
+  
+  Widget _buildBlockStagesSummary(Map<String, dynamic> summary) {
+    final blocks = summary['blocks'] as Map<String, dynamic>;
+    final totalBlocks = summary['totalBlocks'] as int;
+    
+    if (totalBlocks == 0) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16.0),
+          child: Text(
+            'No block data available',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ),
+      );
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Total Blocks: $totalBlocks',
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 16),
+        ...blocks.entries.take(5).map((entry) {
+          final blockName = entry.key;
+          final data = entry.value as Map<String, dynamic>;
+          final stageCount = data['stageCount'] as int;
+          final statuses = data['statuses'] as Map<String, int>;
+          final passCount = statuses['pass'] ?? 0;
+          final failCount = statuses['fail'] ?? 0;
+          final errorCount = statuses['continue_with_error'] ?? 0;
+          
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        blockName,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF0F172A),
+                        ),
+                      ),
+                      Text(
+                        '$stageCount stages',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      if (passCount > 0)
+                        _buildStatusBadge('Pass', passCount, const Color(0xFF10B981)),
+                      if (failCount > 0) ...[
+                        const SizedBox(width: 8),
+                        _buildStatusBadge('Fail', failCount, const Color(0xFFDC2626)),
+                      ],
+                      if (errorCount > 0) ...[
+                        const SizedBox(width: 8),
+                        _buildStatusBadge('Error', errorCount, const Color(0xFFF59E0B)),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        }).toList(),
+      ],
+    );
+  }
+  
+  Widget _buildStatusBadge(String label, int count, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            '$label: $count',
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
         ],
       ),
+    );
+  }
+  
+  Widget _buildBlockHealthCard(double healthIndex) {
+    Color color;
+    String status;
+    if (healthIndex >= 80) {
+      color = const Color(0xFF10B981);
+      status = 'Excellent';
+    } else if (healthIndex >= 60) {
+      color = const Color(0xFFF59E0B);
+      status = 'Good';
+    } else if (healthIndex >= 40) {
+      color = const Color(0xFFF97316);
+      status = 'Fair';
+    } else {
+      color = const Color(0xFFDC2626);
+      status = 'Poor';
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              healthIndex.toStringAsFixed(1),
+              style: TextStyle(
+                fontSize: 48,
+                fontWeight: FontWeight.w900,
+                color: color,
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: color.withOpacity(0.3)),
+              ),
+              child: Text(
+                status,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: healthIndex / 100,
+            minHeight: 12,
+            backgroundColor: const Color(0xFFE2E8F0),
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+          ),
+        ),
+        const SizedBox(height: 16),
+        const Text(
+          'Health Index',
+          style: TextStyle(
+            fontSize: 12,
+            color: Color(0xFF64748B),
+          ),
+        ),
+      ],
     );
   }
 
@@ -2893,23 +3791,93 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   }
 
   // Manager View - High-level overview
-  Widget _buildManagerView(List<Map<String, dynamic>> stages) {
-    if (stages.isEmpty) return const SizedBox();
+  Widget _buildManagerView() {
+    if (_selectedProject == null) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text(
+            'Please select a project to view manager dashboard',
+            style: TextStyle(color: Colors.grey, fontSize: 16),
+          ),
+        ),
+      );
+    }
 
-    // Get current stage (most recent)
-    final currentStage = stages.isNotEmpty ? stages.last : null;
-    if (currentStage == null) return const SizedBox();
+    // Get all stages for the selected project (across all blocks)
+    final allProjectStages = _getAllStagesForProject();
+    
+    // Get block statuses and critical blocks for the selected project
+    final blockStatuses = _getBlockStatusesForProject();
+    final criticalBlocks = _getCriticalBlocksForProject();
 
-    // Calculate block health index (simplified - based on violations and status)
-    final healthIndex = _calculateBlockHealthIndex(stages);
+    // Get current stage (most recent from all project stages)
+    // Sort by timestamp to find the most recent
+    final sortedStages = List<Map<String, dynamic>>.from(allProjectStages);
+    sortedStages.sort((a, b) {
+      final aTime = a['timestamp']?.toString() ?? '';
+      final bTime = b['timestamp']?.toString() ?? '';
+      if (aTime.isEmpty && bTime.isEmpty) return 0;
+      if (aTime.isEmpty) return 1;
+      if (bTime.isEmpty) return -1;
+      try {
+        final aDate = DateTime.parse(aTime);
+        final bDate = DateTime.parse(bTime);
+        return bDate.compareTo(aDate); // Descending order (most recent first)
+      } catch (e) {
+        return 0;
+      }
+    });
+    
+    final currentStage = sortedStages.isNotEmpty ? sortedStages.first : null;
+    final healthIndex = allProjectStages.isNotEmpty 
+        ? _calculateBlockHealthIndex(allProjectStages) 
+        : 0.0;
 
     return Column(
       children: [
-        _buildManagerCard('Current Stage', _buildCurrentStageCard(currentStage)),
-        const SizedBox(height: 24),
-        _buildManagerCard('Block Health Index', _buildHealthIndexCard(healthIndex)),
-        const SizedBox(height: 24),
-        _buildManagerCard('Brief Summary', _buildBriefSummaryCard(currentStage)),
+        // Charts row
+        Row(
+          children: [
+            Expanded(
+              child: _buildManagerCard(
+                'Block Status Histogram',
+                _buildBlockStatusHistogram(blockStatuses),
+              ),
+            ),
+            const SizedBox(width: 24),
+            Expanded(
+              child: _buildManagerCard(
+                'Critical Blocks',
+                _buildCriticalBlocksChart(criticalBlocks),
+              ),
+            ),
+          ],
+        ),
+        if (allProjectStages.isNotEmpty && currentStage != null) ...[
+          const SizedBox(height: 24),
+          _buildManagerCard('Current Stage', _buildCurrentStageCard(currentStage)),
+          const SizedBox(height: 24),
+          _buildManagerCard('Block Health Index', _buildHealthIndexCard(healthIndex)),
+          const SizedBox(height: 24),
+          _buildManagerCard('Brief Summary', _buildBriefSummaryCard(currentStage)),
+        ] else if (allProjectStages.isEmpty) ...[
+          const SizedBox(height: 24),
+          _buildManagerCard(
+            'Current Stage',
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(32.0),
+                child: Text(
+                  'No stage data available for the selected project',
+                  style: TextStyle(color: Colors.grey),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          _buildManagerCard('Block Health Index', _buildHealthIndexCard(0.0)),
+        ],
         const SizedBox(height: 24),
         Row(
           children: [
@@ -2921,6 +3889,561 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           ],
         ),
       ],
+    );
+  }
+  
+  // Get all stages from all blocks in the selected project
+  List<Map<String, dynamic>> _getAllStagesForProject() {
+    if (_selectedProject == null || _selectedDomain == null) return [];
+    
+    final allStages = <Map<String, dynamic>>[];
+    
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return [];
+      
+      final projectData = Map<String, dynamic>.from(projectValue);
+      
+      // Iterate through all blocks
+      for (var blockName in projectData.keys) {
+        final blockValue = projectData[blockName];
+        if (blockValue is! Map) continue;
+        
+        final blockData = Map<String, dynamic>.from(blockValue);
+        
+        // Iterate through all RTL tags
+        for (var rtlTag in blockData.keys) {
+          final tagValue = blockData[rtlTag];
+          if (tagValue is! Map) continue;
+          
+          final tagData = Map<String, dynamic>.from(tagValue);
+          
+          // Iterate through all experiments
+          for (var experiment in tagData.keys) {
+            final expValue = tagData[experiment];
+            if (expValue is! Map) continue;
+            
+            final expData = Map<String, dynamic>.from(expValue);
+            final stages = expData['stages'];
+            if (stages is! Map) continue;
+            
+            final stagesMap = Map<String, dynamic>.from(stages);
+            
+            // Add all stages from this experiment
+            for (var stageData in stagesMap.values) {
+              if (stageData is Map<String, dynamic>) {
+                // Add block info to stage data for context
+                final stageWithContext = Map<String, dynamic>.from(stageData);
+                stageWithContext['block_name'] = blockName;
+                stageWithContext['rtl_tag'] = rtlTag;
+                stageWithContext['experiment'] = experiment;
+                allStages.add(stageWithContext);
+              } else if (stageData is Map) {
+                final stageWithContext = Map<String, dynamic>.from(stageData);
+                stageWithContext['block_name'] = blockName;
+                stageWithContext['rtl_tag'] = rtlTag;
+                stageWithContext['experiment'] = experiment;
+                allStages.add(stageWithContext);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('Error getting all stages for project: $e');
+    }
+    
+    return allStages;
+  }
+  
+  // Get block statuses for the selected project
+  Map<String, String> _getBlockStatusesForProject() {
+    final blockStatuses = <String, String>{};
+    
+    if (_selectedProject == null) return blockStatuses;
+    
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return blockStatuses;
+      
+      final projectData = Map<String, dynamic>.from(projectValue);
+      
+      // Iterate through all blocks
+      for (var blockName in projectData.keys) {
+        final blockValue = projectData[blockName];
+        if (blockValue is! Map) continue;
+        
+        final blockData = Map<String, dynamic>.from(blockValue);
+        String latestStatus = 'unknown';
+        DateTime? latestTimestamp;
+        
+        // Find the latest stage status for this block
+        for (var rtlTag in blockData.keys) {
+          final tagValue = blockData[rtlTag];
+          if (tagValue is! Map) continue;
+          
+          final tagData = Map<String, dynamic>.from(tagValue);
+          for (var experiment in tagData.keys) {
+            final expValue = tagData[experiment];
+            if (expValue is! Map) continue;
+            
+            final expData = Map<String, dynamic>.from(expValue);
+            final stages = expData['stages'];
+            if (stages is! Map) continue;
+            
+            final stagesMap = Map<String, dynamic>.from(stages);
+            for (var stageData in stagesMap.values) {
+              if (stageData is! Map) continue;
+              
+              final stage = Map<String, dynamic>.from(stageData);
+              final status = stage['run_status']?.toString().toLowerCase() ?? 'unknown';
+              final timestampStr = stage['timestamp']?.toString() ?? '';
+              
+              // Parse timestamp if available
+              DateTime? timestamp;
+              if (timestampStr.isNotEmpty) {
+                try {
+                  timestamp = DateTime.parse(timestampStr);
+                } catch (e) {
+                  // Ignore parse errors
+                }
+              }
+              
+              // Update if this is the latest
+              if (timestamp != null && (latestTimestamp == null || timestamp.isAfter(latestTimestamp))) {
+                latestTimestamp = timestamp;
+                latestStatus = status;
+              } else if (latestTimestamp == null && status != 'unknown') {
+                // If no timestamp but has status, use it
+                latestStatus = status;
+              }
+            }
+          }
+        }
+        
+        blockStatuses[blockName] = latestStatus;
+      }
+    } catch (e) {
+      print('Error getting block statuses: $e');
+    }
+    
+    return blockStatuses;
+  }
+  
+  // Get critical blocks for the selected project
+  List<Map<String, dynamic>> _getCriticalBlocksForProject() {
+    final criticalBlocks = <Map<String, dynamic>>[];
+    
+    if (_selectedProject == null) return criticalBlocks;
+    
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return criticalBlocks;
+      
+      final projectData = Map<String, dynamic>.from(projectValue);
+      
+      // Iterate through all blocks
+      for (var blockName in projectData.keys) {
+        final blockValue = projectData[blockName];
+        if (blockValue is! Map) continue;
+        
+        final blockData = Map<String, dynamic>.from(blockValue);
+        double maxWns = 0.0;
+        int totalErrors = 0;
+        int totalWarnings = 0;
+        String worstStatus = 'pass';
+        int criticalScore = 0;
+        
+        // Analyze all stages for this block
+        for (var rtlTag in blockData.keys) {
+          final tagValue = blockData[rtlTag];
+          if (tagValue is! Map) continue;
+          
+          final tagData = Map<String, dynamic>.from(tagValue);
+          for (var experiment in tagData.keys) {
+            final expValue = tagData[experiment];
+            if (expValue is! Map) continue;
+            
+            final expData = Map<String, dynamic>.from(expValue);
+            final stages = expData['stages'];
+            if (stages is! Map) continue;
+            
+            final stagesMap = Map<String, dynamic>.from(stages);
+            for (var stageData in stagesMap.values) {
+              if (stageData is! Map) continue;
+              
+              final stage = Map<String, dynamic>.from(stageData);
+              
+              // Check WNS (negative is bad)
+              final wns = _parseNumeric(stage['internal_timing_r2r_wns']);
+              if (wns != null && wns < maxWns) {
+                maxWns = wns;
+              }
+              
+              // Count errors and warnings
+              final errors = _parseNumeric(stage['log_errors']) ?? 0;
+              final warnings = _parseNumeric(stage['log_warnings']) ?? 0;
+              totalErrors += (errors is int ? errors : errors.toInt()) as int;
+              totalWarnings += (warnings is int ? warnings : warnings.toInt()) as int;
+              
+              // Check status
+              final status = stage['run_status']?.toString().toLowerCase() ?? 'pass';
+              if (status == 'fail') {
+                worstStatus = 'fail';
+                criticalScore += 30;
+              } else if (status == 'continue_with_error' && worstStatus != 'fail') {
+                worstStatus = 'continue_with_error';
+                criticalScore += 15;
+              }
+            }
+          }
+        }
+        
+        // Calculate critical score
+        if (maxWns < 0) {
+          criticalScore += (maxWns.abs() * 10).toInt().clamp(0, 30);
+        }
+        criticalScore += (totalErrors * 2).clamp(0, 20);
+        criticalScore += (totalWarnings * 0.5).toInt().clamp(0, 10);
+        
+        // Add to critical blocks if score > 0
+        if (criticalScore > 0) {
+          criticalBlocks.add({
+            'block': blockName,
+            'score': criticalScore,
+            'status': worstStatus,
+            'wns': maxWns,
+            'errors': totalErrors,
+            'warnings': totalWarnings,
+          });
+        }
+      }
+      
+      // Sort by critical score (highest first)
+      criticalBlocks.sort((a, b) => (b['score'] as num).compareTo(a['score'] as num));
+    } catch (e) {
+      print('Error getting critical blocks: $e');
+    }
+    
+    return criticalBlocks;
+  }
+  
+  Widget _buildBlockStatusHistogram(Map<String, String> blockStatuses) {
+    if (blockStatuses.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text('No block data available', style: TextStyle(color: Colors.grey)),
+        ),
+      );
+    }
+    
+    // Count statuses
+    final statusCounts = <String, int>{};
+    for (var status in blockStatuses.values) {
+      final normalizedStatus = status.toLowerCase();
+      statusCounts[normalizedStatus] = (statusCounts[normalizedStatus] ?? 0) + 1;
+    }
+    
+    // Define status order and colors
+    final statusOrder = ['pass', 'continue_with_error', 'fail', 'unknown'];
+    final statusColors = {
+      'pass': const Color(0xFF10B981),
+      'continue_with_error': const Color(0xFFF59E0B),
+      'fail': const Color(0xFFDC2626),
+      'unknown': const Color(0xFF94A3B8),
+    };
+    final statusLabels = {
+      'pass': 'Pass',
+      'continue_with_error': 'Warning',
+      'fail': 'Fail',
+      'unknown': 'Unknown',
+    };
+    
+    // Prepare data for chart
+    final barGroups = <BarChartGroupData>[];
+    final bottomTitles = <String>[];
+    int index = 0;
+    
+    for (var status in statusOrder) {
+      final count = statusCounts[status] ?? 0;
+      if (count > 0 || status == 'pass') { // Always show pass even if 0
+        barGroups.add(
+          BarChartGroupData(
+            x: index,
+            barRods: [
+              BarChartRodData(
+                toY: count.toDouble(),
+                color: statusColors[status] ?? const Color(0xFF94A3B8),
+                width: 40,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+              ),
+            ],
+          ),
+        );
+        bottomTitles.add(statusLabels[status] ?? status);
+        index++;
+      }
+    }
+    
+    if (barGroups.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text('No status data available', style: TextStyle(color: Colors.grey)),
+        ),
+      );
+    }
+    
+    final maxCount = statusCounts.values.isEmpty ? 1 : statusCounts.values.reduce((a, b) => a > b ? a : b);
+    
+    return SizedBox(
+      height: 300,
+      child: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: maxCount.toDouble() * 1.2,
+          barTouchData: BarTouchData(
+            enabled: true,
+            touchTooltipData: BarTouchTooltipData(
+              tooltipBgColor: Colors.grey[800]!,
+              tooltipRoundedRadius: 8,
+              tooltipPadding: const EdgeInsets.all(8),
+              tooltipMargin: 8,
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final status = statusOrder[groupIndex];
+                return BarTooltipItem(
+                  '${statusLabels[status] ?? status}: ${rod.toY.toInt()}',
+                  const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                );
+              },
+            ),
+          ),
+          titlesData: FlTitlesData(
+            show: true,
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  final idx = value.toInt();
+                  if (idx >= 0 && idx < bottomTitles.length) {
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        bottomTitles[idx],
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF64748B),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    );
+                  }
+                  return const Text('');
+                },
+                reservedSize: 40,
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                getTitlesWidget: (value, meta) {
+                  if (value.toInt() == value) {
+                    return Text(
+                      value.toInt().toString(),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF64748B),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    );
+                  }
+                  return const Text('');
+                },
+              ),
+            ),
+            topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+          ),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            horizontalInterval: 1,
+            getDrawingHorizontalLine: (value) {
+              return const FlLine(
+                color: Color(0xFFE2E8F0),
+                strokeWidth: 1,
+              );
+            },
+          ),
+          borderData: FlBorderData(show: false),
+          barGroups: barGroups,
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildCriticalBlocksChart(List<Map<String, dynamic>> criticalBlocks) {
+    if (criticalBlocks.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text(
+            'No critical blocks found',
+            style: TextStyle(color: Colors.grey),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    
+    // Take top 10 critical blocks
+    final topBlocks = criticalBlocks.take(10).toList();
+    final maxScore = criticalBlocks.isNotEmpty 
+        ? (criticalBlocks.first['score'] as num).toDouble() 
+        : 100.0;
+    
+    return SizedBox(
+      height: 300,
+      child: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: maxScore * 1.2,
+          barTouchData: BarTouchData(
+            enabled: true,
+            touchTooltipData: BarTouchTooltipData(
+              tooltipBgColor: Colors.grey[800]!,
+              tooltipRoundedRadius: 8,
+              tooltipPadding: const EdgeInsets.all(8),
+              tooltipMargin: 8,
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final block = topBlocks[groupIndex];
+                final blockName = block['block'] as String;
+                final score = block['score'] as num;
+                final status = block['status'] as String;
+                final wns = block['wns'] as num?;
+                final errors = block['errors'] as num;
+                
+                return BarTooltipItem(
+                  '$blockName\nScore: ${score.toInt()}\nStatus: ${status.toUpperCase()}\nWNS: ${wns?.toStringAsFixed(2) ?? "N/A"}\nErrors: ${errors.toInt()}',
+                  const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 11,
+                  ),
+                );
+              },
+            ),
+          ),
+          titlesData: FlTitlesData(
+            show: true,
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  final idx = value.toInt();
+                  if (idx >= 0 && idx < topBlocks.length) {
+                    final blockName = topBlocks[idx]['block'] as String;
+                    // Truncate long names
+                    final displayName = blockName.length > 10 
+                        ? '${blockName.substring(0, 10)}...' 
+                        : blockName;
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: RotatedBox(
+                        quarterTurns: 1,
+                        child: Text(
+                          displayName,
+                          style: const TextStyle(
+                            fontSize: 9,
+                            color: Color(0xFF64748B),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                  return const Text('');
+                },
+                reservedSize: 60,
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                getTitlesWidget: (value, meta) {
+                  if (value.toInt() == value) {
+                    return Text(
+                      value.toInt().toString(),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF64748B),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    );
+                  }
+                  return const Text('');
+                },
+              ),
+            ),
+            topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+          ),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            horizontalInterval: maxScore / 5,
+            getDrawingHorizontalLine: (value) {
+              return const FlLine(
+                color: Color(0xFFE2E8F0),
+                strokeWidth: 1,
+              );
+            },
+          ),
+          borderData: FlBorderData(show: false),
+          barGroups: List.generate(topBlocks.length, (index) {
+            final block = topBlocks[index];
+            final score = (block['score'] as num).toDouble();
+            final status = block['status'] as String;
+            
+            // Color based on status
+            Color barColor;
+            if (status == 'fail') {
+              barColor = const Color(0xFFDC2626);
+            } else if (status == 'continue_with_error') {
+              barColor = const Color(0xFFF59E0B);
+            } else {
+              barColor = const Color(0xFFF59E0B);
+            }
+            
+            return BarChartGroupData(
+              x: index,
+              barRods: [
+                BarChartRodData(
+                  toY: score,
+                  color: barColor,
+                  width: 30,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                ),
+              ],
+            );
+          }),
+        ),
+      ),
     );
   }
 
