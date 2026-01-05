@@ -60,3 +60,4 @@ Once the server is running, you can access:
 - API info: `http://localhost:3000/`
 - Login: `http://localhost:3000/api/auth/login`
 
+
