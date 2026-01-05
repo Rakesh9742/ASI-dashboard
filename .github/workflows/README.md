@@ -1,164 +1,110 @@
-# GitHub Actions CI/CD Pipeline
+# CI/CD Pipeline Documentation
 
-This directory contains GitHub Actions workflows for building and pushing Docker images for the ASI Dashboard application.
+## Overview
 
-## Workflows
+This CI/CD pipeline automatically builds and pushes Docker images whenever you push code to the `main` or `master` branch.
 
-### 1. `ci-cd.yml` - Main CI/CD Pipeline
+## What the Pipeline Does
 
-This is the primary workflow that runs on every push and pull request.
+1. **Gets New Code**: Automatically checks out the latest code from your repository
+2. **Deletes Old Images**: Removes existing Docker images to ensure clean builds
+3. **Builds Fresh Images**: Creates new Docker images with `--no-cache` for completely fresh builds
+4. **Pushes to Registry**: Uploads images to GitHub Container Registry (ghcr.io)
 
-**Triggers:**
-- Push to `main` branch
-- Pull requests to `main` branch
-- Tags starting with `v*`
+## When It Runs
 
-**Jobs:**
-1. **backend-test**: Tests and builds the backend TypeScript code
-2. **frontend-test**: Tests and builds the Flutter frontend
-3. **build-and-push**: Builds Docker images and pushes to GitHub Container Registry (ghcr.io)
+- ✅ **On Push**: Automatically triggers when you push code to `main` or `master` branch
+- ✅ **Manual Trigger**: You can also manually trigger it from the GitHub Actions tab
+- ❌ **Ignores**: Markdown file changes (`.md` files) won't trigger the pipeline
 
-### 2. `docker-build.yml` - Manual Docker Build
+## Image Locations
 
-Allows manual building of Docker images with custom options.
+After the pipeline runs, your images will be available at:
 
-**Triggers:**
-- Manual workflow dispatch (Actions tab → Run workflow)
-- Push to main branch when backend/frontend files change
+- **Backend**: `ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest`
+- **Frontend**: `ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-frontend:latest`
 
-**Options:**
-- **Component**: Choose to build `backend`, `frontend`, or `both`
-- **Tag**: Custom tag for the image (defaults to `latest`)
-- **Push**: Whether to push to registry (default: true)
+## Using the Images
 
-## Setup Instructions
-
-### 1. Container Registry
-
-The workflows use GitHub Container Registry (ghcr.io) by default. Images will be available at:
-- `ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest`
-- `ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-frontend:latest`
-
-**No additional setup needed** - GitHub Actions automatically authenticates using `GITHUB_TOKEN`.
-
-### 2. Using Docker Images
-
-After the workflow runs, you can pull and use the images:
+### Pull Images Locally
 
 ```bash
+# Login to GitHub Container Registry
+echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+
 # Pull images
 docker pull ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest
 docker pull ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-frontend:latest
-
-# Run with docker-compose
-# Update docker-compose.yml to use the registry images:
-#   image: ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest
-#   image: ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-frontend:latest
 ```
 
-### 3. Image Visibility
+### Update Kubernetes Deployments
 
-By default, images in GitHub Container Registry are private. To make them public:
+Update your `k8s/backend-deployment.yaml` and `k8s/frontend-deployment.yaml`:
+
+```yaml
+image: ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest
+imagePullPolicy: Always  # Always pull latest image
+```
+
+### Use in docker-compose.yml
+
+```yaml
+services:
+  backend:
+    image: ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest
+    # ... rest of config
+  
+  frontend:
+    image: ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-frontend:latest
+    # ... rest of config
+```
+
+## Image Visibility
+
+By default, images in GitHub Container Registry are **private**. To make them public:
+
 1. Go to your repository on GitHub
 2. Click on "Packages" (right sidebar)
-3. Click on the package (asi-backend or asi-frontend)
-4. Go to "Package settings"
-5. Scroll down and click "Change visibility" → "Make public"
+3. Click on the package (e.g., `asi-backend`)
+4. Click "Package settings"
+5. Scroll down to "Danger Zone"
+6. Click "Change visibility" → "Make public"
 
-## Usage
+## Pipeline Steps Breakdown
 
-### Automatic Build and Push
-
-1. Push to `main` branch
-2. Workflow automatically:
-   - Tests code
-   - Builds Docker images
-   - Pushes to registry
-
-### Manual Build
-
-1. Go to Actions tab
-2. Select "Docker Build and Push"
-3. Click "Run workflow"
-4. Choose options:
-   - Component: backend, frontend, or both
-   - Tag: custom tag (optional)
-   - Push: whether to push to registry
-5. Click "Run workflow"
-
-## Customization
-
-### Change Container Registry
-
-To use Docker Hub or another registry, update the `REGISTRY` environment variable in the workflows:
-
-```yaml
-env:
-  REGISTRY: docker.io  # or your-registry.com
-```
-
-And update login step in both workflows:
-```yaml
-- name: Log in to Container Registry
-  uses: docker/login-action@v3
-  with:
-    registry: ${{ env.REGISTRY }}
-    username: ${{ secrets.DOCKER_USERNAME }}
-    password: ${{ secrets.DOCKER_PASSWORD }}
-```
-
-Then add these secrets in GitHub:
-- `DOCKER_USERNAME`: Your Docker Hub username
-- `DOCKER_PASSWORD`: Your Docker Hub password or access token
-
-### Change Image Names
-
-Update the image name variables:
-```yaml
-env:
-  BACKEND_IMAGE_NAME: your-org/asi-backend
-  FRONTEND_IMAGE_NAME: your-org/asi-frontend
-```
+1. **Checkout Code**: Gets the latest code from your branch
+2. **Setup Docker Buildx**: Prepares Docker for building
+3. **Login to Registry**: Authenticates with GitHub Container Registry
+4. **Cleanup Old Images**: Removes old Docker images to free space
+5. **Build Backend**: Creates fresh backend Docker image (no cache)
+6. **Build Frontend**: Creates fresh frontend Docker image (no cache)
+7. **Push Images**: Uploads both images to the registry
 
 ## Troubleshooting
 
-### Build Failures
+### Pipeline Not Running?
 
-- Check that Dockerfiles are correct
-- Verify all dependencies are listed in package.json/pubspec.yaml
-- Check build logs for specific errors
-- Ensure Dockerfile paths are correct in workflow
+- Make sure you're pushing to `main` or `master` branch
+- Check that you're not only changing `.md` files (these are ignored)
+- Verify the workflow file is in `.github/workflows/` directory
 
-### Push Failures
+### Build Failures?
 
-- Ensure repository has proper permissions
-- Check that GITHUB_TOKEN has write access to packages
-- If using Docker Hub, verify DOCKER_USERNAME and DOCKER_PASSWORD secrets are set
-- Check registry authentication in workflow logs
+- Check the Actions tab for detailed error messages
+- Ensure your Dockerfiles are correct
+- Verify all dependencies are properly specified
 
-### Image Pull Errors
+### Can't Pull Images?
 
-If you can't pull images:
-1. Make repository/package public in GitHub, or
-2. Authenticate with GitHub Container Registry:
-   ```bash
-   echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
-   ```
-3. For Docker Hub, use: `docker login`
+- Make sure you're logged in to GitHub Container Registry
+- Check image visibility settings (private vs public)
+- Verify you have the correct image name and tag
 
-## Security Best Practices
+## Customization
 
-1. **Secrets**: Never commit secrets to the repository
-2. **Image Scanning**: Enable GitHub's Dependabot for vulnerability scanning
-3. **Tag Strategy**: Use specific tags (not just `latest`) for production
-4. **Branch Protection**: Protect main branch
-5. **Image Visibility**: Keep images private unless they need to be public
+To modify the pipeline behavior, edit `.github/workflows/ci-cd.yml`:
 
-## Support
-
-For issues or questions:
-1. Check workflow logs in the Actions tab
-2. Check container registry for pushed images
-3. Verify Docker images locally: `docker pull ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest`
-4. Test Docker images: `docker run -p 3000:3000 ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest`
-
+- **Change trigger branches**: Modify the `on.push.branches` section
+- **Use different registry**: Update the `REGISTRY` environment variable
+- **Enable caching**: Change `no-cache: true` to `no-cache: false` and add cache settings
+- **Add deployment step**: Add a new job to deploy to Kubernetes after building
