@@ -2,14 +2,14 @@
 
 ## Overview
 
-This CI/CD pipeline automatically builds and pushes Docker images whenever you push code to the `main` or `master` branch.
+This CI/CD pipeline automatically builds Docker images **directly on your EC2 instance** whenever you push code to the `main` or `master` branch.
 
 ## What the Pipeline Does
 
-1. **Gets New Code**: Automatically checks out the latest code from your repository
-2. **Deletes Old Images**: Removes existing Docker images to ensure clean builds
-3. **Builds Fresh Images**: Creates new Docker images with `--no-cache` for completely fresh builds
-4. **Pushes to Registry**: Uploads images to GitHub Container Registry (ghcr.io)
+1. **Gets New Code**: Pulls the latest code from your repository on EC2
+2. **Deletes Old Images**: Removes existing Docker images on EC2 to ensure clean builds
+3. **Builds Fresh Images**: Creates new Docker images directly on EC2 with `--no-cache` for completely fresh builds
+4. **Restarts Containers**: Automatically restarts your application containers with the new images
 
 ## When It Runs
 
@@ -19,66 +19,69 @@ This CI/CD pipeline automatically builds and pushes Docker images whenever you p
 
 ## Image Locations
 
-After the pipeline runs, your images will be available at:
+After the pipeline runs, your images are built **directly on EC2**:
 
-- **Backend**: `ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest`
-- **Frontend**: `ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-frontend:latest`
+- **Backend**: `asi-backend:latest` (built on EC2)
+- **Frontend**: `asi-frontend:latest` (built on EC2)
 
-## Using the Images
+**No container registry needed!** Everything builds directly on your EC2 server.
 
-### Pull Images Locally
+## Setup Required
 
-```bash
-# Login to GitHub Container Registry
-echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+### GitHub Secrets
 
-# Pull images
-docker pull ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest
-docker pull ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-frontend:latest
-```
+You need to configure these secrets in your GitHub repository:
 
-### Update Kubernetes Deployments
+1. Go to **Settings** → **Secrets and variables** → **Actions**
+2. Add the following secrets:
 
-Update your `k8s/backend-deployment.yaml` and `k8s/frontend-deployment.yaml`:
+| Secret Name | Description | Example |
+|------------|-------------|---------|
+| `EC2_SSH_KEY` | Your EC2 private SSH key (entire key including `-----BEGIN RSA PRIVATE KEY-----`) | `-----BEGIN RSA PRIVATE KEY-----...` |
+| `EC2_HOST` | Your EC2 instance IP or hostname | `ec2-12-34-56-78.compute-1.amazonaws.com` or `12.34.56.78` |
+| `EC2_USER` | SSH username for EC2 | `ec2-user` (Amazon Linux) or `ubuntu` (Ubuntu) |
+| `EC2_PROJECT_PATH` | (Optional) Path where project should be cloned/built | `/home/ec2-user/asi-dashboard` |
 
-```yaml
-image: ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest
-imagePullPolicy: Always  # Always pull latest image
-```
+### EC2 Requirements
 
-### Use in docker-compose.yml
+Your EC2 instance needs:
 
-```yaml
-services:
-  backend:
-    image: ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-backend:latest
-    # ... rest of config
-  
-  frontend:
-    image: ghcr.io/YOUR_USERNAME/YOUR_REPO/asi-frontend:latest
-    # ... rest of config
-```
+1. **Docker installed**
+   ```bash
+   # Install Docker on EC2
+   sudo yum install docker -y  # Amazon Linux
+   # OR
+   sudo apt-get install docker.io -y  # Ubuntu
+   sudo systemctl start docker
+   sudo systemctl enable docker
+   sudo usermod -aG docker $USER
+   ```
 
-## Image Visibility
+2. **Docker Compose** (if using docker-compose.yml)
+   ```bash
+   sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+   sudo chmod +x /usr/local/bin/docker-compose
+   ```
 
-By default, images in GitHub Container Registry are **private**. To make them public:
+3. **Git installed**
+   ```bash
+   sudo yum install git -y  # Amazon Linux
+   # OR
+   sudo apt-get install git -y  # Ubuntu
+   ```
 
-1. Go to your repository on GitHub
-2. Click on "Packages" (right sidebar)
-3. Click on the package (e.g., `asi-backend`)
-4. Click "Package settings"
-5. Scroll down to "Danger Zone"
-6. Click "Change visibility" → "Make public"
+4. **SSH access** configured (the SSH key you add to GitHub secrets)
 
 ## Pipeline Steps Breakdown
 
-1. **Checkout Code**: Gets the latest code from your branch
-2. **Setup Docker Buildx**: Prepares Docker for building
-3. **Login to Registry**: Authenticates with GitHub Container Registry
-4. **Cleanup Old Images**: Removes old Docker images to free space
-5. **Build Backend**: Creates fresh backend Docker image (no cache)
-6. **Build Frontend**: Creates fresh frontend Docker image (no cache)
-7. **Push Images**: Uploads both images to the registry
+1. **Checkout Code**: GitHub Actions checks out your code
+2. **Configure SSH**: Sets up SSH connection to EC2
+3. **Deploy to EC2**: 
+   - Clones/pulls latest code to EC2
+   - Removes old Docker images
+   - Builds backend image directly on EC2 (no cache)
+   - Builds frontend image directly on EC2 (no cache)
+   - Restarts containers (docker-compose or direct Docker)
 
 ## Troubleshooting
 
@@ -87,24 +90,37 @@ By default, images in GitHub Container Registry are **private**. To make them pu
 - Make sure you're pushing to `main` or `master` branch
 - Check that you're not only changing `.md` files (these are ignored)
 - Verify the workflow file is in `.github/workflows/` directory
+- Check that all required secrets are configured
 
-### Build Failures?
+### SSH Connection Failed?
+
+- Verify `EC2_SSH_KEY` secret contains the complete private key
+- Check that `EC2_HOST` is correct (IP or hostname)
+- Ensure `EC2_USER` matches your EC2 instance user
+- Test SSH connection manually: `ssh EC2_USER@EC2_HOST`
+- Check EC2 security group allows SSH (port 22) from GitHub Actions IPs
+
+### Build Failures on EC2?
 
 - Check the Actions tab for detailed error messages
-- Ensure your Dockerfiles are correct
-- Verify all dependencies are properly specified
+- SSH into EC2 and check Docker: `docker --version`
+- Verify Dockerfiles are correct
+- Check disk space on EC2: `df -h`
+- View Docker logs: `docker logs asi-backend` or `docker logs asi-frontend`
 
-### Can't Pull Images?
+### Containers Not Restarting?
 
-- Make sure you're logged in to GitHub Container Registry
-- Check image visibility settings (private vs public)
-- Verify you have the correct image name and tag
+- Check if docker-compose.yml exists in project root
+- Verify containers are running: `docker ps`
+- Check container logs: `docker logs asi-backend`
+- Manually restart: `docker-compose restart` or `docker restart asi-backend`
 
 ## Customization
 
 To modify the pipeline behavior, edit `.github/workflows/ci-cd.yml`:
 
 - **Change trigger branches**: Modify the `on.push.branches` section
-- **Use different registry**: Update the `REGISTRY` environment variable
-- **Enable caching**: Change `no-cache: true` to `no-cache: false` and add cache settings
-- **Add deployment step**: Add a new job to deploy to Kubernetes after building
+- **Change project path**: Update `EC2_PROJECT_PATH` secret or modify the default path in the script
+- **Enable Docker cache**: Remove `--no-cache` flag in the build commands (faster but may use old layers)
+- **Customize container restart**: Modify the container restart logic in the deployment script
+- **Add pre-build steps**: Add commands before Docker build (e.g., run tests, install dependencies)
