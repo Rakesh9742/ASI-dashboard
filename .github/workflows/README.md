@@ -40,7 +40,7 @@ You need to configure these secrets in your GitHub repository:
 | `EC2_SSH_KEY` | Your EC2 private SSH key (entire key including `-----BEGIN RSA PRIVATE KEY-----`) | `-----BEGIN RSA PRIVATE KEY-----...` |
 | `EC2_HOST` | Your EC2 instance IP or hostname | `ec2-12-34-56-78.compute-1.amazonaws.com` or `12.34.56.78` |
 | `EC2_USER` | SSH username for EC2 | `ec2-user` (Amazon Linux) or `ubuntu` (Ubuntu) |
-| `EC2_PROJECT_PATH` | (Optional) Path where project should be cloned/built | `/home/ec2-user/asi-dashboard` |
+| `EC2_PROJECT_PATH` | (Optional) Path where project should be cloned/built | `/home/asi/ASI-dashboard` (default) |
 
 ### EC2 Requirements
 

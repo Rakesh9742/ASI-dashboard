@@ -22,9 +22,24 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+          chmod 700 ~/.ssh
+          
+          # Write SSH key (if provided)
+          if [ -n "${{ secrets.EC2_SSH_KEY }}" ]; then
+            echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            echo "✅ SSH key configured"
+          else
+            echo "⚠️ Warning: EC2_SSH_KEY not set, assuming SSH is already configured"
+          fi
+          
+          # Add EC2 host to known_hosts (non-blocking)
+          if [ -n "${{ secrets.EC2_HOST }}" ]; then
+            ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts 2>&1 || true
+            echo "✅ Added EC2 host to known_hosts"
+          fi
+          
+          echo "✅ SSH configuration complete"
 
       - name: Deploy and Build on EC2
         env:
@@ -40,9 +55,9 @@ jobs:
           #!/bin/bash
           set -e
           
-          # Default project path if not set
+          # Default project path if not set (matches user's actual path)
           if [ -z "$PROJECT_PATH" ]; then
-            PROJECT_PATH="/home/$USER/asi-dashboard"
+            PROJECT_PATH="/home/asi/ASI-dashboard"
           fi
           
           echo "📁 Project path: $PROJECT_PATH"
@@ -136,15 +151,30 @@ jobs:
           GIT_REPO_URL="https://github.com/${GITHUB_REPOSITORY}.git"
           
           # Copy deployment script to EC2
-          scp deploy-build-ec2.sh ${EC2_USER}@${EC2_HOST}:/tmp/deploy-build-ec2.sh
+          echo "📤 Copying deployment script to EC2..."
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            deploy-build-ec2.sh ${EC2_USER}@${EC2_HOST}:/tmp/deploy-build-ec2.sh || {
+            echo "❌ Error: Failed to copy script to EC2"
+            echo "Please check:"
+            echo "  1. EC2_HOST is correct: ${EC2_HOST}"
+            echo "  2. EC2_USER is correct: ${EC2_USER}"
+            echo "  3. SSH key has access to EC2"
+            echo "  4. EC2 security group allows SSH"
+            exit 1
+          }
           
           # Execute deployment script on EC2
-          # Pass GITHUB_TOKEN if repository is private
-          ssh ${EC2_USER}@${EC2_HOST} "chmod +x /tmp/deploy-build-ec2.sh && \
+          echo "🚀 Executing deployment on EC2..."
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${EC2_USER}@${EC2_HOST} "chmod +x /tmp/deploy-build-ec2.sh && \
             PROJECT_PATH='${PROJECT_PATH}' \
             GIT_REPO_URL='${GIT_REPO_URL}' \
             GITHUB_TOKEN='${GITHUB_TOKEN}' \
-            /tmp/deploy-build-ec2.sh"
+            /tmp/deploy-build-ec2.sh" || {
+            echo "❌ Error: Deployment failed on EC2"
+            echo "Check the error messages above for details"
+            exit 1
+          }
           
           echo "✅ Successfully built and deployed on EC2!"
 
