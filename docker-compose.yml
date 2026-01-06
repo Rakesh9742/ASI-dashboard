@@ -32,7 +32,7 @@ services:
     container_name: asi_backend
     environment:
       PORT: 3000
-      NODE_ENV: production
+      NODE_ENV: development
       DATABASE_URL: postgresql://postgres:root@postgres:5432/ASI
       JWT_SECRET: your-secret-key-change-in-production
       JWT_EXPIRES_IN: 7d

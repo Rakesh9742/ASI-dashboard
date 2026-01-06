@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'widgets/auth_wrapper.dart';
+import 'screens/qms_checklist_detail_screen.dart';
 
 void main() {
   runApp(const ProviderScope(child: MyApp()));
@@ -52,6 +53,27 @@ class MyApp extends StatelessWidget {
       themeMode: ThemeMode.light,
       home: const AuthWrapper(),
       debugShowCheckedModeBanner: false,
+      onGenerateRoute: (settings) {
+        // Handle deep linking
+        if (settings.name != null) {
+          final uri = Uri.parse(settings.name!);
+          
+          // Checklist Detail Route: /qms/checklist/:id
+          if (uri.pathSegments.length >= 3 && 
+              uri.pathSegments[0] == 'qms' && 
+              uri.pathSegments[1] == 'checklist') {
+            final idStr = uri.pathSegments[2];
+            final id = int.tryParse(idStr);
+            if (id != null) {
+              return MaterialPageRoute(
+                builder: (context) => QmsChecklistDetailScreen(checklistId: id),
+                settings: settings,
+              );
+            }
+          }
+        }
+        return null; // Default behavior
+      },
     );
   }
 }

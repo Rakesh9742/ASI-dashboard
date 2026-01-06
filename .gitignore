@@ -27,6 +27,18 @@ Thumbs.db
 *.seed
 *.pid.lock
 
+# Test and Utility Scripts
+backend/scripts/
+backend/tests/
+backend/test-*.js
+test-*.js
+*.ps1
+
+# Temporary Data
+backend/uploads/
+backend/output/
+*.session.sql
+test-file.json
 
 
 

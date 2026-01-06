@@ -1,0 +1,6 @@
+Metric,Value,Status
+Tool Version,V2023.1,Pass
+RTL Errors,0,Pass
+RTL Warnings,2,Warning
+Unresolved References,0,Pass
+Timing Score,95.5,Pass

@@ -7,6 +7,7 @@ import 'project_management_screen.dart';
 import 'engineer_projects_screen.dart';
 import 'view_screen.dart';
 import 'login_screen.dart';
+import 'qms_filter_screen.dart';
 
 class MainNavigationScreen extends ConsumerStatefulWidget {
   const MainNavigationScreen({super.key});
@@ -24,12 +25,14 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
         const DashboardScreen(),
         const EngineerProjectsScreen(),
         const ViewScreen(),
+        const QmsFilterScreen(),
       ];
     }
     return [
       const DashboardScreen(),
       const ProjectManagementScreen(),
       const ViewScreen(),
+      const QmsFilterScreen(),
       const UserManagementScreen(),
     ];
   }
@@ -161,6 +164,15 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                           index: isEngineer ? 2 : 2,
                           isSelected: _selectedIndex == (isEngineer ? 2 : 2),
                         ),
+                        const SizedBox(height: 8),
+                        _buildNavItem(
+                          context: context,
+                          icon: Icons.checklist_outlined,
+                          selectedIcon: Icons.checklist,
+                          label: 'QMS',
+                          index: isEngineer ? 3 : 3,
+                          isSelected: _selectedIndex == (isEngineer ? 3 : 3),
+                        ),
                         if (isAdmin) ...[
                           const SizedBox(height: 8),
                           _buildNavItem(
@@ -168,8 +180,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                             icon: Icons.people_outline,
                             selectedIcon: Icons.people,
                             label: 'Users',
-                            index: 3,
-                            isSelected: _selectedIndex == 3,
+                            index: 4,
+                            isSelected: _selectedIndex == 4,
                           ),
                         ],
                       ],
@@ -432,8 +444,10 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
         color: Colors.transparent,
         child: InkWell(
           onTap: () {
-            // Only allow admin to access user management (index 3)
-            if (index == 3 && !isAdmin) {
+            // Only allow admin to access user management (index 4 for non-engineers)
+            // For engineers: screens are [Dashboard(0), Projects(1), View(2), QMS(3)]
+            // For others: screens are [Dashboard(0), Project Management(1), View(2), QMS(3), User Management(4)]
+            if (!isEngineer && index == 4 && !isAdmin) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
                   content: Text('Access denied. Admin role required.'),
@@ -442,8 +456,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
               );
               return;
             }
-            // Engineers can only access index 0 (Dashboard), 1 (Projects), and 2 (View)
-            if (isEngineer && index > 2) {
+            // Engineers can access index 0 (Dashboard), 1 (Projects), 2 (View), and 3 (QMS)
+            if (isEngineer && index > 3) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
                   content: Text('Access denied. This section is not available for engineers.'),
@@ -559,6 +573,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
           return 'My Projects';
         case 2:
           return 'View';
+        case 3:
+          return 'QMS';
         default:
           return 'ASI Dashboard';
       }
@@ -572,6 +588,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
       case 2:
         return 'View';
       case 3:
+        return 'QMS';
+      case 4:
         return 'User Management';
       default:
         return 'ASI Dashboard';

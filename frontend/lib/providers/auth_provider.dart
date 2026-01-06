@@ -25,6 +25,9 @@ class AuthState {
       user: user ?? this.user,
     );
   }
+
+  String? get userRole => user?['role']?.toString();
+  String? get username => user?['username']?.toString();
 }
 
 class AuthNotifier extends StateNotifier<AuthState> {

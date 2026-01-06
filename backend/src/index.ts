@@ -10,6 +10,7 @@ import authRoutes from './routes/auth.routes';
 import domainRoutes from './routes/domain.routes';
 import zohoRoutes from './routes/zoho.routes';
 import edaFilesRoutes from './routes/edaFiles.routes';
+import qmsRoutes from './routes/qms.routes';
 import fileWatcherService from './services/fileWatcher.service';
 import { authenticate } from './middleware/auth.middleware';
 
@@ -103,6 +104,7 @@ app.get('/', (req, res) => {
       domains: '/api/domains',
       dashboard: '/api/dashboard',
       edaFiles: '/api/eda-files',
+      qms: '/api/qms',
     },
     documentation: 'See API documentation for details'
   });
@@ -134,6 +136,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/domains', domainRoutes);
 app.use('/api/zoho', zohoRoutes);
 app.use('/api/eda-files', edaFilesRoutes);
+app.use('/api/qms', qmsRoutes);
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
