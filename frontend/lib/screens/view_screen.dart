@@ -26,6 +26,10 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   String _stageFilter = 'all';
   String _viewType = 'engineer'; // 'engineer', 'lead', 'manager'
   
+  // Lead View filters
+  String _leadStageFilter = ''; // Empty means all stages
+  String _leadStatusFilter = ''; // Empty means all statuses
+  
   // Data
   bool _isLoading = false;
   bool _isLoadingDomains = false;
@@ -38,6 +42,9 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   
   // Visualization type: 'graph' or 'heatmap'
   String _visualizationType = 'graph';
+  
+  // Chart type selector
+  String _selectedChartType = 'Timing Metrics';
 
   // Scroll controllers for table
   final ScrollController _horizontalScrollController = ScrollController();
@@ -191,6 +198,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           'area': _parseNumeric(file['area']),
           'inst_count': _parseNumeric(file['inst_count']),
           'utilization': _parseNumeric(file['utilization']),
+          'metal_density_max': _parseNumeric(file['metal_density_max']),
           'min_pulse_width': file['min_pulse_width']?.toString(),
           'min_period': file['min_period']?.toString(),
           'double_switching': file['double_switching']?.toString(),
@@ -334,8 +342,6 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   _buildHeader(),
-                  const SizedBox(height: 48),
-                  _buildProjectDomainSelection(),
                 ],
               ),
             ),
@@ -356,8 +362,6 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   _buildHeader(),
-                  const SizedBox(height: 24),
-                  _buildProjectDomainSelection(),
                   const SizedBox(height: 48),
                   Icon(Icons.folder_open, size: 64, color: Colors.grey.shade400),
                   const SizedBox(height: 16),
@@ -388,16 +392,18 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
               children: [
                 _buildHeader(),
                 const SizedBox(height: 24),
-                _buildViewTypeSelector(),
-                const SizedBox(height: 24),
-                _buildProjectDomainSelection(),
-                const SizedBox(height: 24),
                 if (_viewType == 'engineer') ...[
                   _buildFilterBar(),
                   const SizedBox(height: 24),
-                  _buildSummarySection(activeRun, activeStages),
+                  _buildEngineerKPICards(activeRun, activeStages),
                   const SizedBox(height: 24),
-                  _buildComparisonMatrix(activeStages),
+                  _buildStageProgressVisualization(activeStages),
+                  const SizedBox(height: 24),
+                  _buildDetailedTimingMetricsTable(activeStages),
+                  const SizedBox(height: 24),
+                  _buildPhysicalMetricsTable(activeStages),
+                  const SizedBox(height: 24),
+                  _buildResourceUtilizationTable(activeStages),
                   const SizedBox(height: 24),
                   _buildMetricsGraphSection(activeStages),
                 ] else if (_viewType == 'lead') ...[
@@ -473,117 +479,128 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   }
 
   Widget _buildHeader() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (_selectedProject != null || _selectedBlock != null || _selectedTag != null || _selectedExperiment != null)
-          Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            child: Wrap(
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                if (_selectedProject != null)
-                  Text(
-                    _selectedProject!.toUpperCase(),
-                    style: const TextStyle(
-                      color: Color(0xFF2563EB),
-                      fontWeight: FontWeight.w800,
-                      fontSize: 10,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                if (_selectedBlock != null) ...[
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 8.0),
-                    child: Icon(Icons.chevron_right, size: 10, color: Color(0xFF94A3B8)),
-                  ),
-                  Text(
-                    _selectedBlock!.toUpperCase(),
-                    style: const TextStyle(
-                      color: Color(0xFF94A3B8),
-                      fontWeight: FontWeight.w800,
-                      fontSize: 10,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                ],
-                if (_selectedTag != null) ...[
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 8.0),
-                    child: Icon(Icons.chevron_right, size: 10, color: Color(0xFF94A3B8)),
-                  ),
-                  Text(
-                    _selectedTag!.toUpperCase(),
-                    style: const TextStyle(
-                      color: Color(0xFF94A3B8),
-                      fontWeight: FontWeight.w800,
-                      fontSize: 10,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                ],
-                if (_selectedExperiment != null) ...[
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 8.0),
-                    child: Icon(Icons.chevron_right, size: 10, color: Color(0xFF94A3B8)),
-                  ),
-                  Text(
-                    _selectedExperiment!.toUpperCase(),
-                    style: const TextStyle(
-                      color: Color(0xFF1E293B),
-                      fontWeight: FontWeight.w800,
-                      fontSize: 10,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: const Color(0xFF2563EB),
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF2563EB).withOpacity(0.2),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: const Icon(Icons.memory, color: Colors.white, size: 24),
-            ),
-            const SizedBox(width: 14),
-            const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'PD Flow Dashboard',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF1E293B),
-                    letterSpacing: -0.5,
-                  ),
+    // Get project names and domains
+    final projectNames = <String>[];
+    try {
+      if (_projects.isNotEmpty) {
+        projectNames.addAll(
+          _projects.map((p) => p['name']?.toString() ?? 'Unknown').toList().cast<String>()
+        );
+      }
+    } catch (e) {
+      // Handle error
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          // Left side: Project and Domain dropdowns
+          Row(
+            children: [
+              // Project Dropdown
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
                 ),
-                Text(
-                  'FULL FLOW COMPARISON REPORT',
+                child: DropdownButton<String>(
+                  value: _selectedProject,
+                  hint: const Text(
+                    'Select Project',
+                    style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+                  ),
+                  underline: const SizedBox(),
+                  isDense: true,
+                  items: projectNames.map((name) {
+                    return DropdownMenuItem<String>(
+                      value: name,
+                      child: Text(
+                        name,
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF1E293B)),
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: (value) => _updateProject(value),
+                ),
+              ),
+              const SizedBox(width: 16),
+              // Domain Dropdown
+              if (_selectedProject != null) ...[
+                if (_isLoadingDomains)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF2563EB)),
+                      ),
+                    ),
+                  )
+                else if (_availableDomainsForProject.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: DropdownButton<String>(
+                      value: _selectedDomain,
+                      hint: const Text(
+                        'Select Domain',
+                        style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+                      ),
+                      underline: const SizedBox(),
+                      isDense: true,
+                      items: _availableDomainsForProject.map((domain) {
+                        return DropdownMenuItem<String>(
+                          value: domain,
+                          child: Text(
+                            domain,
+                            style: const TextStyle(fontSize: 12, color: Color(0xFF1E293B)),
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (value) => _updateDomain(value),
+                    ),
+                  ),
+              ],
+            ],
+          ),
+          // Right side: View Type Selector (only show when project and domain are selected)
+          if (_selectedProject != null && _selectedDomain != null)
+            Row(
+              children: [
+                const Text(
+                  'VIEW TYPE:',
                   style: TextStyle(
-                    fontSize: 10,
+                    fontSize: 11,
                     fontWeight: FontWeight.w800,
                     color: Color(0xFF94A3B8),
-                    letterSpacing: 1.2,
+                    letterSpacing: 0.5,
                   ),
                 ),
+                const SizedBox(width: 16),
+                _buildViewTypeChip('Engineer View', 'engineer'),
+                const SizedBox(width: 8),
+                _buildViewTypeChip('Lead View', 'lead'),
+                const SizedBox(width: 8),
+                _buildViewTypeChip('Manager View', 'manager'),
               ],
             ),
-          ],
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -937,14 +954,16 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                 (v) => _updateCascadingFilters(e: v),
                 width: calculateWidth(false),
               ),
-              _buildDropdown(
-                'Stage Filter',
-                ['all', ...stageNames],
-                _stageFilter,
-                (v) => setState(() => _stageFilter = v ?? 'all'),
-                isBlue: true,
-                width: calculateWidth(true),
-              ),
+              // Only show stage filter in engineer view, not in lead view
+              if (_viewType != 'lead')
+                _buildDropdown(
+                  'Stage Filter',
+                  ['all', ...stageNames],
+                  _stageFilter,
+                  (v) => setState(() => _stageFilter = v ?? 'all'),
+                  isBlue: true,
+                  width: calculateWidth(true),
+                ),
             ],
           ),
         );
@@ -1316,11 +1335,1489 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     );
   }
 
+  // ============================================================================
+  // ENGINEER VIEW - NEW IMPLEMENTATION
+  // ============================================================================
+
+  Widget _buildEngineerKPICards(Map<String, dynamic>? activeRun, List<Map<String, dynamic>> stages) {
+    if (activeRun == null || stages.isEmpty) return const SizedBox();
+
+    final lastStage = stages.last;
+    
+    // Get setup timing QOR with path group breakdown
+    final setupPathGroups = lastStage['setup_path_groups'] as Map<String, dynamic>? ?? {};
+    final reg2regWns = _parseNumeric(setupPathGroups['reg2reg']?['wns']) ?? 
+                      _parseNumeric(lastStage['internal_timing_r2r_wns']);
+    
+    // Get hold timing metrics (reg2reg focused)
+    final holdWns = _parseNumeric(lastStage['hold_wns']);
+    final holdTns = _parseNumeric(lastStage['hold_tns']);
+    final holdNvp = _parseNumeric(lastStage['hold_nvp'])?.toInt() ?? 0;
+    
+    // Physical metrics
+    final area = _parseNumeric(lastStage['area']);
+    final utilization = lastStage['utilization']?.toString() ?? 'N/A';
+    final instCount = _parseNumeric(lastStage['inst_count'])?.toInt() ?? 0;
+    
+    // Verification status
+    final drc = lastStage['pv_drc_base']?.toString() ?? 'N/A';
+    final lvs = lastStage['lvs']?.toString() ?? 'N/A';
+    final r2gLec = lastStage['r2g_lec']?.toString() ?? 'N/A';
+    final g2gLec = lastStage['g2g_lec']?.toString() ?? 'N/A';
+    
+    // Latest stage info
+    final runtime = lastStage['runtime']?.toString() ?? 'N/A';
+    final memory = lastStage['memory_usage']?.toString() ?? 'N/A';
+    final stageName = lastStage['stage']?.toString().toUpperCase() ?? 'N/A';
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 768;
+        final cardWidth = isMobile ? constraints.maxWidth : (constraints.maxWidth - 80) / 5;
+        
+        return Wrap(
+          spacing: 16,
+          runSpacing: 16,
+          children: [
+            // KPI Card 1: Latest Stage Info
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Latest Stage Info',
+                icon: Icons.info_outline,
+                color: const Color(0xFF3B82F6),
+                children: [
+                  _buildKPIValue(stageName, subtitle: 'Stage'),
+                  const SizedBox(height: 12),
+                  _buildKPIValue(runtime, subtitle: 'Runtime'),
+                  const SizedBox(height: 8),
+                  _buildKPIValue(memory, subtitle: 'Memory'),
+                ],
+              ),
+            ),
+            
+            // KPI Card 2: Setup Timing QOR
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Setup Timing QOR',
+                icon: Icons.timer_outlined,
+                color: const Color(0xFF10B981),
+                children: [
+                  _buildKPIValue(
+                    reg2regWns != null ? reg2regWns.toStringAsFixed(3) : 'N/A',
+                    subtitle: 'Reg2Reg WNS',
+                  ),
+                  const SizedBox(height: 12),
+                  _buildPathGroupBreakdown(setupPathGroups),
+                ],
+              ),
+            ),
+            
+            // KPI Card 3: Hold Timing Metrics
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Hold Timing (Reg2Reg)',
+                icon: Icons.schedule,
+                color: const Color(0xFFF59E0B),
+                children: [
+                  _buildKPIValue(
+                    holdWns != null ? holdWns.toStringAsFixed(3) : 'N/A',
+                    subtitle: 'WNS',
+                  ),
+                  const SizedBox(height: 8),
+                  _buildKPIValue(
+                    holdTns != null ? holdTns.toStringAsFixed(2) : 'N/A',
+                    subtitle: 'TNS',
+                  ),
+                  const SizedBox(height: 8),
+                  _buildKPIValue(
+                    holdNvp.toString(),
+                    subtitle: 'NVP',
+                  ),
+                ],
+              ),
+            ),
+            
+            // KPI Card 4: Physical Metrics
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Physical Metrics',
+                icon: Icons.square_foot,
+                color: const Color(0xFF8B5CF6),
+                children: [
+                  _buildKPIValue(
+                    area != null ? area.toStringAsFixed(2) : 'N/A',
+                    subtitle: 'Area',
+                  ),
+                  const SizedBox(height: 8),
+                  _buildKPIValue(utilization, subtitle: 'Utilization'),
+                  const SizedBox(height: 8),
+                  _buildKPIValue(
+                    instCount.toString(),
+                    subtitle: 'Instance Count',
+                  ),
+                ],
+              ),
+            ),
+            
+            // KPI Card 5: Verification Status
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Verification Status',
+                icon: Icons.verified_outlined,
+                color: const Color(0xFFEF4444),
+                children: [
+                  _buildVerificationItem('DRC', drc),
+                  const SizedBox(height: 8),
+                  _buildVerificationItem('LVS', lvs),
+                  const SizedBox(height: 8),
+                  _buildVerificationItem('R2G LEC', r2gLec),
+                  const SizedBox(height: 8),
+                  _buildVerificationItem('G2G LEC', g2gLec),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildKPICard({
+    required String title,
+    required IconData icon,
+    required Color color,
+    required List<Widget> children,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, size: 20, color: color),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildKPIValue(String value, {String? subtitle}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (subtitle != null)
+          Text(
+            subtitle,
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF94A3B8),
+              letterSpacing: 0.5,
+            ),
+          ),
+        if (subtitle != null) const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF1E293B),
+            fontFamily: 'monospace',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPathGroupBreakdown(Map<String, dynamic> pathGroups) {
+    final groups = ['reg2reg', 'in2reg', 'reg2out', 'all'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Path Groups',
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF94A3B8),
+            letterSpacing: 0.5,
+          ),
+        ),
+        const SizedBox(height: 8),
+        ...groups.map((group) {
+          final data = pathGroups[group] as Map<String, dynamic>?;
+          final wns = _parseNumeric(data?['wns']);
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  group.toUpperCase(),
+                  style: const TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                Text(
+                  wns != null ? wns.toStringAsFixed(3) : 'N/A',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ],
+    );
+  }
+
+  Widget _buildVerificationItem(String label, String value) {
+    final isPass = value.toString().toLowerCase() == 'pass' || 
+                   value.toString().toLowerCase() == '0' ||
+                   value.toString() == 'N/A';
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF64748B),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: isPass ? const Color(0xFFDCFCE7) : const Color(0xFFFEF2F2),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(
+              color: isPass ? const Color(0xFF16A34A) : const Color(0xFFDC2626),
+              width: 1,
+            ),
+          ),
+          child: Text(
+            value,
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+              color: isPass ? const Color(0xFF16A34A) : const Color(0xFFDC2626),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStageProgressVisualization(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    // Full stage order for sorting
+    final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+    final stageNames = {
+      'syn': 'Synthesis',
+      'init': 'Init',
+      'floorplan': 'Floorplan',
+      'place': 'Placement',
+      'cts': 'CTS',
+      'postcts': 'Post-CTS',
+      'route': 'Routing',
+      'postroute': 'Post-Route',
+    };
+
+    // Extract unique stages from the provided stages list
+    final uniqueStages = <String, Map<String, dynamic>>{};
+    for (var stage in stages) {
+      final stageKey = stage['stage']?.toString().toLowerCase() ?? '';
+      if (stageKey.isNotEmpty) {
+        // Keep the most recent stage if there are duplicates (by timestamp)
+        if (!uniqueStages.containsKey(stageKey)) {
+          uniqueStages[stageKey] = stage;
+        } else {
+          final existingTimestamp = uniqueStages[stageKey]!['timestamp']?.toString() ?? '';
+          final currentTimestamp = stage['timestamp']?.toString() ?? '';
+          if (currentTimestamp.isNotEmpty && existingTimestamp.isNotEmpty) {
+            try {
+              final existingDate = DateTime.parse(existingTimestamp);
+              final currentDate = DateTime.parse(currentTimestamp);
+              if (currentDate.isAfter(existingDate)) {
+                uniqueStages[stageKey] = stage;
+              }
+            } catch (e) {
+              // If timestamp parsing fails, keep existing
+            }
+          }
+        }
+      }
+    }
+
+    // Sort stages according to stage order
+    final sortedStageKeys = uniqueStages.keys.toList();
+    sortedStageKeys.sort((a, b) {
+      final aIdx = stageOrder.indexOf(a);
+      final bIdx = stageOrder.indexOf(b);
+      if (aIdx == -1 && bIdx == -1) return 0;
+      if (aIdx == -1) return 1;
+      if (bIdx == -1) return -1;
+      return aIdx.compareTo(bIdx);
+    });
+
+    // Determine the recent/latest stage (last one in the sorted list)
+    final recentStageKey = sortedStageKeys.isNotEmpty ? sortedStageKeys.last : null;
+
+    // Colors: green for all stages, blue for latest
+    const allStageColor = Color(0xFF10B981); // Green
+    const latestStageColor = Color(0xFF3B82F6); // Blue
+
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.timeline, size: 20, color: Color(0xFF0F172A)),
+              SizedBox(width: 12),
+              Text(
+                'Stage Progress',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF0F172A),
+                  letterSpacing: -0.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          Wrap(
+            spacing: 16,
+            runSpacing: 16,
+            children: sortedStageKeys.map((stageKey) {
+              final stage = uniqueStages[stageKey]!;
+              final isLatestStage = stageKey == recentStageKey;
+              final stageColor = isLatestStage ? latestStageColor : allStageColor;
+
+              return Container(
+                width: 140,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: stageColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: stageColor,
+                    width: isLatestStage ? 2.5 : 1.5,
+                  ),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.check_circle,
+                      color: stageColor,
+                      size: 32,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      stageNames[stageKey] ?? stageKey.toUpperCase(),
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: isLatestStage ? FontWeight.w700 : FontWeight.w600,
+                        color: stageColor,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    if (stage['timestamp'] != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        stage['timestamp']?.toString().split(' ').first ?? '',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: stageColor.withOpacity(0.7),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDetailedTimingMetricsTable(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white, // White background
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              border: const Border(bottom: BorderSide(color: Color(0xFFE2E8F0), width: 2)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.table_chart, size: 22, color: Color(0xFF0F172A)),
+                SizedBox(width: 12),
+                Text(
+                  'Detailed Timing Metrics',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF0F172A),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              border: TableBorder(
+                horizontalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                verticalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                top: BorderSide(color: Colors.grey.shade300, width: 1),
+                bottom: BorderSide(color: Colors.grey.shade300, width: 1),
+                left: BorderSide(color: Colors.grey.shade300, width: 1),
+                right: BorderSide(color: Colors.grey.shade300, width: 1),
+              ),
+              columnWidths: const {
+                0: FixedColumnWidth(120),
+                1: FixedColumnWidth(110),
+                2: FixedColumnWidth(110),
+                3: FixedColumnWidth(100),
+                4: FixedColumnWidth(110),
+                5: FixedColumnWidth(110),
+                6: FixedColumnWidth(110),
+                7: FixedColumnWidth(110),
+                8: FixedColumnWidth(110),
+                9: FixedColumnWidth(110),
+                10: FixedColumnWidth(100),
+              },
+              children: [
+                // Header Row
+                TableRow(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF0F172A),
+                  ),
+                  children: [
+                    _buildTableHeaderCell('STAGE'),
+                    _buildTableHeaderCell('Reg2Reg WNS'),
+                    _buildTableHeaderCell('Reg2Reg TNS'),
+                    _buildTableHeaderCell('Reg2Reg NVP'),
+                    _buildTableHeaderCell('I2R WNS'),
+                    _buildTableHeaderCell('I2R TNS'),
+                    _buildTableHeaderCell('R2O WNS'),
+                    _buildTableHeaderCell('R2O TNS'),
+                    _buildTableHeaderCell('Hold WNS'),
+                    _buildTableHeaderCell('Hold TNS'),
+                    _buildTableHeaderCell('Hold NVP'),
+                  ],
+                ),
+                // Data Rows
+                ...stages.map((stage) {
+                  final r2rWns = _formatTimingValueString(stage['internal_timing_r2r_wns']);
+                  final r2rTns = _formatTimingValueString(stage['internal_timing_r2r_tns']);
+                  final r2rNvp = _formatValueString(stage['internal_timing_r2r_nvp']);
+                  final i2rWns = _formatTimingValueString(stage['interface_timing_i2r_wns']);
+                  final i2rTns = _formatTimingValueString(stage['interface_timing_i2r_tns']);
+                  final r2oWns = _formatTimingValueString(stage['interface_timing_r2o_wns']);
+                  final r2oTns = _formatTimingValueString(stage['interface_timing_r2o_tns']);
+                  final holdWns = _formatTimingValueString(stage['hold_wns']);
+                  final holdTns = _formatTimingValueString(stage['hold_tns']);
+                  final holdNvp = _formatValueString(stage['hold_nvp']);
+                  
+                  return TableRow(
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                    ),
+                    children: [
+                      _buildTableCell(
+                        (stage['stage']?.toString() ?? '').toUpperCase(),
+                        isBold: true,
+                        textColor: const Color(0xFF1E293B),
+                      ),
+                      _buildTableCell(r2rWns, isNA: _isNA(r2rWns)),
+                      _buildTableCell(r2rTns, isNA: _isNA(r2rTns)),
+                      _buildTableCell(r2rNvp, isNA: _isNA(r2rNvp)),
+                      _buildTableCell(i2rWns, isNA: _isNA(i2rWns)),
+                      _buildTableCell(i2rTns, isNA: _isNA(i2rTns)),
+                      _buildTableCell(r2oWns, isNA: _isNA(r2oWns)),
+                      _buildTableCell(r2oTns, isNA: _isNA(r2oTns)),
+                      _buildTableCell(holdWns, isNA: _isNA(holdWns)),
+                      _buildTableCell(holdTns, isNA: _isNA(holdTns)),
+                      _buildTableCell(holdNvp, isNA: _isNA(holdNvp)),
+                    ],
+                  );
+                }).toList(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTableHeaderCell(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      alignment: Alignment.center,
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+          color: Colors.white,
+          letterSpacing: 0.5,
+        ),
+        textAlign: TextAlign.center,
+      ),
+    );
+  }
+
+  Widget _buildTableCell(String text, {bool isBold = false, Color? textColor, bool isNA = false}) {
+    // If text is N/A and no explicit color, use green
+    // Otherwise use dark color for white background, or provided color
+    final displayColor = isNA && textColor == null 
+        ? Colors.green 
+        : (textColor ?? const Color(0xFF1E293B)); // Dark text for white background
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      alignment: Alignment.center,
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: isBold ? FontWeight.w700 : FontWeight.w500,
+          color: displayColor,
+          fontFamily: isBold ? null : 'monospace',
+        ),
+        textAlign: TextAlign.center,
+      ),
+    );
+  }
+
+  // Build clickable block name cell for Lead View
+  Widget _buildClickableBlockNameCell(String blockName, {required VoidCallback onTap}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      alignment: Alignment.centerLeft,
+      child: InkWell(
+        onTap: onTap,
+        child: Text(
+          blockName,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF3B82F6),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _formatTimingValueString(dynamic value) {
+    final num = _parseNumeric(value);
+    if (num == null) {
+      return 'N/A';
+    }
+    return num.toStringAsFixed(3);
+  }
+
+  String _formatValueString(dynamic value) {
+    if (value == null || value.toString() == 'N/A') {
+      return 'N/A';
+    }
+    return value.toString();
+  }
+
+  String _formatAreaString(dynamic value) {
+    if (value == null || value.toString() == 'N/A') {
+      return 'N/A';
+    }
+    final num = _parseNumeric(value);
+    if (num == null) {
+      return 'N/A';
+    }
+    return '${num.toStringAsFixed(2)}';
+  }
+
+  String _formatUtilizationString(dynamic value) {
+    if (value == null || value.toString() == 'N/A') {
+      return 'N/A';
+    }
+    final num = _parseNumeric(value);
+    if (num == null) {
+      return 'N/A';
+    }
+    return '${num.toStringAsFixed(2)}';
+  }
+
+  String _formatDRCCountString(dynamic drcViolations) {
+    if (drcViolations == null || drcViolations.toString() == 'N/A') {
+      return 'N/A';
+    }
+    final num = _parseNumeric(drcViolations);
+    if (num == null) {
+      return 'N/A';
+    }
+    return num.toInt().toString();
+  }
+
+  bool _isNA(String value) {
+    return value == 'N/A';
+  }
+
+  Widget _buildPhysicalMetricsTable(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white, // White background
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              border: const Border(bottom: BorderSide(color: Color(0xFFE2E8F0), width: 2)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.square_foot, size: 22, color: Color(0xFF0F172A)),
+                SizedBox(width: 12),
+                Text(
+                  'Physical Metrics',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF0F172A),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              border: TableBorder(
+                horizontalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                verticalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                top: BorderSide(color: Colors.grey.shade300, width: 1),
+                bottom: BorderSide(color: Colors.grey.shade300, width: 1),
+                left: BorderSide(color: Colors.grey.shade300, width: 1),
+                right: BorderSide(color: Colors.grey.shade300, width: 1),
+              ),
+              columnWidths: const {
+                0: FixedColumnWidth(120),
+                1: FixedColumnWidth(140),
+                2: FixedColumnWidth(140),
+                3: FixedColumnWidth(120),
+                4: FixedColumnWidth(140),
+                5: FixedColumnWidth(140),
+              },
+              children: [
+                // Header Row
+                TableRow(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF0F172A),
+                  ),
+                  children: [
+                    _buildTableHeaderCell('STAGE'),
+                    _buildTableHeaderCell('AREA (MM²)'),
+                    _buildTableHeaderCell('UTILIZATION (%)'),
+                    _buildTableHeaderCell('DRC COUNT'),
+                    _buildTableHeaderCell('METAL DENSITY (%)'),
+                    _buildTableHeaderCell('INSTANCE COUNT'),
+                  ],
+                ),
+                // Data Rows
+                ...stages.map((stage) {
+                  final areaStr = _formatAreaString(stage['area']);
+                  final utilStr = _formatUtilizationString(stage['utilization']);
+                  final drcCountStr = _formatDRCCountString(stage['drc_violations']);
+                  final metalDensityStr = _formatUtilizationString(stage['metal_density_max']);
+                  final instCountStr = _formatValueString(stage['inst_count']);
+                  
+                  // Determine DRC color: red if > 0, green if N/A
+                  final drcColor = _isNA(drcCountStr) 
+                      ? Colors.green 
+                      : (int.tryParse(drcCountStr) ?? 0) > 0 
+                          ? Colors.red[700] 
+                          : const Color(0xFF1E293B);
+                  
+                  return TableRow(
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                    ),
+                    children: [
+                      _buildTableCell(
+                        (stage['stage']?.toString() ?? '').toUpperCase(),
+                        isBold: true,
+                        textColor: const Color(0xFF1E293B),
+                      ),
+                      _buildTableCell(
+                        _isNA(areaStr) ? areaStr : '$areaStr',
+                        isNA: _isNA(areaStr),
+                      ),
+                      _buildTableCell(
+                        _isNA(utilStr) ? utilStr : '$utilStr',
+                        isNA: _isNA(utilStr),
+                      ),
+                      _buildTableCell(
+                        drcCountStr,
+                        textColor: drcColor,
+                        isNA: _isNA(drcCountStr),
+                      ),
+                      _buildTableCell(
+                        _isNA(metalDensityStr) ? metalDensityStr : '$metalDensityStr',
+                        isNA: _isNA(metalDensityStr),
+                      ),
+                      _buildTableCell(
+                        instCountStr,
+                        isNA: _isNA(instCountStr),
+                      ),
+                    ],
+                  );
+                }).toList(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResourceUtilizationTable(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white, // White background
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              border: const Border(bottom: BorderSide(color: Color(0xFFE2E8F0), width: 2)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.memory, size: 22, color: Color(0xFF0F172A)),
+                SizedBox(width: 12),
+                Text(
+                  'Resource Utilization',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF0F172A),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              border: TableBorder(
+                horizontalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                verticalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                top: BorderSide(color: Colors.grey.shade300, width: 1),
+                bottom: BorderSide(color: Colors.grey.shade300, width: 1),
+                left: BorderSide(color: Colors.grey.shade300, width: 1),
+                right: BorderSide(color: Colors.grey.shade300, width: 1),
+              ),
+              columnWidths: const {
+                0: FixedColumnWidth(120),
+                1: FixedColumnWidth(120),
+                2: FixedColumnWidth(120),
+                3: FixedColumnWidth(100),
+                4: FixedColumnWidth(120),
+                5: FixedColumnWidth(140),
+              },
+              children: [
+                // Header Row
+                TableRow(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF0F172A),
+                  ),
+                  children: [
+                    _buildTableHeaderCell('STAGE'),
+                    _buildTableHeaderCell('Runtime'),
+                    _buildTableHeaderCell('Memory'),
+                    _buildTableHeaderCell('Errors'),
+                    _buildTableHeaderCell('Warnings'),
+                    _buildTableHeaderCell('Critical Logs'),
+                  ],
+                ),
+                // Data Rows
+                ...stages.map((stage) {
+                  final runtimeStr = _formatValueString(stage['runtime']);
+                  final memoryStr = _formatValueString(stage['memory_usage']);
+                  final errors = (stage['log_errors'] as num?)?.toInt() ?? 0;
+                  final warnings = (stage['log_warnings'] as num?)?.toInt() ?? 0;
+                  final critical = (stage['log_critical'] as num?)?.toInt() ?? 0;
+                  
+                  final errorStr = errors.toString();
+                  final warningStr = warnings.toString();
+                  final criticalStr = critical.toString();
+                  
+                  final errorColor = errors > 0 ? Colors.red[700]! : const Color(0xFF1E293B);
+                  final warningColor = warnings > 0 ? Colors.amber[700]! : const Color(0xFF1E293B);
+                  final criticalColor = critical > 0 ? Colors.red[900]! : const Color(0xFF1E293B);
+                  
+                  return TableRow(
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                    ),
+                    children: [
+                      _buildTableCell(
+                        (stage['stage']?.toString() ?? '').toUpperCase(),
+                        isBold: true,
+                        textColor: const Color(0xFF1E293B),
+                      ),
+                      _buildTableCell(runtimeStr, isNA: _isNA(runtimeStr)),
+                      _buildTableCell(memoryStr, isNA: _isNA(memoryStr)),
+                      _buildTableCell(
+                        errorStr,
+                        textColor: errorColor,
+                        isBold: errors > 0,
+                      ),
+                      _buildTableCell(
+                        warningStr,
+                        textColor: warningColor,
+                        isBold: warnings > 0,
+                      ),
+                      _buildTableCell(
+                        criticalStr,
+                        textColor: criticalColor,
+                        isBold: critical > 0,
+                      ),
+                    ],
+                  );
+                }).toList(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEngineerChartsSection(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    return Column(
+      children: [
+        // Setup Timing WNS Trend
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.show_chart, size: 20, color: Color(0xFF0F172A)),
+                  SizedBox(width: 12),
+                  Text(
+                    'Setup Timing WNS Trend',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF0F172A),
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                height: 300,
+                child: _buildSetupWNSChart(stages),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        // Area & Utilization Trend
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.trending_up, size: 20, color: Color(0xFF0F172A)),
+                  SizedBox(width: 12),
+                  Text(
+                    'Area & Utilization Trend',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF0F172A),
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                height: 300,
+                child: _buildAreaUtilizationChart(stages),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        // Runtime & Memory Usage
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.speed, size: 20, color: Color(0xFF0F172A)),
+                  SizedBox(width: 12),
+                  Text(
+                    'Runtime & Memory Usage',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF0F172A),
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                height: 300,
+                child: _buildRuntimeMemoryChart(stages),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSetupWNSChart(List<Map<String, dynamic>> stages) {
+    final spots = <FlSpot>[];
+    final stageNames = stages.map((s) => s['stage']?.toString() ?? 'Unknown').toList();
+    
+    for (int i = 0; i < stages.length; i++) {
+      final wns = _parseNumeric(stages[i]['internal_timing_r2r_wns']);
+      if (wns != null) {
+        spots.add(FlSpot(i.toDouble(), wns.toDouble()));
+      }
+    }
+
+    return LineChart(
+      LineChartData(
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          getDrawingHorizontalLine: (value) => const FlLine(color: Color(0xFFE2E8F0), strokeWidth: 1),
+        ),
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              getTitlesWidget: (value, meta) {
+                return Text(
+                  value.toStringAsFixed(2),
+                  style: const TextStyle(fontSize: 9, color: Color(0xFF64748B)),
+                );
+              },
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 24,
+              interval: 1,
+              getTitlesWidget: (value, meta) {
+                final idx = value.toInt();
+                if (idx >= 0 && idx < stageNames.length) {
+                  String name = stageNames[idx].toUpperCase();
+                  if (name.length > 8) name = '${name.substring(0, 8)}..';
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      name,
+                      style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                    ),
+                  );
+                }
+                return const Text('');
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xFFE2E8F0))),
+        lineBarsData: [
+          LineChartBarData(
+            spots: spots,
+            isCurved: true,
+            color: const Color(0xFF3B82F6),
+            barWidth: 3,
+            dotData: const FlDotData(show: true),
+            belowBarData: BarAreaData(show: true, color: Color(0xFF3B82F6).withOpacity(0.1)),
+          ),
+        ],
+        lineTouchData: LineTouchData(
+          touchTooltipData: LineTouchTooltipData(
+            tooltipBgColor: Colors.blueGrey.shade800,
+            getTooltipItems: (touchedSpots) {
+              return touchedSpots.map((spot) {
+                final idx = spot.x.toInt();
+                final stageName = idx >= 0 && idx < stageNames.length 
+                    ? stageNames[idx].toUpperCase()
+                    : 'Unknown';
+                return LineTooltipItem(
+                  '$stageName\nWNS: ${spot.y.toStringAsFixed(3)}',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                );
+              }).toList();
+            },
+          ),
+        ),
+        minY: spots.isEmpty ? 0.0 : (spots.map((p) => p.y).reduce((a, b) => a < b ? a : b) - 0.1).toDouble(),
+        maxY: spots.isEmpty ? 1.0 : (spots.map((p) => p.y).reduce((a, b) => a > b ? a : b) + 0.1).toDouble(),
+      ),
+    );
+  }
+
+  Widget _buildAreaUtilizationChart(List<Map<String, dynamic>> stages) {
+    final areaSpots = <FlSpot>[];
+    final utilSpots = <FlSpot>[];
+    final stageNames = stages.map((s) => s['stage']?.toString() ?? 'Unknown').toList();
+    
+    for (int i = 0; i < stages.length; i++) {
+      final area = _parseNumeric(stages[i]['area']);
+      final util = _parseNumeric(stages[i]['utilization']);
+      if (area != null) {
+        areaSpots.add(FlSpot(i.toDouble(), area.toDouble()));
+      }
+      if (util != null) {
+        utilSpots.add(FlSpot(i.toDouble(), util.toDouble()));
+      }
+    }
+
+    final allSpots = [...areaSpots, ...utilSpots];
+    final minY = allSpots.isEmpty ? 0 : (allSpots.map((p) => p.y).reduce((a, b) => a < b ? a : b) - 0.1);
+    final maxY = allSpots.isEmpty ? 1 : (allSpots.map((p) => p.y).reduce((a, b) => a > b ? a : b) + 0.1);
+
+    return LineChart(
+      LineChartData(
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          getDrawingHorizontalLine: (value) => const FlLine(color: Color(0xFFE2E8F0), strokeWidth: 1),
+        ),
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              getTitlesWidget: (value, meta) {
+                return Text(
+                  value.toStringAsFixed(0),
+                  style: const TextStyle(fontSize: 9, color: Color(0xFF64748B)),
+                );
+              },
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 24,
+              interval: 1,
+              getTitlesWidget: (value, meta) {
+                final idx = value.toInt();
+                if (idx >= 0 && idx < stageNames.length) {
+                  String name = stageNames[idx].toUpperCase();
+                  if (name.length > 8) name = '${name.substring(0, 8)}..';
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      name,
+                      style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                    ),
+                  );
+                }
+                return const Text('');
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xFFE2E8F0))),
+        lineBarsData: [
+          LineChartBarData(
+            spots: areaSpots,
+            isCurved: true,
+            color: const Color(0xFF10B981),
+            barWidth: 3,
+            dotData: const FlDotData(show: true),
+            belowBarData: BarAreaData(show: true, color: Color(0xFF10B981).withOpacity(0.1)),
+          ),
+          if (utilSpots.isNotEmpty)
+            LineChartBarData(
+              spots: utilSpots,
+              isCurved: true,
+              color: const Color(0xFFF59E0B),
+              barWidth: 3,
+              dotData: const FlDotData(show: true),
+              belowBarData: BarAreaData(show: true, color: Color(0xFFF59E0B).withOpacity(0.1)),
+            ),
+        ],
+        lineTouchData: LineTouchData(
+          touchTooltipData: LineTouchTooltipData(
+            tooltipBgColor: Colors.blueGrey.shade800,
+            getTooltipItems: (touchedSpots) {
+              return touchedSpots.map((spot) {
+                final idx = spot.x.toInt();
+                final stageName = idx >= 0 && idx < stageNames.length 
+                    ? stageNames[idx].toUpperCase()
+                    : 'Unknown';
+                final label = areaSpots.any((p) => p.x == spot.x) ? 'Area' : 'Utilization';
+                return LineTooltipItem(
+                  '$stageName\n$label: ${spot.y.toStringAsFixed(2)}',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                );
+              }).toList();
+            },
+          ),
+        ),
+        minY: minY.toDouble(),
+        maxY: maxY.toDouble(),
+      ),
+    );
+  }
+
+  Widget _buildRuntimeMemoryChart(List<Map<String, dynamic>> stages) {
+    // Parse runtime to minutes for chart
+    final runtimeSpots = <FlSpot>[];
+    final memorySpots = <FlSpot>[];
+    final stageNames = stages.map((s) => s['stage']?.toString() ?? 'Unknown').toList();
+    
+    for (int i = 0; i < stages.length; i++) {
+      final runtimeStr = stages[i]['runtime']?.toString() ?? '';
+      final runtimeMinutes = _parseRuntimeToMinutes(runtimeStr);
+      if (runtimeMinutes != null) {
+        runtimeSpots.add(FlSpot(i.toDouble(), runtimeMinutes));
+      }
+      
+      final memoryStr = stages[i]['memory_usage']?.toString() ?? '';
+      final memoryMB = _parseMemoryToMB(memoryStr);
+      if (memoryMB != null) {
+        memorySpots.add(FlSpot(i.toDouble(), memoryMB));
+      }
+    }
+
+    final allSpots = [...runtimeSpots, ...memorySpots];
+    final minY = allSpots.isEmpty ? 0 : (allSpots.map((p) => p.y).reduce((a, b) => a < b ? a : b) - 0.1);
+    final maxY = allSpots.isEmpty ? 1 : (allSpots.map((p) => p.y).reduce((a, b) => a > b ? a : b) + 0.1);
+
+    return LineChart(
+      LineChartData(
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          getDrawingHorizontalLine: (value) => const FlLine(color: Color(0xFFE2E8F0), strokeWidth: 1),
+        ),
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              getTitlesWidget: (value, meta) {
+                return Text(
+                  value.toStringAsFixed(0),
+                  style: const TextStyle(fontSize: 9, color: Color(0xFF64748B)),
+                );
+              },
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 24,
+              interval: 1,
+              getTitlesWidget: (value, meta) {
+                final idx = value.toInt();
+                if (idx >= 0 && idx < stageNames.length) {
+                  String name = stageNames[idx].toUpperCase();
+                  if (name.length > 8) name = '${name.substring(0, 8)}..';
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      name,
+                      style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                    ),
+                  );
+                }
+                return const Text('');
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xFFE2E8F0))),
+        lineBarsData: [
+          LineChartBarData(
+            spots: runtimeSpots,
+            isCurved: true,
+            color: const Color(0xFF8B5CF6),
+            barWidth: 3,
+            dotData: const FlDotData(show: true),
+            belowBarData: BarAreaData(show: true, color: Color(0xFF8B5CF6).withOpacity(0.1)),
+          ),
+          if (memorySpots.isNotEmpty)
+            LineChartBarData(
+              spots: memorySpots,
+              isCurved: true,
+              color: const Color(0xFFEF4444),
+              barWidth: 3,
+              dotData: const FlDotData(show: true),
+              belowBarData: BarAreaData(show: true, color: Color(0xFFEF4444).withOpacity(0.1)),
+            ),
+        ],
+        lineTouchData: LineTouchData(
+          touchTooltipData: LineTouchTooltipData(
+            tooltipBgColor: Colors.blueGrey.shade800,
+            getTooltipItems: (touchedSpots) {
+              return touchedSpots.map((spot) {
+                final idx = spot.x.toInt();
+                final stageName = idx >= 0 && idx < stageNames.length 
+                    ? stageNames[idx].toUpperCase()
+                    : 'Unknown';
+                final label = runtimeSpots.any((p) => p.x == spot.x) ? 'Runtime (min)' : 'Memory (MB)';
+                return LineTooltipItem(
+                  '$stageName\n$label: ${spot.y.toStringAsFixed(2)}',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                );
+              }).toList();
+            },
+          ),
+        ),
+        minY: minY.toDouble(),
+        maxY: maxY.toDouble(),
+      ),
+    );
+  }
+
+  double? _parseRuntimeToMinutes(String runtime) {
+    if (runtime == 'N/A' || runtime.isEmpty) return null;
+    try {
+      // Format: "HH:MM:SS"
+      final parts = runtime.split(':');
+      if (parts.length == 3) {
+        final hours = int.parse(parts[0]);
+        final minutes = int.parse(parts[1]);
+        final seconds = int.parse(parts[2]);
+        return hours * 60.0 + minutes + seconds / 60.0;
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }
+
+  double? _parseMemoryToMB(String memory) {
+    if (memory == 'N/A' || memory.isEmpty) return null;
+    try {
+      // Format: "1,046M" or similar
+      final cleaned = memory.replaceAll(',', '').replaceAll('M', '').replaceAll('G', '');
+      final value = double.parse(cleaned);
+      if (memory.contains('G')) {
+        return value * 1024; // Convert GB to MB
+      }
+      return value;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  Widget _formatTimingValue(dynamic value) {
+    final num = _parseNumeric(value);
+    if (num == null) {
+      return const Text('N/A', style: TextStyle(color: Colors.grey));
+    }
+    return Text(
+      num.toStringAsFixed(3),
+      style: TextStyle(
+        color: num < 0 ? Colors.red[700] : Colors.green[700],
+        fontWeight: FontWeight.w600,
+        fontFamily: 'monospace',
+      ),
+    );
+  }
+
+  Widget _formatValue(dynamic value) {
+    if (value == null || value.toString() == 'N/A') {
+      return const Text('N/A', style: TextStyle(color: Colors.grey));
+    }
+    return Text(
+      value.toString(),
+      style: const TextStyle(
+        fontWeight: FontWeight.w500,
+        fontFamily: 'monospace',
+      ),
+    );
+  }
+
   Widget _buildMetricsGraphSection(List<Map<String, dynamic>> stages) {
     if (stages.isEmpty) return const SizedBox();
 
     final allMetricGroups = ['INTERNAL (R2R)', 'INTERFACE I2R', 'INTERFACE R2O', 'INTERFACE I2O', 'HOLD'];
     final allMetricTypes = ['WNS', 'TNS', 'NVP'];
+    final allChartTypes = ['Timing Metrics', 'Setup WNS Trend', 'Area & Utilization', 'Runtime & Memory'];
 
     // Generate all combinations of selected groups and types
     final graphCombinations = <Map<String, String>>[];
@@ -1356,7 +2853,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                   Icon(Icons.show_chart, size: 20, color: Color(0xFF0F172A)),
                   SizedBox(width: 12),
                   Text(
-                    'Timing Metrics Matrix Visualization',
+                    'Metrics Visualization',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
@@ -1369,12 +2866,12 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             ],
           ),
           const SizedBox(height: 24),
-          // Multi-select chips for Metric Groups
+          // Chart Type Selector
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'SELECT METRIC GROUPS',
+                'SELECT CHART TYPE',
                 style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.w800,
@@ -1386,20 +2883,15 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: allMetricGroups.map((group) {
-                  final isSelected = _selectedMetricGroups.contains(group);
+                children: allChartTypes.map((chartType) {
+                  final isSelected = _selectedChartType == chartType;
                   return FilterChip(
-                    label: Text(group),
+                    label: Text(chartType),
                     selected: isSelected,
                     onSelected: (selected) {
                       setState(() {
                         if (selected) {
-                          _selectedMetricGroups.add(group);
-                        } else {
-                          _selectedMetricGroups.remove(group);
-                        }
-                        if (_selectedMetricGroups.isEmpty) {
-                          _selectedMetricGroups.add(allMetricGroups.first);
+                          _selectedChartType = chartType;
                         }
                       });
                     },
@@ -1415,83 +2907,150 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             ],
           ),
           const SizedBox(height: 24),
-          // Multi-select chips for Metric Types
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'SELECT METRIC TYPES',
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF94A3B8),
-                  letterSpacing: 0.5,
+          // Conditional rendering based on chart type
+          if (_selectedChartType == 'Timing Metrics') ...[
+            // Multi-select chips for Metric Groups
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'SELECT METRIC GROUPS',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF94A3B8),
+                    letterSpacing: 0.5,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: allMetricTypes.map((type) {
-                  final isSelected = _selectedMetricTypes.contains(type);
-                  return FilterChip(
-                    label: Text(type),
-                    selected: isSelected,
-                    onSelected: (selected) {
-                      setState(() {
-                        if (selected) {
-                          _selectedMetricTypes.add(type);
-                        } else {
-                          _selectedMetricTypes.remove(type);
-                        }
-                        if (_selectedMetricTypes.isEmpty) {
-                          _selectedMetricTypes.add(allMetricTypes.first);
-                        }
-                      });
-                    },
-                    selectedColor: const Color(0xFFEFF6FF),
-                    checkmarkColor: const Color(0xFF2563EB),
-                    labelStyle: TextStyle(
-                      color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF64748B),
-                      fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                    ),
-                  );
-                }).toList(),
-              ),
-            ],
-          ),
-          const SizedBox(height: 32),
-          // Visualization type selector
-          Row(
-            children: [
-              const Text(
-                'VIEW TYPE:',
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF94A3B8),
-                  letterSpacing: 0.5,
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: allMetricGroups.map((group) {
+                    final isSelected = _selectedMetricGroups.contains(group);
+                    return FilterChip(
+                      label: Text(group),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            _selectedMetricGroups.add(group);
+                          } else {
+                            _selectedMetricGroups.remove(group);
+                          }
+                          if (_selectedMetricGroups.isEmpty) {
+                            _selectedMetricGroups.add(allMetricGroups.first);
+                          }
+                        });
+                      },
+                      selectedColor: const Color(0xFFEFF6FF),
+                      checkmarkColor: const Color(0xFF2563EB),
+                      labelStyle: TextStyle(
+                        color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                      ),
+                    );
+                  }).toList(),
                 ),
-              ),
-              const SizedBox(width: 16),
-              _buildVisualizationTypeChip('Graph', 'graph'),
-              const SizedBox(width: 8),
-              _buildVisualizationTypeChip('Heat Map', 'heatmap'),
-            ],
-          ),
-          const SizedBox(height: 24),
-          // Single combined graph or heat map with all selected metrics
-          if (graphCombinations.isEmpty)
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.all(32.0),
-                child: Text('Please select at least one metric group and type', style: TextStyle(color: Colors.grey)),
-              ),
-            )
-          else if (_visualizationType == 'heatmap')
-            _buildHeatMap(stages, graphCombinations)
-          else
-            _buildCombinedGraph(stages, graphCombinations),
+              ],
+            ),
+            const SizedBox(height: 24),
+            // Multi-select chips for Metric Types
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'SELECT METRIC TYPES',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF94A3B8),
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: allMetricTypes.map((type) {
+                    final isSelected = _selectedMetricTypes.contains(type);
+                    return FilterChip(
+                      label: Text(type),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            _selectedMetricTypes.add(type);
+                          } else {
+                            _selectedMetricTypes.remove(type);
+                          }
+                          if (_selectedMetricTypes.isEmpty) {
+                            _selectedMetricTypes.add(allMetricTypes.first);
+                          }
+                        });
+                      },
+                      selectedColor: const Color(0xFFEFF6FF),
+                      checkmarkColor: const Color(0xFF2563EB),
+                      labelStyle: TextStyle(
+                        color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 32),
+            // Visualization type selector
+            Row(
+              children: [
+                const Text(
+                  'VIEW TYPE:',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF94A3B8),
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                _buildVisualizationTypeChip('Graph', 'graph'),
+                const SizedBox(width: 8),
+                _buildVisualizationTypeChip('Heat Map', 'heatmap'),
+              ],
+            ),
+            const SizedBox(height: 24),
+            // Single combined graph or heat map with all selected metrics
+            if (graphCombinations.isEmpty)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(32.0),
+                  child: Text('Please select at least one metric group and type', style: TextStyle(color: Colors.grey)),
+                ),
+              )
+            else if (_visualizationType == 'heatmap')
+              _buildHeatMap(stages, graphCombinations)
+            else
+              _buildCombinedGraph(stages, graphCombinations),
+          ] else if (_selectedChartType == 'Setup WNS Trend') ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 300,
+              child: _buildSetupWNSChart(stages),
+            ),
+          ] else if (_selectedChartType == 'Area & Utilization') ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 300,
+              child: _buildAreaUtilizationChart(stages),
+            ),
+          ] else if (_selectedChartType == 'Runtime & Memory') ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 300,
+              child: _buildRuntimeMemoryChart(stages),
+            ),
+          ],
         ],
       ),
     );
@@ -2877,7 +4436,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     );
   }
 
-  // Lead View - Filtered table with specific columns
+  // Lead View - Comprehensive dashboard with KPI cards and block summary table
   Widget _buildLeadView(List<Map<String, dynamic>> stages) {
     if (_selectedProject == null) {
       return const Center(
@@ -2891,51 +4450,529 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       );
     }
 
-    // Get all stages for the selected project/block
-    final allProjectStages = _selectedBlock != null 
-        ? _getAllStagesForBlock() 
-        : _getAllStagesForProject();
+    // Get all stages for the project to calculate KPIs
+    final allProjectStages = _getAllStagesForProject();
     
-    // Get milestone progress and block summary
-    final milestoneProgress = _getMilestoneProgress(allProjectStages);
-    final blockSummary = _getBlockStagesSummary(allProjectStages);
-    final blockHealth = allProjectStages.isNotEmpty 
-        ? _calculateBlockHealthIndex(allProjectStages) 
-        : 0.0;
+    // Calculate KPI metrics
+    final kpiMetrics = _calculateLeadKPIMetrics(allProjectStages);
+    
+    // Get block summary data for the table
+    final blockSummaryData = _getBlockSummaryData(allProjectStages);
+    
+    // Apply filters
+    final filteredBlockSummary = _applyLeadFilters(blockSummaryData);
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Summary cards row
-        Row(
+        // 5 KPI Cards
+        _buildLeadKPICards(kpiMetrics),
+        const SizedBox(height: 24),
+        
+        // Filter Section
+        _buildLeadFilterSection(),
+        const SizedBox(height: 24),
+        
+        // Block Summary Table
+        _buildLeadBlockSummaryTable(filteredBlockSummary),
+      ],
+    );
+  }
+  
+  // Calculate Lead View KPI metrics
+  Map<String, dynamic> _calculateLeadKPIMetrics(List<Map<String, dynamic>> allStages) {
+    // Get unique blocks
+    final blocks = <String>{};
+    final stageDistribution = <String, int>{};
+    int timingCriticalCount = 0;
+    int congestionIssuesCount = 0;
+    int highRuntimeCount = 0;
+    
+    // Track latest stage for each block
+    final blockLatestStages = <String, Map<String, dynamic>>{};
+    final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+    
+    for (var stage in allStages) {
+      final blockName = stage['block_name']?.toString() ?? '';
+      if (blockName.isEmpty) continue;
+      
+      blocks.add(blockName);
+      
+      // Track stage distribution
+      final stageName = stage['stage']?.toString().toLowerCase() ?? '';
+      stageDistribution[stageName] = (stageDistribution[stageName] ?? 0) + 1;
+      
+      // Track latest stage per block
+      if (!blockLatestStages.containsKey(blockName)) {
+        blockLatestStages[blockName] = stage;
+      } else {
+        final currentStage = blockLatestStages[blockName]!;
+        final currentStageName = currentStage['stage']?.toString().toLowerCase() ?? '';
+        final currentIndex = stageOrder.indexOf(currentStageName);
+        final newIndex = stageOrder.indexOf(stageName);
+        
+        if (newIndex > currentIndex) {
+          blockLatestStages[blockName] = stage;
+        }
+      }
+    }
+    
+    // Analyze latest stages for each block
+    for (var latestStage in blockLatestStages.values) {
+      // Check for timing-critical (negative WNS)
+      final wns = _parseNumeric(latestStage['internal_timing_r2r_wns']) ?? 
+                   _parseNumeric(latestStage['setup_wns']);
+      if (wns != null && wns < 0) {
+        timingCriticalCount++;
+      }
+      
+      // Check for congestion issues (DRC violations > 0)
+      final drc = _parseNumeric(latestStage['drc_violations'])?.toInt() ?? 0;
+      if (drc > 0) {
+        congestionIssuesCount++;
+      }
+      
+      // Check for high runtime (runtime > 24 hours = 86400 seconds, or if it's a large number)
+      final runtime = _parseNumeric(latestStage['runtime']);
+      if (runtime != null && runtime > 86400) {
+        highRuntimeCount++;
+      }
+    }
+    
+    return {
+      'totalBlocks': blocks.length,
+      'stageDistribution': stageDistribution,
+      'timingCriticalCount': timingCriticalCount,
+      'congestionIssuesCount': congestionIssuesCount,
+      'highRuntimeCount': highRuntimeCount,
+    };
+  }
+  
+  // Get block summary data for the table
+  List<Map<String, dynamic>> _getBlockSummaryData(List<Map<String, dynamic>> allStages) {
+    final blockDataMap = <String, Map<String, dynamic>>{};
+    final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+    
+    // Group stages by block
+    for (var stage in allStages) {
+      final blockName = stage['block_name']?.toString() ?? '';
+      if (blockName.isEmpty) continue;
+      
+      if (!blockDataMap.containsKey(blockName)) {
+        blockDataMap[blockName] = {
+          'block_name': blockName,
+          'engineer': 'TBD', // Placeholder - can be enhanced with actual assignment data
+          'latest_stage': '',
+          'latest_stage_status': 'unknown',
+          'latest_stage_index': -1,
+          'wns': null,
+          'tns': null,
+          'area': null,
+          'utilization': null,
+          'drc_violations': 0,
+          'runtime': null,
+          'stages': <Map<String, dynamic>>[],
+        };
+      }
+      
+      blockDataMap[blockName]!['stages']!.add(stage);
+    }
+    
+    // Process each block to find latest stage and calculate metrics
+    final blockSummaryList = <Map<String, dynamic>>[];
+    
+    for (var blockEntry in blockDataMap.entries) {
+      final blockName = blockEntry.key;
+      final blockData = Map<String, dynamic>.from(blockEntry.value);
+      final stages = blockData['stages'] as List<Map<String, dynamic>>;
+      
+      // Find latest stage
+      Map<String, dynamic>? latestStage;
+      int latestIndex = -1;
+      
+      for (var stage in stages) {
+        final stageName = stage['stage']?.toString().toLowerCase() ?? '';
+        final stageIndex = stageOrder.indexOf(stageName);
+        
+        if (stageIndex > latestIndex) {
+          latestIndex = stageIndex;
+          latestStage = stage;
+        }
+      }
+      
+      if (latestStage != null) {
+        blockData['latest_stage'] = latestStage['stage']?.toString().toUpperCase() ?? '';
+        blockData['latest_stage_status'] = latestStage['run_status']?.toString().toLowerCase() ?? 'unknown';
+        blockData['latest_stage_index'] = latestIndex;
+        
+        // Extract key metrics from latest stage
+        blockData['wns'] = _parseNumeric(latestStage['internal_timing_r2r_wns']) ?? 
+                          _parseNumeric(latestStage['setup_wns']);
+        blockData['tns'] = _parseNumeric(latestStage['internal_timing_r2r_tns']) ?? 
+                          _parseNumeric(latestStage['setup_tns']);
+        blockData['area'] = _parseNumeric(latestStage['area']);
+        blockData['utilization'] = latestStage['utilization']?.toString();
+        blockData['drc_violations'] = _parseNumeric(latestStage['drc_violations'])?.toInt() ?? 0;
+        blockData['runtime'] = _parseNumeric(latestStage['runtime']);
+        
+        // Calculate trend (compare with previous stage if available)
+        if (latestIndex > 0) {
+          final prevStageName = stageOrder[latestIndex - 1];
+          final prevStage = stages.firstWhere(
+            (s) => s['stage']?.toString().toLowerCase() == prevStageName,
+            orElse: () => <String, dynamic>{},
+          );
+          
+          if (prevStage.isNotEmpty) {
+            final prevWns = _parseNumeric(prevStage['internal_timing_r2r_wns']) ?? 
+                          _parseNumeric(prevStage['setup_wns']);
+            final currWns = blockData['wns'];
+            
+            if (prevWns != null && currWns != null) {
+              blockData['wns_trend'] = currWns > prevWns ? 'up' : (currWns < prevWns ? 'down' : 'neutral');
+            } else {
+              blockData['wns_trend'] = 'neutral';
+            }
+          } else {
+            blockData['wns_trend'] = 'neutral';
+          }
+        } else {
+          blockData['wns_trend'] = 'neutral';
+        }
+      }
+      
+      blockSummaryList.add(blockData);
+    }
+    
+    // Sort by block name
+    blockSummaryList.sort((a, b) => 
+      (a['block_name'] as String).compareTo(b['block_name'] as String));
+    
+    return blockSummaryList;
+  }
+  
+  // Apply filters to block summary data
+  List<Map<String, dynamic>> _applyLeadFilters(List<Map<String, dynamic>> blockSummary) {
+    return blockSummary.where((block) {
+      // Stage filter
+      if (_leadStageFilter.isNotEmpty) {
+        final latestStage = block['latest_stage']?.toString().toLowerCase() ?? '';
+        if (latestStage != _leadStageFilter.toLowerCase()) {
+          return false;
+        }
+      }
+      
+      // Status filter
+      if (_leadStatusFilter.isNotEmpty) {
+        final status = block['latest_stage_status']?.toString().toLowerCase() ?? '';
+        if (status != _leadStatusFilter.toLowerCase()) {
+          return false;
+        }
+      }
+      
+      return true;
+    }).toList();
+  }
+  
+  // Build 5 KPI Cards for Lead View
+  Widget _buildLeadKPICards(Map<String, dynamic> metrics) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 768;
+        final cardWidth = isMobile ? constraints.maxWidth : (constraints.maxWidth - 80) / 5;
+        
+        return Wrap(
+          spacing: 16,
+          runSpacing: 16,
           children: [
-            Expanded(
-              child: _buildLeadCard(
-                'Milestone Progress',
-                _buildMilestoneProgress(milestoneProgress),
+            // KPI 1: Total Blocks
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Total Blocks',
+                icon: Icons.view_module,
+                color: const Color(0xFF3B82F6),
+                children: [
+                  _buildKPIValue(
+                    metrics['totalBlocks']?.toString() ?? '0',
+                    subtitle: 'Blocks in Project',
+                  ),
+                ],
               ),
             ),
-            const SizedBox(width: 24),
-            Expanded(
-              child: _buildLeadCard(
-                'Block Stages Summary',
-                _buildBlockStagesSummary(blockSummary),
+            
+            // KPI 2: Stage Distribution
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Stage Distribution',
+                icon: Icons.timeline,
+                color: const Color(0xFF10B981),
+                children: [
+                  _buildKPIValue(
+                    (metrics['stageDistribution'] as Map<String, int>? ?? {}).length.toString(),
+                    subtitle: 'Active Stages',
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _formatStageDistribution(metrics['stageDistribution'] as Map<String, int>? ?? {}),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(width: 24),
-            Expanded(
-              child: _buildLeadCard(
-                'Block Health',
-                _buildBlockHealthCard(blockHealth),
+            
+            // KPI 3: Timing-Critical Blocks
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Timing-Critical Blocks',
+                icon: Icons.warning_amber_rounded,
+                color: const Color(0xFFF59E0B),
+                children: [
+                  _buildKPIValue(
+                    metrics['timingCriticalCount']?.toString() ?? '0',
+                    subtitle: 'Blocks with Negative WNS',
+                  ),
+                ],
+              ),
+            ),
+            
+            // KPI 4: Congestion Issues
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Congestion Issues',
+                icon: Icons.error_outline,
+                color: const Color(0xFFEF4444),
+                children: [
+                  _buildKPIValue(
+                    metrics['congestionIssuesCount']?.toString() ?? '0',
+                    subtitle: 'Blocks with DRC Violations',
+                  ),
+                ],
+              ),
+            ),
+            
+            // KPI 5: High Runtime Blocks
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'High Runtime Blocks',
+                icon: Icons.timer_off,
+                color: const Color(0xFF8B5CF6),
+                children: [
+                  _buildKPIValue(
+                    metrics['highRuntimeCount']?.toString() ?? '0',
+                    subtitle: 'Blocks > 24h Runtime',
+                  ),
+                ],
               ),
             ),
           ],
-        ),
-        if (stages.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          Container(
+        );
+      },
+    );
+  }
+  
+  // Format stage distribution for display
+  String _formatStageDistribution(Map<String, int> distribution) {
+    if (distribution.isEmpty) return 'No stages';
+    
+    final sorted = distribution.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    
+    return sorted.take(3).map((e) => 
+      '${e.key.toUpperCase()}: ${e.value}'
+    ).join(', ');
+  }
+  
+  // Build filter section for Lead View
+  Widget _buildLeadFilterSection() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          const Text(
+            'FILTER BY:',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF94A3B8),
+              letterSpacing: 0.5,
+              ),
+            ),
+            const SizedBox(width: 24),
+          
+          // Stage Filter
+            Expanded(
+            child: Row(
+              children: [
+                const Text(
+                  'Stage:',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: DropdownButton<String>(
+                      value: _leadStageFilter.isEmpty ? null : _leadStageFilter,
+                      isExpanded: true,
+                      underline: const SizedBox(),
+                      hint: const Text(
+                        'All Stages',
+                        style: TextStyle(fontSize: 13, color: Color(0xFF64748B)),
+                      ),
+                      items: [
+                        const DropdownMenuItem<String>(
+                          value: '',
+                          child: Text('All Stages', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'syn',
+                          child: Text('Synthesis', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'place',
+                          child: Text('Placement', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'cts',
+                          child: Text('CTS', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'route',
+                          child: Text('Routing', style: TextStyle(fontSize: 13)),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        setState(() {
+                          _leadStageFilter = value ?? '';
+                        });
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+            const SizedBox(width: 24),
+          
+          // Status Filter
+            Expanded(
+            child: Row(
+              children: [
+                const Text(
+                  'Status:',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: DropdownButton<String>(
+                      value: _leadStatusFilter.isEmpty ? null : _leadStatusFilter,
+                      isExpanded: true,
+                      underline: const SizedBox(),
+                      hint: const Text(
+                        'All Status',
+                        style: TextStyle(fontSize: 13, color: Color(0xFF64748B)),
+                      ),
+                      items: [
+                        const DropdownMenuItem<String>(
+                          value: '',
+                          child: Text('All Status', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'completed',
+                          child: Text('Completed', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'in_progress',
+                          child: Text('In Progress', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'fail',
+                          child: Text('Failed', style: TextStyle(fontSize: 13)),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        setState(() {
+                          _leadStatusFilter = value ?? '';
+                        });
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Build comprehensive block summary table
+  Widget _buildLeadBlockSummaryTable(List<Map<String, dynamic>> blockSummary) {
+    if (blockSummary.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(48),
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: const Center(
+          child: Text(
+            'No blocks found matching the current filters',
+            style: TextStyle(
+              fontSize: 14,
+              color: Color(0xFF64748B),
+            ),
+          ),
+        ),
+      );
+    }
+    
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
               border: Border.all(color: const Color(0xFFE2E8F0)),
               boxShadow: [
                 BoxShadow(
@@ -2948,19 +4985,20 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+          // Table Header
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
                   decoration: const BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
-                    border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+              color: Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+              border: Border(bottom: BorderSide(color: Color(0xFFE2E8F0), width: 2)),
                   ),
                   child: const Row(
                     children: [
                       Icon(Icons.table_chart_outlined, size: 20, color: Color(0xFF0F172A)),
                       SizedBox(width: 12),
                       Text(
-                        'Lead View - Stage Metrics Comparison',
+                  'Block Summary',
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
@@ -2971,13 +5009,196 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                     ],
                   ),
                 ),
-                _buildLeadTable(stages),
-              ],
+          
+          // Table
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SingleChildScrollView(
+              child: Table(
+                columnWidths: const {
+                  0: FixedColumnWidth(150), // Block Name
+                  1: FixedColumnWidth(120), // Engineer
+                  2: FixedColumnWidth(100), // Latest Stage
+                  3: FixedColumnWidth(100), // Status
+                  4: FixedColumnWidth(100), // WNS
+                  5: FixedColumnWidth(100), // TNS
+                  6: FixedColumnWidth(100), // Area
+                  7: FixedColumnWidth(100), // Utilization
+                  8: FixedColumnWidth(100), // DRC
+                  9: FixedColumnWidth(100), // Runtime
+                  10: FixedColumnWidth(80), // Trend
+                },
+                border: TableBorder(
+                  horizontalInside: BorderSide(color: Colors.grey.shade200),
+                  verticalInside: BorderSide(color: Colors.grey.shade200),
+                ),
+                children: [
+                  // Header Row
+                  TableRow(
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF0F172A),
+                    ),
+                    children: [
+                      _buildTableHeaderCell('Block Name'),
+                      _buildTableHeaderCell('Engineer'),
+                      _buildTableHeaderCell('Latest Stage'),
+                      _buildTableHeaderCell('Status'),
+                      _buildTableHeaderCell('WNS'),
+                      _buildTableHeaderCell('TNS'),
+                      _buildTableHeaderCell('Area'),
+                      _buildTableHeaderCell('Utilization'),
+                      _buildTableHeaderCell('DRC'),
+                      _buildTableHeaderCell('Runtime'),
+                      _buildTableHeaderCell('Trend'),
+                    ],
+                  ),
+                  
+                  // Data Rows
+                  ...blockSummary.map((block) {
+                    final wns = block['wns'];
+                    final tns = block['tns'];
+                    final area = block['area'];
+                    final utilization = block['utilization']?.toString() ?? 'N/A';
+                    final drc = block['drc_violations'] as int? ?? 0;
+                    final runtime = block['runtime'];
+                    final status = block['latest_stage_status']?.toString().toLowerCase() ?? 'unknown';
+                    final trend = block['wns_trend']?.toString() ?? 'neutral';
+                    
+                    return TableRow(
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                      ),
+                      children: [
+                        _buildClickableBlockNameCell(
+                          block['block_name']?.toString() ?? 'N/A',
+                          onTap: () {
+                            final blockName = block['block_name']?.toString();
+                            if (blockName != null && blockName.isNotEmpty) {
+                              _updateCascadingFilters(b: blockName);
+                              setState(() {
+                                _viewType = 'engineer';
+                              });
+                            }
+                          },
+                        ),
+                        _buildTableCell(block['engineer']?.toString() ?? 'TBD'),
+                        _buildTableCell(block['latest_stage']?.toString() ?? 'N/A'),
+                        _buildLeadStatusCell(status),
+                        _buildTableCell(
+                          wns != null ? wns.toStringAsFixed(3) : 'N/A',
+                          textColor: wns != null && wns < 0 ? Colors.red[700] : null,
+                          isBold: wns != null && wns < 0,
+                        ),
+                        _buildTableCell(tns != null ? tns.toStringAsFixed(2) : 'N/A'),
+                        _buildTableCell(area != null ? area.toStringAsFixed(2) : 'N/A'),
+                        _buildTableCell(utilization),
+                        _buildTableCell(
+                          drc.toString(),
+                          textColor: drc > 0 ? Colors.red[700] : null,
+                          isBold: drc > 0,
+                        ),
+                        _buildTableCell(
+                          runtime != null ? _formatRuntime(runtime) : 'N/A',
+                        ),
+                        _buildTrendCell(trend),
+                      ],
+                    );
+                  }).toList(),
+                ],
+              ),
             ),
           ),
         ],
-      ],
+      ),
     );
+  }
+  
+  // Build status cell with badge for Lead View
+  Widget _buildLeadStatusCell(String status) {
+    Color bgColor;
+    Color textColor;
+    String displayText;
+    
+    switch (status.toLowerCase()) {
+      case 'completed':
+      case 'pass':
+        bgColor = const Color(0xFF10B981).withOpacity(0.1);
+        textColor = const Color(0xFF10B981);
+        displayText = 'Completed';
+        break;
+      case 'in_progress':
+      case 'continue_with_error':
+        bgColor = const Color(0xFFF59E0B).withOpacity(0.1);
+        textColor = const Color(0xFFF59E0B);
+        displayText = 'In Progress';
+        break;
+      case 'fail':
+      case 'failed':
+        bgColor = const Color(0xFFEF4444).withOpacity(0.1);
+        textColor = const Color(0xFFEF4444);
+        displayText = 'Failed';
+        break;
+      default:
+        bgColor = const Color(0xFF94A3B8).withOpacity(0.1);
+        textColor = const Color(0xFF94A3B8);
+        displayText = 'Unknown';
+    }
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: textColor.withOpacity(0.3)),
+      ),
+      child: Text(
+        displayText,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: textColor,
+        ),
+      ),
+    );
+  }
+  
+  // Build trend indicator cell
+  Widget _buildTrendCell(String trend) {
+    IconData icon;
+    Color color;
+    
+    switch (trend) {
+      case 'up':
+        icon = Icons.trending_up;
+        color = const Color(0xFF10B981);
+        break;
+      case 'down':
+        icon = Icons.trending_down;
+        color = const Color(0xFFEF4444);
+        break;
+      default:
+        icon = Icons.trending_flat;
+        color = const Color(0xFF94A3B8);
+    }
+    
+    return Container(
+      padding: const EdgeInsets.all(8),
+      alignment: Alignment.center,
+      child: Icon(icon, size: 18, color: color),
+    );
+  }
+  
+  // Format runtime for display
+  String _formatRuntime(double seconds) {
+    if (seconds < 60) {
+      return '${seconds.toStringAsFixed(0)}s';
+    } else if (seconds < 3600) {
+      return '${(seconds / 60).toStringAsFixed(1)}m';
+    } else if (seconds < 86400) {
+      return '${(seconds / 3600).toStringAsFixed(1)}h';
+    } else {
+      return '${(seconds / 86400).toStringAsFixed(1)}d';
+    }
   }
   
   Widget _buildLeadCard(String title, Widget content) {
@@ -3071,6 +5292,76 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     }
     
     return allStages;
+  }
+  
+  // Get only the latest stage for each block (for lead view)
+  List<Map<String, dynamic>> _getLatestStagesForBlock() {
+    if (_selectedProject == null || _selectedBlock == null) return [];
+    
+    final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+    final latestStages = <Map<String, dynamic>>[];
+    
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return [];
+      
+      final projectData = Map<String, dynamic>.from(projectValue);
+      final blockValue = projectData[_selectedBlock];
+      if (blockValue is! Map) return [];
+      
+      final blockData = Map<String, dynamic>.from(blockValue);
+      
+      // Iterate through all RTL tags
+      for (var rtlTag in blockData.keys) {
+        final tagValue = blockData[rtlTag];
+        if (tagValue is! Map) continue;
+        
+        final tagData = Map<String, dynamic>.from(tagValue);
+        
+        // Iterate through all experiments
+        for (var experiment in tagData.keys) {
+          final expValue = tagData[experiment];
+          if (expValue is! Map) continue;
+          
+          final expData = Map<String, dynamic>.from(expValue);
+          final stages = expData['stages'];
+          if (stages is! Map) continue;
+          
+          final stagesMap = Map<String, dynamic>.from(stages);
+          
+          // Find the latest stage for this experiment
+          Map<String, dynamic>? latestStage;
+          int latestStageIndex = -1;
+          
+          for (var stageData in stagesMap.values) {
+            if (stageData is! Map) continue;
+            
+            final stage = Map<String, dynamic>.from(stageData);
+            final stageName = stage['stage']?.toString().toLowerCase() ?? '';
+            final stageIndex = stageOrder.indexOf(stageName);
+            
+            // If this stage is later in the order, it's the latest so far
+            if (stageIndex > latestStageIndex) {
+              latestStageIndex = stageIndex;
+              latestStage = stage;
+            }
+          }
+          
+          // Add the latest stage with context
+          if (latestStage != null) {
+            final stageWithContext = Map<String, dynamic>.from(latestStage);
+            stageWithContext['block_name'] = _selectedBlock;
+            stageWithContext['rtl_tag'] = rtlTag;
+            stageWithContext['experiment'] = experiment;
+            latestStages.add(stageWithContext);
+          }
+        }
+      }
+    } catch (e) {
+      print('Error getting latest stages for block: $e');
+    }
+    
+    return latestStages;
   }
   
   // Get milestone progress

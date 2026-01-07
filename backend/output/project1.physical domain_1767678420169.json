@@ -1,0 +1,312 @@
+{
+  "project": "project1",
+  "block_name": "gpu_core",
+  "experiment": "run1",
+  "rtl_tag": "bronze_v1",
+  "run_directory": "/proj1/pd/users/testcase/Bharath/proj/flow28nm_dashbrd/gpu_core/bronze_v1/run1/dashboard",
+  "stages": {
+    "syn": {
+      "stage": "syn",
+      "timestamp": "2025-12-24 10:22:18",
+      "project": "project1",
+      "block_name": "gpu_core",
+      "experiment": "run1",
+      "rtl_tag": "bronze_v1",
+      "user_name": "priya",
+      "run_directory": "/proj1/pd/users/testcase/Bharath/proj/flow28nm_dashbrd/gpu_core/bronze_v1/run1/dashboard",
+      "stage_directory": "/proj1/pd/users/testcase/Bharath/proj/flow28nm_dashbrd/gpu_core/bronze_v1/run1/syn",
+      "internal_timing_r2r_wns": 6.145,
+      "internal_timing_r2r_tns": 0.0,
+      "internal_timing_r2r_nvp": 0,
+      "interface_timing_i2r_wns": 5.678,
+      "interface_timing_i2r_tns": 0.0,
+      "interface_timing_i2r_nvp": 0,
+      "interface_timing_r2o_wns": 5.945,
+      "interface_timing_r2o_tns": 0.0,
+      "interface_timing_r2o_nvp": 0,
+      "interface_timing_i2o_wns": "N/A",
+      "interface_timing_i2o_tns": "N/A",
+      "interface_timing_i2o_nvp": "N/A",
+      "hold_wns": "N/A",
+      "hold_tns": "N/A",
+      "hold_nvp": "N/A",
+      "max_tran_wns": "N/A",
+      "max_tran_nvp": 0,
+      "max_cap_wns": "N/A",
+      "max_cap_nvp": 0,
+      "max_fanout_wns": "N/A",
+      "max_fanout_nvp": 0,
+      "noise_violations": "N/A",
+      "min_pulse_width": "N/A",
+      "min_period": "N/A",
+      "double_switching": "N/A",
+      "drc_violations": "N/A",
+      "congestion_hotspot": "N/A",
+      "area": 28456.78,
+      "inst_count": 45678,
+      "utilization": "N/A",
+      "log_errors": 1,
+      "log_warnings": 45,
+      "run_status": "completed",
+      "runtime": "00:08:51",
+      "memory_usage": "1,234M",
+      "ai_summary": "",
+      "ir_static": "N/A",
+      "ir_dynamic": "N/A",
+      "em_power": "N/A",
+      "em_signal": "N/A",
+      "pv_drc_base": "N/A",
+      "pv_drc_metal": "N/A",
+      "pv_drc_antenna": "N/A",
+      "lvs": "N/A",
+      "erc": "N/A",
+      "r2g_lec": "N/A",
+      "g2g_lec": "N/A",
+      "setup_path_groups": {
+        "all": {
+          "wns": 5.945,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "reg2reg": {
+          "wns": 6.145,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "in2reg": {
+          "wns": 5.678,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "reg2out": {
+          "wns": 5.945,
+          "tns": 0.0,
+          "nvp": 0
+        }
+      },
+      "drv_violations": {
+        "max_transition": {
+          "wns": "N/A",
+          "tns": "N/A",
+          "nvp": 0
+        },
+        "max_capacitance": {
+          "wns": "N/A",
+          "tns": "N/A",
+          "nvp": 0
+        }
+      },
+      "log_critical": 0
+    },
+    "place": {
+      "stage": "place",
+      "timestamp": "2025-12-24 13:35:42",
+      "project": "project1",
+      "block_name": "gpu_core",
+      "experiment": "run1",
+      "rtl_tag": "bronze_v1",
+      "user_name": "priya",
+      "run_directory": "/proj1/pd/users/testcase/Bharath/proj/flow28nm_dashbrd/gpu_core/bronze_v1/run1/dashboard",
+      "stage_directory": "/proj1/pd/users/testcase/Bharath/proj/flow28nm_dashbrd/gpu_core/bronze_v1/run1/pnr/place",
+      "internal_timing_r2r_wns": 5.456,
+      "internal_timing_r2r_tns": 0.0,
+      "internal_timing_r2r_nvp": 0,
+      "interface_timing_i2r_wns": 4.987,
+      "interface_timing_i2r_tns": 0.0,
+      "interface_timing_i2r_nvp": 0,
+      "interface_timing_r2o_wns": 5.234,
+      "interface_timing_r2o_tns": 0.0,
+      "interface_timing_r2o_nvp": 0,
+      "interface_timing_i2o_wns": "N/A",
+      "interface_timing_i2o_tns": "N/A",
+      "interface_timing_i2o_nvp": 0,
+      "hold_wns": "N/A",
+      "hold_tns": "N/A",
+      "hold_nvp": "N/A",
+      "max_tran_wns": "N/A",
+      "max_tran_nvp": 0,
+      "max_cap_wns": "N/A",
+      "max_cap_nvp": 0,
+      "max_fanout_wns": -220.5,
+      "max_fanout_nvp": 6,
+      "noise_violations": "N/A",
+      "min_pulse_width": "N/A",
+      "min_period": "N/A",
+      "double_switching": "N/A",
+      "drc_violations": "N/A",
+      "congestion_hotspot": "N/A",
+      "area": 28467.23,
+      "inst_count": 45678,
+      "utilization": 72.1,
+      "log_errors": 3,
+      "log_warnings": 67,
+      "run_status": "completed",
+      "runtime": "00:18:45",
+      "memory_usage": "1,567M",
+      "ai_summary": "",
+      "ir_static": "N/A",
+      "ir_dynamic": "N/A",
+      "em_power": "N/A",
+      "em_signal": "N/A",
+      "pv_drc_base": "N/A",
+      "pv_drc_metal": "N/A",
+      "pv_drc_antenna": "N/A",
+      "lvs": "N/A",
+      "erc": "N/A",
+      "r2g_lec": "N/A",
+      "g2g_lec": "N/A",
+      "setup_path_groups": {
+        "all": {
+          "wns": 5.234,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "reg2reg": {
+          "wns": 5.456,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "in2reg": {
+          "wns": 4.987,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "reg2out": {
+          "wns": 5.234,
+          "tns": 0.0,
+          "nvp": 0
+        }
+      },
+      "drv_violations": {
+        "max_transition": {
+          "wns": "N/A",
+          "tns": "N/A",
+          "nvp": 0
+        },
+        "max_capacitance": {
+          "wns": "N/A",
+          "tns": "N/A",
+          "nvp": 0
+        },
+        "max_fanout": {
+          "wns": -220.5,
+          "tns": -441.0,
+          "nvp": 6
+        }
+      },
+      "log_critical": 1
+    },
+    "route": {
+      "stage": "route",
+      "timestamp": "2025-12-24 17:28:05",
+      "project": "project1",
+      "block_name": "gpu_core",
+      "experiment": "run1",
+      "rtl_tag": "bronze_v1",
+      "user_name": "priya",
+      "run_directory": "/proj1/pd/users/testcase/Bharath/proj/flow28nm_dashbrd/gpu_core/bronze_v1/run1/dashboard",
+      "stage_directory": "/proj1/pd/users/testcase/Bharath/proj/flow28nm_dashbrd/gpu_core/bronze_v1/run1/pnr/route",
+      "internal_timing_r2r_wns": 5.345,
+      "internal_timing_r2r_tns": 0.0,
+      "internal_timing_r2r_nvp": 0,
+      "interface_timing_i2r_wns": 4.876,
+      "interface_timing_i2r_tns": 0.0,
+      "interface_timing_i2r_nvp": 0,
+      "interface_timing_r2o_wns": 5.123,
+      "interface_timing_r2o_tns": 0.0,
+      "interface_timing_r2o_nvp": 0,
+      "interface_timing_i2o_wns": "N/A",
+      "interface_timing_i2o_tns": "N/A",
+      "interface_timing_i2o_nvp": 0,
+      "hold_wns": 0.018,
+      "hold_tns": 0.0,
+      "hold_nvp": 0,
+      "max_tran_wns": "N/A",
+      "max_tran_nvp": 0,
+      "max_cap_wns": "N/A",
+      "max_cap_nvp": 0,
+      "max_fanout_wns": -220.5,
+      "max_fanout_nvp": 6,
+      "noise_violations": "N/A",
+      "min_pulse_width": "N/A",
+      "min_period": "N/A",
+      "double_switching": "N/A",
+      "drc_violations": 0,
+      "congestion_hotspot": "N/A",
+      "area": 28467.45,
+      "inst_count": 45678,
+      "utilization": 72.2,
+      "log_errors": 3,
+      "log_warnings": 156,
+      "run_status": "completed",
+      "runtime": "00:42:18",
+      "memory_usage": "1,892M",
+      "ai_summary": "",
+      "ir_static": "N/A",
+      "ir_dynamic": "N/A",
+      "em_power": "N/A",
+      "em_signal": "N/A",
+      "pv_drc_base": "N/A",
+      "pv_drc_metal": "N/A",
+      "pv_drc_antenna": "N/A",
+      "lvs": "pass",
+      "erc": "N/A",
+      "r2g_lec": "pass",
+      "g2g_lec": "pass",
+      "setup_path_groups": {
+        "all": {
+          "wns": 4.876,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "reg2reg": {
+          "wns": 5.345,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "in2reg": {
+          "wns": 4.876,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "reg2out": {
+          "wns": 5.123,
+          "tns": 0.0,
+          "nvp": 0
+        }
+      },
+      "hold_path_groups": {
+        "all": {
+          "wns": 0.018,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "reg2reg": {
+          "wns": 0.018,
+          "tns": 0.0,
+          "nvp": 0
+        }
+      },
+      "drv_violations": {
+        "max_transition": {
+          "wns": "N/A",
+          "tns": "N/A",
+          "nvp": 0
+        },
+        "max_capacitance": {
+          "wns": "N/A",
+          "tns": "N/A",
+          "nvp": 0
+        },
+        "max_fanout": {
+          "wns": -220.5,
+          "tns": -441.0,
+          "nvp": 6
+        }
+      },
+      "metal_density_max": 80.5,
+      "log_critical": 0
+    }
+  },
+  "last_updated": "2025-12-24 17:28:05"
+}
