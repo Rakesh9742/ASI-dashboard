@@ -6125,21 +6125,44 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         ? _calculateBlockHealthIndex(allProjectStages) 
         : 0.0;
 
+    // Calculate executive summary metrics
+    final executiveMetrics = _calculateExecutiveMetrics(allProjectStages, blockStatuses, criticalBlocks);
+    
+    // Calculate project overview
+    final projectOverview = _calculateProjectOverview(allProjectStages, blockStatuses);
+    
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Charts row
+        // Executive Summary Metrics - KPI Cards
+        _buildExecutiveSummaryMetrics(executiveMetrics),
+        const SizedBox(height: 24),
+        
+        // Project-Level Overview
+        _buildProjectLevelOverview(projectOverview, blockStatuses),
+        const SizedBox(height: 24),
+        
+        // Critical Issues Dashboard
+        _buildCriticalIssuesDashboard(criticalBlocks, allProjectStages),
+        const SizedBox(height: 24),
+        
+        // Budget and Timeline Tracking
+        _buildBudgetAndTimelineTracking(allProjectStages, projectOverview),
+        const SizedBox(height: 24),
+        
+        // Additional Charts Row
         Row(
           children: [
             Expanded(
               child: _buildManagerCard(
-                'Block Status Histogram',
+                'Block Status Distribution',
                 _buildBlockStatusHistogram(blockStatuses),
               ),
             ),
             const SizedBox(width: 24),
             Expanded(
               child: _buildManagerCard(
-                'Critical Blocks',
+                'Critical Blocks Analysis',
                 _buildCriticalBlocksChart(criticalBlocks),
               ),
             ),
@@ -6147,38 +6170,14 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         ),
         if (allProjectStages.isNotEmpty && currentStage != null) ...[
           const SizedBox(height: 24),
-          _buildManagerCard('Current Stage', _buildCurrentStageCard(currentStage)),
-          const SizedBox(height: 24),
-          _buildManagerCard('Block Health Index', _buildHealthIndexCard(healthIndex)),
-          const SizedBox(height: 24),
-          _buildManagerCard('Brief Summary', _buildBriefSummaryCard(currentStage)),
-        ] else if (allProjectStages.isEmpty) ...[
-          const SizedBox(height: 24),
-          _buildManagerCard(
-            'Current Stage',
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.all(32.0),
-                child: Text(
-                  'No stage data available for the selected project',
-                  style: TextStyle(color: Colors.grey),
-                ),
-              ),
-            ),
+          Row(
+            children: [
+              Expanded(child: _buildManagerCard('Current Stage', _buildCurrentStageCard(currentStage))),
+              const SizedBox(width: 24),
+              Expanded(child: _buildManagerCard('Block Health Index', _buildHealthIndexCard(healthIndex))),
+            ],
           ),
-          const SizedBox(height: 24),
-          _buildManagerCard('Block Health Index', _buildHealthIndexCard(0.0)),
         ],
-        const SizedBox(height: 24),
-        Row(
-          children: [
-            Expanded(child: _buildManagerCard('Open Tickets', _buildTicketsCard())),
-            const SizedBox(width: 24),
-            Expanded(child: _buildManagerCard('Milestone Status', _buildMilestoneCard())),
-            const SizedBox(width: 24),
-            Expanded(child: _buildManagerCard('QMS Status', _buildQMSStatusCard())),
-          ],
-        ),
       ],
     );
   }
@@ -6392,10 +6391,10 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         
         // Calculate critical score
         if (maxWns < 0) {
-          criticalScore += (maxWns.abs() * 10).toInt().clamp(0, 30);
+          criticalScore += ((maxWns.abs() * 10).toInt()).clamp(0, 30).toInt();
         }
-        criticalScore += (totalErrors * 2).clamp(0, 20);
-        criticalScore += (totalWarnings * 0.5).toInt().clamp(0, 10);
+        criticalScore += ((totalErrors * 2).toInt()).clamp(0, 20).toInt();
+        criticalScore += ((totalWarnings * 0.5).toInt()).clamp(0, 10).toInt();
         
         // Add to critical blocks if score > 0
         if (criticalScore > 0) {
@@ -6982,6 +6981,1246 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         ),
       ],
     );
+  }
+
+  // ========================================================================
+  // ENHANCED MANAGER VIEW METHODS
+  // ========================================================================
+
+  // Calculate Executive Summary Metrics
+  Map<String, dynamic> _calculateExecutiveMetrics(
+    List<Map<String, dynamic>> allStages,
+    Map<String, String> blockStatuses,
+    List<Map<String, dynamic>> criticalBlocks,
+  ) {
+    int totalBlocks = blockStatuses.length;
+    int completedBlocks = blockStatuses.values.where((s) => s.toLowerCase() == 'pass').length;
+    int failedBlocks = blockStatuses.values.where((s) => s.toLowerCase() == 'fail').length;
+    int inProgressBlocks = totalBlocks - completedBlocks - failedBlocks;
+    
+    int totalStages = allStages.length;
+    int completedStages = allStages.where((s) => 
+      (s['run_status']?.toString().toLowerCase() ?? '') == 'pass'
+    ).length;
+    int failedStages = allStages.where((s) => 
+      (s['run_status']?.toString().toLowerCase() ?? '') == 'fail'
+    ).length;
+    
+    double avgHealthIndex = allStages.isNotEmpty 
+        ? _calculateBlockHealthIndex(allStages) 
+        : 0.0;
+    
+    int criticalIssues = criticalBlocks.length;
+    int totalErrors = allStages.fold<int>(0, (int sum, stage) {
+      final errors = (_parseNumeric(stage['log_errors']) as num?)?.toInt() ?? 0;
+      return sum + errors;
+    });
+    int totalWarnings = allStages.fold<int>(0, (int sum, stage) {
+      final warnings = (_parseNumeric(stage['log_warnings']) as num?)?.toInt() ?? 0;
+      return sum + warnings;
+    });
+    
+    double completionRate = totalBlocks > 0 ? (completedBlocks / totalBlocks) * 100 : 0.0;
+    
+    return {
+      'totalBlocks': totalBlocks,
+      'completedBlocks': completedBlocks,
+      'failedBlocks': failedBlocks,
+      'inProgressBlocks': inProgressBlocks,
+      'totalStages': totalStages,
+      'completedStages': completedStages,
+      'failedStages': failedStages,
+      'avgHealthIndex': avgHealthIndex,
+      'criticalIssues': criticalIssues,
+      'totalErrors': totalErrors,
+      'totalWarnings': totalWarnings,
+      'completionRate': completionRate,
+    };
+  }
+
+  // Calculate Project Overview
+  Map<String, dynamic> _calculateProjectOverview(
+    List<Map<String, dynamic>> allStages,
+    Map<String, String> blockStatuses,
+  ) {
+    // Get unique blocks
+    final uniqueBlocks = <String>{};
+    for (var stage in allStages) {
+      final blockName = stage['block_name']?.toString();
+      if (blockName != null && blockName.isNotEmpty) {
+        uniqueBlocks.add(blockName);
+      }
+    }
+    
+    // Calculate stage distribution
+    final stageDistribution = <String, int>{};
+    for (var stage in allStages) {
+      final stageName = stage['stage']?.toString() ?? 'Unknown';
+      stageDistribution[stageName] = (stageDistribution[stageName] ?? 0) + 1;
+    }
+    
+    // Calculate timing metrics
+    double worstWns = 0.0;
+    double bestWns = 0.0;
+    double avgWns = 0.0;
+    int wnsCount = 0;
+    
+    for (var stage in allStages) {
+      final wns = _parseNumeric(stage['internal_timing_r2r_wns']);
+      if (wns != null) {
+        if (wnsCount == 0) {
+          worstWns = wns;
+          bestWns = wns;
+        } else {
+          if (wns < worstWns) worstWns = wns;
+          if (wns > bestWns) bestWns = wns;
+        }
+        avgWns += wns;
+        wnsCount++;
+      }
+    }
+    if (wnsCount > 0) avgWns /= wnsCount;
+    
+    // Calculate area metrics
+    double totalArea = 0.0;
+    int areaCount = 0;
+    for (var stage in allStages) {
+      final area = _parseNumeric(stage['area']);
+      if (area != null && area > 0) {
+        totalArea += area;
+        areaCount++;
+      }
+    }
+    final avgArea = areaCount > 0 ? totalArea / areaCount : 0.0;
+    
+    return {
+      'uniqueBlocks': uniqueBlocks.length,
+      'stageDistribution': stageDistribution,
+      'worstWns': worstWns,
+      'bestWns': bestWns,
+      'avgWns': avgWns,
+      'avgArea': avgArea,
+      'totalStages': allStages.length,
+    };
+  }
+
+  // Build Executive Summary Metrics (KPI Cards)
+  Widget _buildExecutiveSummaryMetrics(Map<String, dynamic> metrics) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'EXECUTIVE SUMMARY',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w900,
+            color: Color(0xFF1E293B),
+            letterSpacing: 1.0,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Project Health',
+                metrics['avgHealthIndex'].toStringAsFixed(1),
+                '%',
+                metrics['avgHealthIndex'] >= 80 
+                    ? const Color(0xFF10B981)
+                    : metrics['avgHealthIndex'] >= 60
+                        ? const Color(0xFFF59E0B)
+                        : const Color(0xFFEF4444),
+                Icons.health_and_safety,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Completion Rate',
+                metrics['completionRate'].toStringAsFixed(1),
+                '%',
+                metrics['completionRate'] >= 80 
+                    ? const Color(0xFF10B981)
+                    : metrics['completionRate'] >= 60
+                        ? const Color(0xFFF59E0B)
+                        : const Color(0xFFEF4444),
+                Icons.check_circle,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Total Blocks',
+                metrics['totalBlocks'].toString(),
+                '',
+                const Color(0xFF3B82F6),
+                Icons.view_module,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Critical Issues',
+                metrics['criticalIssues'].toString(),
+                '',
+                metrics['criticalIssues'] > 0 
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF10B981),
+                Icons.warning,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Completed Blocks',
+                metrics['completedBlocks'].toString(),
+                '/${metrics['totalBlocks']}',
+                const Color(0xFF10B981),
+                Icons.done_all,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Failed Blocks',
+                metrics['failedBlocks'].toString(),
+                '',
+                metrics['failedBlocks'] > 0 
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF94A3B8),
+                Icons.error,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Total Errors',
+                metrics['totalErrors'].toString(),
+                '',
+                metrics['totalErrors'] > 0 
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF94A3B8),
+                Icons.bug_report,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Total Stages',
+                metrics['totalStages'].toString(),
+                '',
+                const Color(0xFF3B82F6),
+                Icons.layers,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // Build Executive KPI Card
+  Widget _buildExecutiveKPICard(String label, String value, String suffix, Color color, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.02),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Icon(icon, color: color, size: 24),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  label.toUpperCase(),
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: color,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.w900,
+                  color: const Color(0xFF1E293B),
+                ),
+              ),
+              if (suffix.isNotEmpty) ...[
+                const SizedBox(width: 4),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    suffix,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: const Color(0xFF94A3B8),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build Project-Level Overview
+  Widget _buildProjectLevelOverview(Map<String, dynamic> overview, Map<String, String> blockStatuses) {
+    return _buildManagerCard(
+      'Project-Level Overview',
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Statistics Grid
+          Row(
+            children: [
+              Expanded(
+                child: _buildStatItem(
+                  'Unique Blocks',
+                  overview['uniqueBlocks'].toString(),
+                  Icons.view_module,
+                  const Color(0xFF3B82F6),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _buildStatItem(
+                  'Total Stages',
+                  overview['totalStages'].toString(),
+                  Icons.layers,
+                  const Color(0xFF10B981),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _buildStatItem(
+                  'Avg WNS',
+                  overview['avgWns'].toStringAsFixed(2),
+                  Icons.speed,
+                  overview['avgWns'] < 0 
+                      ? const Color(0xFFEF4444)
+                      : const Color(0xFF10B981),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _buildStatItem(
+                  'Avg Area',
+                  overview['avgArea'].toStringAsFixed(0),
+                  'μm²',
+                  const Color(0xFFF59E0B),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          
+          // Stage Distribution Chart
+          if (overview['stageDistribution'] is Map) ...[
+            const Text(
+              'Stage Distribution',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1E293B),
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 200,
+              child: _buildStageDistributionChart(overview['stageDistribution'] as Map<String, int>),
+            ),
+          ],
+          
+          const SizedBox(height: 24),
+          
+          // Timing Metrics Summary
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Worst WNS',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF94A3B8),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        overview['worstWns'].toStringAsFixed(2),
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                          color: overview['worstWns'] < 0 
+                              ? const Color(0xFFEF4444)
+                              : const Color(0xFF10B981),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Best WNS',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF94A3B8),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        overview['bestWns'].toStringAsFixed(2),
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF10B981),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build Stat Item
+  Widget _buildStatItem(String label, String value, dynamic iconOrUnit, Color color) {
+    IconData iconData;
+    String? unit;
+    
+    if (iconOrUnit is IconData) {
+      iconData = iconOrUnit;
+      unit = null;
+    } else {
+      iconData = Icons.info;
+      unit = iconOrUnit.toString();
+    }
+    
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(iconData, size: 20, color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF94A3B8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                  color: Color(0xFF1E293B),
+                ),
+              ),
+              if (unit != null) ...[
+                const SizedBox(width: 4),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    unit,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF94A3B8),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build Stage Distribution Chart
+  Widget _buildStageDistributionChart(Map<String, int> distribution) {
+    if (distribution.isEmpty) {
+      return const Center(
+        child: Text(
+          'No stage data available',
+          style: TextStyle(color: Color(0xFF94A3B8)),
+        ),
+      );
+    }
+    
+    final entries = distribution.entries.toList();
+    entries.sort((a, b) => b.value.compareTo(a.value));
+    
+    final maxValue = entries.isNotEmpty 
+        ? entries.map((e) => e.value).reduce((a, b) => a > b ? a : b)
+        : 1;
+    
+    final barGroups = <BarChartGroupData>[];
+    final bottomTitles = <String>[];
+    
+    for (int i = 0; i < entries.length; i++) {
+      final entry = entries[i];
+      barGroups.add(
+        BarChartGroupData(
+          x: i,
+          barRods: [
+            BarChartRodData(
+              toY: entry.value.toDouble(),
+              color: _getStageColor(entry.key),
+              width: 30,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+            ),
+          ],
+        ),
+      );
+      bottomTitles.add(entry.key.toUpperCase());
+    }
+    
+    return BarChart(
+      BarChartData(
+        alignment: BarChartAlignment.spaceAround,
+        maxY: maxValue.toDouble() * 1.2,
+        barTouchData: BarTouchData(
+          enabled: true,
+          touchTooltipData: BarTouchTooltipData(
+            tooltipBgColor: Colors.grey[800]!,
+            tooltipRoundedRadius: 8,
+            tooltipPadding: const EdgeInsets.all(8),
+            getTooltipItem: (group, groupIndex, rod, rodIndex) {
+              return BarTooltipItem(
+                '${bottomTitles[groupIndex]}: ${rod.toY.toInt()}',
+                const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              );
+            },
+          ),
+        ),
+        titlesData: FlTitlesData(
+          show: true,
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              getTitlesWidget: (value, meta) {
+                final idx = value.toInt();
+                if (idx >= 0 && idx < bottomTitles.length) {
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      bottomTitles[idx],
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFF64748B),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  );
+                }
+                return const Text('');
+              },
+              reservedSize: 50,
+            ),
+          ),
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              getTitlesWidget: (value, meta) {
+                if (value.toInt() == value) {
+                  return Text(
+                    value.toInt().toString(),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF64748B),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  );
+                }
+                return const Text('');
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          horizontalInterval: 1,
+          getDrawingHorizontalLine: (value) {
+            return const FlLine(
+              color: Color(0xFFE2E8F0),
+              strokeWidth: 1,
+            );
+          },
+        ),
+        borderData: FlBorderData(show: false),
+        barGroups: barGroups,
+      ),
+    );
+  }
+
+  Color _getStageColor(String stage) {
+    final stageLower = stage.toLowerCase();
+    if (stageLower.contains('syn')) return const Color(0xFF3B82F6);
+    if (stageLower.contains('place')) return const Color(0xFF10B981);
+    if (stageLower.contains('cts')) return const Color(0xFFF59E0B);
+    if (stageLower.contains('route')) return const Color(0xFFEF4444);
+    return const Color(0xFF94A3B8);
+  }
+
+  // Build Critical Issues Dashboard
+  Widget _buildCriticalIssuesDashboard(
+    List<Map<String, dynamic>> criticalBlocks,
+    List<Map<String, dynamic>> allStages,
+  ) {
+    // Get critical issues from stages
+    final criticalIssues = <Map<String, dynamic>>[];
+    
+    for (var stage in allStages) {
+      final status = stage['run_status']?.toString().toLowerCase() ?? '';
+      final wns = _parseNumeric(stage['internal_timing_r2r_wns']);
+      final errors = _parseNumeric(stage['log_errors']) ?? 0;
+      final warnings = _parseNumeric(stage['log_warnings']) ?? 0;
+      
+      bool isCritical = false;
+      String issueType = '';
+      
+      if (status == 'fail') {
+        isCritical = true;
+        issueType = 'Failed Stage';
+      } else if (wns != null && wns < -0.1) {
+        isCritical = true;
+        issueType = 'Timing Violation';
+      } else if (errors > 10) {
+        isCritical = true;
+        issueType = 'High Error Count';
+      }
+      
+      if (isCritical) {
+        criticalIssues.add({
+          'block': stage['block_name']?.toString() ?? 'Unknown',
+          'stage': stage['stage']?.toString() ?? 'Unknown',
+          'type': issueType,
+          'status': status,
+          'wns': wns,
+          'errors': errors,
+          'warnings': warnings,
+          'severity': status == 'fail' ? 'high' : (wns != null && wns < -0.5) ? 'high' : 'medium',
+        });
+      }
+    }
+    
+    // Sort by severity
+    criticalIssues.sort((a, b) {
+      final severityOrder = {'high': 0, 'medium': 1, 'low': 2};
+      final aSev = severityOrder[a['severity']] ?? 2;
+      final bSev = severityOrder[b['severity']] ?? 2;
+      if (aSev != bSev) return aSev.compareTo(bSev);
+      return (b['errors'] as num).compareTo(a['errors'] as num);
+    });
+    
+    return _buildManagerCard(
+      'Critical Issues Dashboard',
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Summary Row
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFFEE2E2)),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        criticalIssues.length.toString(),
+                        style: const TextStyle(
+                          fontSize: 32,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFFEF4444),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Critical Issues',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFFEF4444),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF3C7),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        criticalBlocks.length.toString(),
+                        style: const TextStyle(
+                          fontSize: 32,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFFF59E0B),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Critical Blocks',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFFF59E0B),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          
+          // Critical Issues List
+          if (criticalIssues.isNotEmpty) ...[
+            const Text(
+              'Recent Critical Issues',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1E293B),
+              ),
+            ),
+            const SizedBox(height: 12),
+            ...criticalIssues.take(10).map((issue) => _buildCriticalIssueItem(issue)),
+          ] else ...[
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(32.0),
+                child: Text(
+                  'No critical issues found',
+                  style: TextStyle(
+                    color: Color(0xFF10B981),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // Build Critical Issue Item
+  Widget _buildCriticalIssueItem(Map<String, dynamic> issue) {
+    final severity = issue['severity']?.toString() ?? 'medium';
+    final color = severity == 'high' 
+        ? const Color(0xFFEF4444)
+        : const Color(0xFFF59E0B);
+    
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            decoration: BoxDecoration(
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(8),
+                bottomLeft: Radius.circular(8),
+              ),
+              color: color,
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Icon(
+                      severity == 'high' ? Icons.error : Icons.warning,
+                      color: color,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${issue['block']} - ${issue['stage']}',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF1E293B),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          issue['type']?.toString() ?? 'Unknown Issue',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF64748B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (issue['wns'] != null) ...[
+                        Text(
+                          'WNS: ${(issue['wns'] as num).toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: (issue['wns'] as num) < 0 
+                                ? const Color(0xFFEF4444)
+                                : const Color(0xFF10B981),
+                          ),
+                        ),
+                      ],
+                      if (issue['errors'] != null && (issue['errors'] as num) > 0) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          'Errors: ${issue['errors']}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFFEF4444),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build Budget and Timeline Tracking
+  Widget _buildBudgetAndTimelineTracking(
+    List<Map<String, dynamic>> allStages,
+    Map<String, dynamic> projectOverview,
+  ) {
+    // Calculate timeline metrics
+    final stages = <String, DateTime?>{};
+    DateTime? earliestDate;
+    DateTime? latestDate;
+    
+    for (var stage in allStages) {
+      final timestamp = stage['timestamp']?.toString();
+      if (timestamp != null && timestamp.isNotEmpty) {
+        try {
+          final date = DateTime.parse(timestamp);
+          final stageName = stage['stage']?.toString() ?? 'Unknown';
+          if (stages[stageName] == null || date.isBefore(stages[stageName]!)) {
+            stages[stageName] = date;
+          }
+          if (earliestDate == null || date.isBefore(earliestDate)) {
+            earliestDate = date;
+          }
+          if (latestDate == null || date.isAfter(latestDate)) {
+            latestDate = date;
+          }
+        } catch (e) {
+          // Ignore parse errors
+        }
+      }
+    }
+    
+    // Calculate progress
+    final totalDays = earliestDate != null && latestDate != null
+        ? latestDate.difference(earliestDate).inDays
+        : 0;
+    final daysElapsed = earliestDate != null
+        ? DateTime.now().difference(earliestDate).inDays
+        : 0;
+    final progressPercent = totalDays > 0 
+        ? ((daysElapsed / totalDays) * 100).clamp(0, 100)
+        : 0.0;
+    
+    // Mock budget data (would come from actual budget system)
+    final budgetData = {
+      'allocated': 1000000.0,
+      'spent': 750000.0,
+      'remaining': 250000.0,
+      'utilization': 75.0,
+    };
+    
+    return Row(
+      children: [
+        Expanded(
+          child: _buildManagerCard(
+            'Timeline Tracking',
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (earliestDate != null && latestDate != null) ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      _buildTimelineItem('Start Date', _formatDate(earliestDate)),
+                      _buildTimelineItem('End Date', _formatDate(latestDate)),
+                      _buildTimelineItem('Duration', '$totalDays days'),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Project Progress',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF1E293B),
+                            ),
+                          ),
+                          Text(
+                            '${progressPercent.toStringAsFixed(1)}%',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF3B82F6),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      LinearProgressIndicator(
+                        value: progressPercent / 100,
+                        backgroundColor: Colors.grey[200],
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          progressPercent >= 75 
+                              ? const Color(0xFF10B981)
+                              : progressPercent >= 50
+                                  ? const Color(0xFFF59E0B)
+                                  : const Color(0xFFEF4444),
+                        ),
+                        minHeight: 8,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '$daysElapsed days elapsed',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF94A3B8),
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else ...[
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32.0),
+                      child: Text(
+                        'No timeline data available',
+                        style: TextStyle(color: Color(0xFF94A3B8)),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 24),
+        Expanded(
+          child: _buildManagerCard(
+            'Budget Tracking',
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    _buildBudgetItem('Allocated', '\$${(budgetData['allocated']! / 1000).toStringAsFixed(0)}K', const Color(0xFF3B82F6)),
+                    _buildBudgetItem('Spent', '\$${(budgetData['spent']! / 1000).toStringAsFixed(0)}K', const Color(0xFFF59E0B)),
+                    _buildBudgetItem('Remaining', '\$${(budgetData['remaining']! / 1000).toStringAsFixed(0)}K', const Color(0xFF10B981)),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Budget Utilization',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF1E293B),
+                          ),
+                        ),
+                        Text(
+                          '${budgetData['utilization']!.toStringAsFixed(1)}%',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: budgetData['utilization']! >= 90
+                                ? const Color(0xFFEF4444)
+                                : budgetData['utilization']! >= 75
+                                    ? const Color(0xFFF59E0B)
+                                    : const Color(0xFF10B981),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    LinearProgressIndicator(
+                      value: budgetData['utilization']! / 100,
+                      backgroundColor: Colors.grey[200],
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        budgetData['utilization']! >= 90
+                            ? const Color(0xFFEF4444)
+                            : budgetData['utilization']! >= 75
+                                ? const Color(0xFFF59E0B)
+                                : const Color(0xFF10B981),
+                      ),
+                      minHeight: 8,
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          Column(
+                            children: [
+                              Text(
+                                '\$${(budgetData['spent']! / budgetData['allocated']! * 100).toStringAsFixed(1)}%',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w900,
+                                  color: Color(0xFF1E293B),
+                                ),
+                              ),
+                              const Text(
+                                'Spent',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF94A3B8),
+                                ),
+                              ),
+                            ],
+                          ),
+                          Container(
+                            width: 1,
+                            height: 40,
+                            color: const Color(0xFFE2E8F0),
+                          ),
+                          Column(
+                            children: [
+                              Text(
+                                '\$${(budgetData['remaining']! / budgetData['allocated']! * 100).toStringAsFixed(1)}%',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w900,
+                                  color: Color(0xFF1E293B),
+                                ),
+                              ),
+                              const Text(
+                                'Remaining',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF94A3B8),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Build Timeline Item
+  Widget _buildTimelineItem(String label, String value) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF94A3B8),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF1E293B),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Build Budget Item
+  Widget _buildBudgetItem(String label, String value, Color color) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF94A3B8),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w900,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Format Date
+  String _formatDate(DateTime date) {
+    return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
   }
 }
 
