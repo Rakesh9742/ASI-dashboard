@@ -193,6 +193,20 @@ class QmsService {
                 cia.approved_at DESC NULLS LAST
               LIMIT 1
             ) as approver_name,
+            -- Current approver role
+            (
+              SELECT u.role
+              FROM check_items ci
+              JOIN check_item_approvals cia ON cia.check_item_id = ci.id
+              JOIN users u ON u.id = COALESCE(cia.assigned_approver_id, cia.default_approver_id)
+              WHERE ci.checklist_id = cl.id
+                AND u.id IS NOT NULL
+              ORDER BY 
+                CASE WHEN cia.status = 'pending' THEN 0 ELSE 1 END,
+                cia.updated_at DESC NULLS LAST,
+                cia.approved_at DESC NULLS LAST
+              LIMIT 1
+            ) as approver_role,
             -- Current assigned approver ID (pending preferred)
             (
               SELECT COALESCE(cia.assigned_approver_id, cia.default_approver_id)
@@ -234,6 +248,166 @@ class QmsService {
       return result.rows;
     } catch (error: any) {
       console.error('Error getting checklists:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update checklist basic details (currently name only)
+   */
+  async updateChecklist(
+    checklistId: number,
+    name: string | null,
+    userId: number
+  ): Promise<void> {
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        await client.query(
+          `
+            UPDATE checklists
+            SET 
+              name = COALESCE($1, name),
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+          `,
+          [name, checklistId]
+        );
+
+        const blockResult = await client.query(
+          'SELECT block_id FROM checklists WHERE id = $1',
+          [checklistId]
+        );
+        const blockId = blockResult.rows[0]?.block_id || null;
+
+        await this.logAuditAction(
+          client,
+          null,
+          checklistId,
+          blockId,
+          userId,
+          'checklist_updated',
+          { name }
+        );
+
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error: any) {
+      console.error('Error updating checklist:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete checklist and all related data
+   */
+  async deleteChecklist(checklistId: number, userId: number): Promise<void> {
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Get checklist and block info for audit BEFORE any deletions
+        const checklistResult = await client.query(
+          'SELECT id, name, block_id FROM checklists WHERE id = $1 FOR UPDATE',
+          [checklistId]
+        );
+        
+        if (checklistResult.rows.length === 0) {
+          throw new Error('Checklist not found');
+        }
+        
+        const checklistInfo = checklistResult.rows[0];
+        const blockId = checklistInfo.block_id || null;
+        const checklistName = checklistInfo.name;
+
+        // Get all check item ids
+        const itemsResult = await client.query(
+          'SELECT id FROM check_items WHERE checklist_id = $1',
+          [checklistId]
+        );
+        const checkItemIds = itemsResult.rows.map((r: any) => r.id);
+
+        // CRITICAL: Verify checklist still exists right before logging (double-check after FOR UPDATE lock)
+        const verifyChecklist = await client.query(
+          'SELECT id FROM checklists WHERE id = $1',
+          [checklistId]
+        );
+        
+        // Determine the checklist_id to use for audit log
+        // If checklist exists, use it; if not, use NULL (constraint allows NULL)
+        const auditChecklistId = verifyChecklist.rows.length > 0 ? checklistId : null;
+        
+        if (verifyChecklist.rows.length === 0) {
+          // Checklist was already deleted - log with NULL checklist_id
+          console.warn(`Checklist ${checklistId} was already deleted, logging deletion with NULL checklist_id`);
+        }
+
+        // IMPORTANT: Log audit action FIRST, before ANY deletions
+        // Use NULL for checklist_id if checklist doesn't exist (avoids foreign key violation)
+        // Store the checklist info in action_details for audit trail
+        await this.logAuditAction(
+          client,
+          null,
+          auditChecklistId, // Use NULL if checklist doesn't exist, otherwise use checklistId
+          blockId,
+          userId,
+          'checklist_deleted',
+          {
+            deleted_checklist_id: checklistId,
+            deleted_checklist_name: checklistName,
+            deleted_check_item_count: checkItemIds.length
+          }
+        );
+
+        // Delete audit log entries that reference check items (these will be set to NULL by ON DELETE SET NULL constraint)
+        // We delete them explicitly to clean up, but the constraint will handle it if we don't
+        if (checkItemIds.length > 0) {
+          await client.query(
+            'DELETE FROM qms_audit_log WHERE check_item_id = ANY($1::int[])',
+            [checkItemIds]
+          );
+        }
+
+        if (checkItemIds.length > 0) {
+          // Delete approvals
+          await client.query(
+            'DELETE FROM check_item_approvals WHERE check_item_id = ANY($1::int[])',
+            [checkItemIds]
+          );
+
+          // Delete report data
+          await client.query(
+            'DELETE FROM c_report_data WHERE check_item_id = ANY($1::int[])',
+            [checkItemIds]
+          );
+
+          // Delete check items
+          await client.query(
+            'DELETE FROM check_items WHERE id = ANY($1::int[])',
+            [checkItemIds]
+          );
+        }
+
+        // Delete checklist (the audit log entry's checklist_id will be set to NULL by ON DELETE SET NULL constraint)
+        await client.query('DELETE FROM checklists WHERE id = $1', [checklistId]);
+
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error: any) {
+      console.error('Error deleting checklist:', error);
       throw error;
     }
   }
@@ -1373,7 +1547,25 @@ class QmsService {
         [blockId]
       );
 
-      return result.rows.length > 0 ? result.rows[0].id : null;
+      if (result.rows.length > 0) {
+        return result.rows[0].id;
+      }
+
+      // Fallback: any active lead/admin in the system
+      const globalResult = await pool.query(
+        `
+          SELECT id
+          FROM users
+          WHERE role IN ('lead', 'admin')
+            AND is_active = true
+          ORDER BY 
+            CASE WHEN role = 'lead' THEN 0 ELSE 1 END,
+            id ASC
+          LIMIT 1
+        `
+      );
+
+      return globalResult.rows.length > 0 ? globalResult.rows[0].id : null;
     } catch (error: any) {
       console.error('Error getting project lead for block:', error);
       throw error;

@@ -104,6 +104,64 @@ router.get('/checklists/:checklistId', authenticate, async (req, res) => {
 });
 
 /**
+ * PUT /api/qms/checklists/:checklistId
+ * Update checklist (name only for now)
+ */
+router.put(
+  '/checklists/:checklistId',
+  authenticate,
+  authorize('admin', 'lead'),
+  async (req, res) => {
+    try {
+      const checklistId = parseInt(req.params.checklistId, 10);
+      const { name } = req.body;
+      const userId = (req as any).user?.id;
+
+      if (isNaN(checklistId)) {
+        return res.status(400).json({ error: 'Invalid checklist ID' });
+      }
+
+      await qmsService.updateChecklist(checklistId, name ?? null, userId);
+      const updatedChecklist = await qmsService.getChecklistWithItems(checklistId);
+
+      res.json({
+        message: 'Checklist updated successfully',
+        checklist: updatedChecklist
+      });
+    } catch (error: any) {
+      console.error('Error updating checklist:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
+ * DELETE /api/qms/checklists/:checklistId
+ * Delete checklist and related data
+ */
+router.delete(
+  '/checklists/:checklistId',
+  authenticate,
+  authorize('admin', 'lead'),
+  async (req, res) => {
+    try {
+      const checklistId = parseInt(req.params.checklistId, 10);
+      const userId = (req as any).user?.id;
+
+      if (isNaN(checklistId)) {
+        return res.status(400).json({ error: 'Invalid checklist ID' });
+      }
+
+      await qmsService.deleteChecklist(checklistId, userId);
+      res.json({ message: 'Checklist deleted successfully' });
+    } catch (error: any) {
+      console.error('Error deleting checklist:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
  * GET /api/qms/check-items/:checkItemId
  * Get check item details with report data
  */

@@ -342,6 +342,47 @@ class QmsService {
     }
   }
 
+  // Update checklist (name)
+  Future<Map<String, dynamic>> updateChecklist(
+    int checklistId,
+    String name, {
+    String? token,
+  }) async {
+    try {
+      final response = await http.put(
+        Uri.parse('${ApiService.baseUrl}/qms/checklists/$checklistId'),
+        headers: _getHeaders(token: token),
+        body: json.encode({'name': name}),
+      );
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        final error = json.decode(response.body);
+        throw Exception(error['error'] ?? 'Failed to update checklist');
+      }
+    } catch (e) {
+      throw Exception('Error updating checklist: $e');
+    }
+  }
+
+  // Delete checklist
+  Future<void> deleteChecklist(int checklistId, {String? token}) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('${ApiService.baseUrl}/qms/checklists/$checklistId'),
+        headers: _getHeaders(token: token),
+      );
+
+      if (response.statusCode != 200) {
+        final error = json.decode(response.body);
+        throw Exception(error['error'] ?? 'Failed to delete checklist');
+      }
+    } catch (e) {
+      throw Exception('Error deleting checklist: $e');
+    }
+  }
+
   // Get available approvers for a checklist (excluding submitting engineer)
   Future<List<dynamic>> getApproversForChecklist(int checklistId, {String? token}) async {
     try {

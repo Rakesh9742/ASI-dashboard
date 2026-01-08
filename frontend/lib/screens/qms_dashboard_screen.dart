@@ -27,11 +27,20 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
   Map<String, dynamic>? _blockStatus;
   List<dynamic> _availableApprovers = [];
   int? _selectedApproverId;
+  final ScrollController _horizontalScrollController = ScrollController();
+  final ScrollController _verticalScrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
     _loadData();
+  }
+
+  @override
+  void dispose() {
+    _horizontalScrollController.dispose();
+    _verticalScrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadData() async {
@@ -438,39 +447,6 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
         title: const Text('QMS Dashboard'),
         elevation: 0,
         actions: [
-          // Only show upload button for admin, project_manager, and lead
-          Builder(
-            builder: (context) {
-              final authState = ref.read(authProvider);
-              final userRole = authState.user?['role'];
-              final canUpload = userRole == 'admin' || userRole == 'project_manager' || userRole == 'lead';
-              
-              if (canUpload) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                  child: ElevatedButton.icon(
-                    onPressed: _isUploading ? null : _showUploadDialog,
-                    icon: _isUploading
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                          )
-                        : const Icon(Icons.upload_file, size: 18),
-                    label: Text(_isUploading ? 'Uploading...' : 'Upload Template'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.purple.shade600,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      minimumSize: const Size(0, 36),
-                    ),
-                  ),
-                );
-              }
-              return const SizedBox.shrink();
-            },
-          ),
-          const SizedBox(width: 5),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _refreshData,
@@ -482,270 +458,499 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
         onRefresh: _loadData,
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(16.0),
+          padding: const EdgeInsets.all(20.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Header Section (New)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'QMS Management',
+                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.grey.shade800,
+                            ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Monitor and approve quality checklists',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: Colors.grey.shade600,
+                            ),
+                      ),
+                    ],
+                  ),
+                  // Upload button moved here
+                  Builder(
+                    builder: (context) {
+                      final authState = ref.read(authProvider);
+                      final userRole = authState.user?['role'];
+                      final canUpload = userRole == 'admin' || userRole == 'project_manager' || userRole == 'lead';
+                      
+                      if (canUpload) {
+                        return ElevatedButton.icon(
+                          onPressed: _isUploading ? null : _showUploadDialog,
+                          icon: _isUploading
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                )
+                              : const Icon(Icons.upload_file, size: 18),
+                          label: Text(_isUploading ? 'Uploading...' : 'Upload Template'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.purple.shade600,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            elevation: 2,
+                          ),
+                        );
+                      }
+                      return const SizedBox.shrink();
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 32),
               // Block status summary
               if (_blockStatus != null) ...[
-                Card(
-                  elevation: 2,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
+                Container(
+                  padding: const EdgeInsets.all(16.0),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.blue.shade100),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        _blockStatus!['all_checklists_approved'] == true
+                            ? Icons.check_circle
+                            : (_blockStatus!['all_checklists_submitted'] == true
+                                ? Icons.pending_actions
+                                : Icons.info_outline),
+                        color: _blockStatus!['all_checklists_approved'] == true
+                            ? Colors.green
+                            : (_blockStatus!['all_checklists_submitted'] == true
+                                ? Colors.blue
+                                : Colors.blue.shade700),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(
-                              _blockStatus!['all_checklists_submitted'] == true
-                                  ? Icons.check_circle
-                                  : Icons.info,
-                              color: _blockStatus!['all_checklists_submitted'] == true
-                                  ? Colors.green
-                                  : Colors.blue,
-                            ),
-                            const SizedBox(width: 8),
                             Text(
                               'Block Status',
-                              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                                color: Colors.black87,
+                              ),
+                            ),
+                            Text(
+                              _blockStatus!['all_checklists_approved'] == true
+                                  ? 'Block Completed'
+                                  : (_blockStatus!['all_checklists_submitted'] == true
+                                      ? 'Block Submitted'
+                                      : 'Some checklists pending'),
+                              style: TextStyle(
+                                color: _blockStatus!['all_checklists_approved'] == true
+                                    ? Colors.green
+                                    : (_blockStatus!['all_checklists_submitted'] == true
+                                        ? Colors.blue
+                                        : Colors.orange.shade800),
+                                fontWeight: FontWeight.w500,
+                                fontSize: 14,
+                              ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          _blockStatus!['all_checklists_submitted'] == true
-                              ? 'Block Submitted'
-                              : 'Some checklists pending',
-                          style: TextStyle(
-                            color: _blockStatus!['all_checklists_submitted'] == true
-                                ? Colors.green
-                                : Colors.orange,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 24),
               ],
 
               // Checklists table
-              Text(
-                'Checklists (${_checklists.length})',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.bold,
+              Row(
+                children: [
+                  Icon(Icons.folder_open, color: Colors.purple.shade600, size: 24),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Checklists',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.grey.shade800,
+                        ),
+                  ),
+                  const SizedBox(width: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.purple.shade50,
+                      borderRadius: BorderRadius.circular(12),
                     ),
-              ),
-              const SizedBox(height: 16),
-              
-              if (_checklists.isEmpty)
-                const Card(
-                  child: Padding(
-                    padding: EdgeInsets.all(32.0),
-                    child: Center(
-                      child: Text(
-                        'No checklists found for this block',
-                        style: TextStyle(color: Colors.grey),
+                    child: Text(
+                      '${_checklists.length}',
+                      style: TextStyle(
+                        color: Colors.purple.shade700,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
-                )
-              else
-                Card(
-                  elevation: 4,
-                  color: Colors.grey.shade100,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: DataTable(
-                      showCheckboxColumn: false,
-                      headingRowColor: MaterialStateProperty.all(const Color(0xFF4A148C)),
-                      headingTextStyle: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15,
+                ],
+              ),
+              const SizedBox(height: 20),
+              
+              if (_checklists.isEmpty)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(32),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade50,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.grey.shade200),
+                  ),
+                  child: Column(
+                    children: [
+                      Icon(Icons.folder_open_outlined, size: 64, color: Colors.grey.shade400),
+                      const SizedBox(height: 16),
+                      Text(
+                        'No checklists found for this block',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey.shade700,
+                        ),
                       ),
-                      dataRowMinHeight: 52,
-                      dataRowMaxHeight: 60,
-                      columnSpacing: 28,
-                      columns: const [
-                        DataColumn(label: Text('S.No')),
-                        DataColumn(label: Text('Name')),
-                        DataColumn(label: Text('Status')),
-                        DataColumn(label: Text('Stage')),
-                        DataColumn(label: Text('Milestone')),
-                        DataColumn(label: Text('CheckItems Count')),
-                        DataColumn(label: Text('Approver Name')),
-                        DataColumn(label: Text('Submitted Date')),
-                        DataColumn(label: Text('Actions')),
-                      ],
-                      rows: _checklists.asMap().entries.map((entry) {
-                        final index = entry.key;
-                        final checklist = entry.value;
-                        final totalItems = checklist['total_items'] ?? 0;
-                        final approverName = checklist['approver_name'];
-                        final submittedAt = checklist['submitted_at'];
-                        final isStriped = index.isEven;
-                        final baseTextStyle = TextStyle(fontSize: 15, color: Colors.grey.shade900);
-                        
-                        return DataRow(
-                          color: MaterialStateProperty.all(isStriped ? Colors.grey.shade50 : Colors.white),
-                          cells: [
-                            DataCell(Text('${index + 1}', style: baseTextStyle)),
-                            DataCell(
-                              Text(
-                                checklist['name'] ?? 'Unnamed Checklist',
-                                style: baseTextStyle.copyWith(fontWeight: FontWeight.w600),
+                    ],
+                  ),
+                )
+               else
+                 Container(
+                   decoration: BoxDecoration(
+                     color: Colors.white,
+                     borderRadius: BorderRadius.circular(12),
+                     border: Border.all(color: Colors.grey.shade200),
+                   ),
+                  child: SizedBox(
+                    height: 56 + (5 * 64), // Header height + 5 rows height
+                    child: LayoutBuilder(
+                      builder: (context, outerConstraints) {
+                        // Define explicit column widths to ensure perfect alignment
+                        const double colSNo = 60;
+                        const double colName = 250;
+                        const double colStatus = 200;
+                        const double colStage = 120;
+                        const double colMilestone = 150;
+                        const double colCount = 150;
+                        const double colApproverName = 180;
+                        const double colApproverRole = 140;
+                        const double colDate = 200;
+                        const double colActions = 80;
+                        const double totalWidth = colSNo + colName + colStatus + colStage + colMilestone + colCount + colApproverName + colApproverRole + colDate + colActions;
+
+                        final columnWidths = {
+                          0: const FixedColumnWidth(colSNo),
+                          1: const FixedColumnWidth(colName),
+                          2: const FixedColumnWidth(colStatus),
+                          3: const FixedColumnWidth(colStage),
+                          4: const FixedColumnWidth(colMilestone),
+                          5: const FixedColumnWidth(colCount),
+                          6: const FixedColumnWidth(colApproverName),
+                          7: const FixedColumnWidth(colApproverRole),
+                          8: const FixedColumnWidth(colDate),
+                          9: const FixedColumnWidth(colActions),
+                        };
+
+                        Widget buildHeaderCell(String label) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+                            child: Text(
+                              label,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
                               ),
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            DataCell(
-                              QmsStatusBadge(status: checklist['status'] ?? 'draft'),
-                            ),
-                            DataCell(
-                              Text(checklist['stage'] ?? 'N/A', style: baseTextStyle),
-                            ),
-                            DataCell(
-                              Text(checklist['milestone_name'] ?? 'N/A', style: baseTextStyle),
-                            ),
-                            DataCell(
-                              Text('$totalItems', style: baseTextStyle),
-                            ),
-                            DataCell(
-                              Text(
-                                approverName ?? 'Not assigned',
-                                style: baseTextStyle.copyWith(
-                                  color: approverName != null ? Colors.black87 : Colors.grey,
-                                  fontStyle: approverName != null ? FontStyle.normal : FontStyle.italic,
-                                ),
-                              ),
-                            ),
-                            DataCell(
-                              Text(
-                                submittedAt != null
-                                    ? _formatDate(submittedAt)
-                                    : 'N/A',
-                                style: baseTextStyle.copyWith(
-                                  color: submittedAt != null ? Colors.black87 : Colors.grey,
-                                ),
-                              ),
-                            ),
-                            DataCell(
-                              PopupMenuButton<String>(
-                                icon: const Icon(Icons.more_vert, size: 20),
-                                onSelected: (value) {
-                                  if (value == 'view') {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => QmsChecklistDetailScreen(
-                                          checklistId: checklist['id'],
+                          );
+                        }
+
+                        return Scrollbar(
+                          controller: _horizontalScrollController,
+                          thumbVisibility: true,
+                          thickness: 8,
+                          radius: const Radius.circular(4),
+                          child: SingleChildScrollView(
+                            controller: _horizontalScrollController,
+                            scrollDirection: Axis.horizontal,
+                            child: Container(
+                              width: totalWidth < outerConstraints.maxWidth ? outerConstraints.maxWidth : totalWidth,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // Sticky Header
+                                  Container(
+                                    color: Colors.grey.shade900,
+                                    child: Table(
+                                      columnWidths: columnWidths,
+                                      children: [
+                                        TableRow(
+                                          children: [
+                                            buildHeaderCell('S.No'),
+                                            buildHeaderCell('Name'),
+                                            buildHeaderCell('Status'),
+                                            buildHeaderCell('Stage'),
+                                            buildHeaderCell('Milestone'),
+                                            buildHeaderCell('CheckItems Count'),
+                                            buildHeaderCell('Approver Name'),
+                                            buildHeaderCell('Approver Role'),
+                                            buildHeaderCell('Submitted Date'),
+                                            buildHeaderCell('Actions'),
+                                          ],
                                         ),
-                                      ),
-                                    ).then((_) => _refreshData());
-                                  } else if (value == 'submit') {
-                                    _showSubmitDialog(checklist);
-                                  } else if (value == 'approve') {
-                                    _showApproveDialog(checklist);
-                                  } else if (value == 'assign') {
-                                    _showAssignApproverDialog(checklist);
-                                  }
-                                },
-                                itemBuilder: (context) {
-                                  final authState = ref.read(authProvider);
-                                  final userRole = authState.user?['role'];
-                                  final rawStatus = (checklist['status'] ?? 'draft').toString().toLowerCase();
-                                  final isDraft = rawStatus == 'draft';
-                                  final isSubmittedForApproval = rawStatus == 'submitted_for_approval' || rawStatus == 'submitted for approval';
-                                  final isEngineerOrAdmin = userRole == 'engineer' || userRole == 'admin';
-                                  final isApprover = _isApprover(checklist);
-                                  final canAssignApprover = (userRole == 'lead' || userRole == 'admin') && isSubmittedForApproval;
-                                  
-                                  final items = <PopupMenuEntry<String>>[];
-                                  
-                                  items.add(
-                                    const PopupMenuItem<String>(
-                                      value: 'view',
-                                      child: Row(
-                                        children: [
-                                          Icon(Icons.visibility, size: 18),
-                                          SizedBox(width: 8),
-                                          Text('View'),
-                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                  // Scrollable Body
+                                  Expanded(
+                                    child: Scrollbar(
+                                      controller: _verticalScrollController,
+                                      thumbVisibility: true,
+                                      thickness: 8,
+                                      radius: const Radius.circular(4),
+                                      child: SingleChildScrollView(
+                                        controller: _verticalScrollController,
+                                        physics: const AlwaysScrollableScrollPhysics(),
+                                        child: Table(
+                                          columnWidths: columnWidths,
+                                          children: _checklists.asMap().entries.map((entry) {
+                                            final index = entry.key;
+                                            final checklist = entry.value;
+                                            final totalItems = checklist['total_items'] ?? 0;
+                                            final approverName = checklist['approver_name'];
+                                            final approverRole = (checklist['approver_role'] ?? 'N/A').toString();
+                                            final submittedAt = checklist['submitted_at'];
+                                            
+                                            const baseTextStyle = TextStyle(
+                                              fontSize: 13,
+                                              color: Colors.black87,
+                                              fontWeight: FontWeight.w400,
+                                            );
+
+                                            Widget buildBodyCell(Widget child, {Alignment alignment = Alignment.centerLeft}) {
+                                              return Container(
+                                                height: 64,
+                                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                                alignment: alignment,
+                                                decoration: BoxDecoration(
+                                                  border: Border(
+                                                    bottom: BorderSide(color: Colors.grey.shade100),
+                                                  ),
+                                                ),
+                                                child: child,
+                                              );
+                                            }
+
+                                            return TableRow(
+                                              children: [
+                                                buildBodyCell(Text('${index + 1}', style: baseTextStyle.copyWith(color: Colors.grey.shade600))),
+                                                buildBodyCell(
+                                                  InkWell(
+                                                    onTap: () {
+                                                      Navigator.push(
+                                                        context,
+                                                        MaterialPageRoute(
+                                                          builder: (context) => QmsChecklistDetailScreen(
+                                                            checklistId: checklist['id'],
+                                                          ),
+                                                        ),
+                                                      ).then((_) => _refreshData());
+                                                    },
+                                                    child: Text(
+                                                      checklist['name'] ?? 'Unnamed Checklist',
+                                                      style: baseTextStyle.copyWith(
+                                                        fontWeight: FontWeight.w600,
+                                                        color: Colors.purple.shade900,
+                                                      ),
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                  ),
+                                                ),
+                                                buildBodyCell(QmsStatusBadge(status: checklist['status'] ?? 'draft')),
+                                                buildBodyCell(Text(checklist['stage'] ?? 'N/A', style: baseTextStyle, overflow: TextOverflow.ellipsis)),
+                                                buildBodyCell(Text(checklist['milestone_name'] ?? 'N/A', style: baseTextStyle, overflow: TextOverflow.ellipsis)),
+                                                buildBodyCell(Text('$totalItems', style: baseTextStyle)),
+                                                buildBodyCell(
+                                                  Text(
+                                                    approverName ?? 'Not assigned',
+                                                    style: baseTextStyle.copyWith(
+                                                      color: approverName != null ? Colors.black87 : Colors.grey.shade400,
+                                                      fontStyle: approverName != null ? FontStyle.normal : FontStyle.italic,
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                                buildBodyCell(_buildRoleChip(approverRole)),
+                                                buildBodyCell(
+                                                  Text(
+                                                    submittedAt != null ? _formatDate(submittedAt) : 'N/A',
+                                                    style: baseTextStyle.copyWith(
+                                                      color: submittedAt != null ? Colors.black87 : Colors.grey.shade400,
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                                buildBodyCell(
+                                                  PopupMenuButton<String>(
+                                                    icon: Icon(Icons.more_vert, size: 20, color: Colors.grey.shade700),
+                                                    onSelected: (value) {
+                                                      if (value == 'view') {
+                                                        Navigator.push(
+                                                          context,
+                                                          MaterialPageRoute(
+                                                            builder: (context) => QmsChecklistDetailScreen(
+                                                              checklistId: checklist['id'],
+                                                            ),
+                                                          ),
+                                                        ).then((_) => _refreshData());
+                                                      } else if (value == 'submit') {
+                                                        _showSubmitDialog(checklist);
+                                                      } else if (value == 'approve') {
+                                                        _showApproveDialog(checklist);
+                                                      } else if (value == 'assign') {
+                                                        _showAssignApproverDialog(checklist);
+                                                      } else if (value == 'edit') {
+                                                        _showEditChecklistDialog(checklist);
+                                                      } else if (value == 'delete') {
+                                                        _showDeleteChecklistDialog(checklist);
+                                                      }
+                                                    },
+                                                    itemBuilder: (context) {
+                                                      final authState = ref.read(authProvider);
+                                                      final userRole = authState.user?['role'];
+                                                      final rawStatus = (checklist['status'] ?? 'draft').toString().toLowerCase();
+                                                      final isDraft = rawStatus == 'draft';
+                                                      final isSubmittedForApproval = rawStatus == 'submitted_for_approval' || rawStatus == 'submitted for approval';
+                                                      final isEngineerOrAdmin = userRole == 'engineer' || userRole == 'admin';
+                                                      final isApprover = _isApprover(checklist);
+                                                      final canAssignApprover = (userRole == 'lead' || userRole == 'admin') && isSubmittedForApproval;
+                                                      final canEditOrDelete = userRole == 'admin' || userRole == 'lead';
+                                                      
+                                                      final items = <PopupMenuEntry<String>>[];
+                                                      
+                                                      items.add(
+                                                        const PopupMenuItem<String>(
+                                                          value: 'view',
+                                                          child: Row(
+                                                            children: [
+                                                              Icon(Icons.visibility, size: 18),
+                                                              SizedBox(width: 8),
+                                                              Text('View'),
+                                                            ],
+                                                          ),
+                                                        ),
+                                                      );
+                                                      
+                                                      if (isEngineerOrAdmin && isDraft) {
+                                                        items.add(
+                                                          const PopupMenuItem<String>(
+                                                            value: 'submit',
+                                                            child: Row(
+                                                              children: [
+                                                                Icon(Icons.send, size: 18),
+                                                                SizedBox(width: 8),
+                                                                Text('Submit for Approval'),
+                                                              ],
+                                                            ),
+                                                          ),
+                                                        );
+                                                      }
+                                                      
+                                                      if (canAssignApprover) {
+                                                        items.add(
+                                                          const PopupMenuItem<String>(
+                                                            value: 'assign',
+                                                            child: Row(
+                                                              children: [
+                                                                Icon(Icons.swap_horiz, size: 18),
+                                                                SizedBox(width: 8),
+                                                                Text('Assign Approver'),
+                                                              ],
+                                                            ),
+                                                          ),
+                                                        );
+                                                      }
+                                                      
+                                                      if (isApprover && isSubmittedForApproval) {
+                                                        items.add(
+                                                          const PopupMenuItem<String>(
+                                                            value: 'approve',
+                                                            child: Row(
+                                                              children: [
+                                                                Icon(Icons.rate_review, size: 18),
+                                                                SizedBox(width: 8),
+                                                                Text('Approve/Reject'),
+                                                              ],
+                                                            ),
+                                                          ),
+                                                        );
+                                                      }
+                        
+                                                      if (canEditOrDelete) {
+                                                        items.addAll([
+                                                          const PopupMenuItem<String>(
+                                                            value: 'edit',
+                                                            child: Row(
+                                                              children: [
+                                                                Icon(Icons.edit, size: 18),
+                                                                SizedBox(width: 8),
+                                                                Text('Edit Checklist'),
+                                                              ],
+                                                            ),
+                                                          ),
+                                                          const PopupMenuItem<String>(
+                                                            value: 'delete',
+                                                            child: Row(
+                                                              children: [
+                                                                Icon(Icons.delete, size: 18, color: Colors.red),
+                                                                SizedBox(width: 8),
+                                                                Text('Delete Checklist'),
+                                                              ],
+                                                            ),
+                                                          ),
+                                                        ]);
+                                                      }
+                                                      
+                                                      return items;
+                                                    },
+                                                  ),
+                                                ),
+                                              ],
+                                            );
+                                          }).toList(),
+                                        ),
                                       ),
                                     ),
-                                  );
-                                  
-                                  // Draft: allow submit
-                                  if (isEngineerOrAdmin && isDraft) {
-                                    items.add(
-                                      const PopupMenuItem<String>(
-                                        value: 'submit',
-                                        child: Row(
-                                          children: [
-                                            Icon(Icons.send, size: 18),
-                                            SizedBox(width: 8),
-                                            Text('Submit for Approval'),
-                                          ],
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                  
-                                  // Submitted for approval: allow approver change
-                                  if (canAssignApprover) {
-                                    items.add(
-                                      const PopupMenuItem<String>(
-                                        value: 'assign',
-                                        child: Row(
-                                          children: [
-                                            Icon(Icons.swap_horiz, size: 18),
-                                            SizedBox(width: 8),
-                                            Text('Assign Approver'),
-                                          ],
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                  
-                                  // Submitted for approval: approver can approve/reject
-                                  if (isApprover && isSubmittedForApproval) {
-                                    items.add(
-                                      const PopupMenuItem<String>(
-                                        value: 'approve',
-                                        child: Row(
-                                          children: [
-                                            Icon(Icons.rate_review, size: 18),
-                                            SizedBox(width: 8),
-                                            Text('Approve/Reject'),
-                                          ],
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                  
-                                  return items;
-                                },
+                                  ),
+                                ],
                               ),
                             ),
-                          ],
-                          onSelectChanged: (selected) {
-                            if (selected == true) {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => QmsChecklistDetailScreen(
-                                    checklistId: checklist['id'],
-                                  ),
-                                ),
-                              ).then((_) => _refreshData());
-                            }
-                          },
+                          ),
                         );
-                      }).toList(),
+                      },
                     ),
                   ),
                 ),
@@ -755,6 +960,186 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
       ),
     );
   }
+
+   Widget _buildRoleChip(String role) {
+    if (role == 'N/A' || role.isEmpty) {
+      return Text('-', style: TextStyle(fontSize: 14, color: Colors.grey.shade500));
+    }
+
+    final lower = role.toLowerCase();
+    Color bg;
+    Color fg;
+    Color border;
+    String label;
+
+    switch (lower) {
+      case 'admin':
+        bg = Colors.red.shade50;
+        fg = Colors.red.shade700;
+        border = Colors.red.shade200;
+        label = 'Admin';
+        break;
+      case 'lead':
+        bg = Colors.purple.shade50;
+        fg = Colors.purple.shade700;
+        border = Colors.purple.shade200;
+        label = 'Lead';
+        break;
+      case 'engineer':
+        bg = Colors.blue.shade50;
+        fg = Colors.blue.shade700;
+        border = Colors.blue.shade200;
+        label = 'Engineer';
+        break;
+      default:
+        bg = Colors.grey.shade50;
+        fg = Colors.grey.shade700;
+        border = Colors.grey.shade200;
+        label = role;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: border, width: 1),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: fg,
+          fontWeight: FontWeight.w600,
+          fontSize: 12,
+        ),
+      ),
+    );
+  }
+
+  void _showEditChecklistDialog(Map<String, dynamic> checklist) {
+    final nameController = TextEditingController(text: checklist['name'] ?? '');
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Edit Checklist'),
+          content: TextField(
+            controller: nameController,
+            decoration: const InputDecoration(
+              labelText: 'Checklist Name',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final newName = nameController.text.trim();
+                if (newName.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Name cannot be empty'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                  return;
+                }
+
+                Navigator.pop(context);
+                final authState = ref.read(authProvider);
+                final token = authState.token;
+                try {
+                  await _qmsService.updateChecklist(
+                    checklist['id'],
+                    newName,
+                    token: token,
+                  );
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Checklist updated successfully'),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                    _refreshData();
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Error updating checklist: $e'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                }
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showDeleteChecklistDialog(Map<String, dynamic> checklist) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Delete Checklist'),
+          content: Text(
+            'Are you sure you want to delete checklist "${checklist['name'] ?? ''}"? '
+            'This will remove all its check items and related data.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () async {
+                Navigator.pop(context);
+                final authState = ref.read(authProvider);
+                final token = authState.token;
+                try {
+                  await _qmsService.deleteChecklist(checklist['id'], token: token);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Checklist deleted successfully'),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                    _refreshData();
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Error deleting checklist: $e'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                }
+              },
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
 
   Future<void> _submitChecklist(int checklistId, {String? engineerComments}) async {
     final authState = ref.read(authProvider);
@@ -1076,4 +1461,3 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
     }
   }
 }
-

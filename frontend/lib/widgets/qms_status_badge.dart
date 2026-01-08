@@ -13,10 +13,10 @@ class QmsStatusBadge extends StatelessWidget {
     final statusData = _getStatusData(status);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: statusData['color'].withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: statusData['color'].withOpacity(0.3),
           width: 1,
@@ -27,16 +27,19 @@ class QmsStatusBadge extends StatelessWidget {
         children: [
           Icon(
             statusData['icon'],
-            size: 14,
+            size: 13,
             color: statusData['color'],
           ),
-          const SizedBox(width: 6),
-          Text(
-            statusData['label'],
-            style: TextStyle(
-              color: statusData['color'],
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              statusData['label'],
+              style: TextStyle(
+                color: statusData['color'],
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],
