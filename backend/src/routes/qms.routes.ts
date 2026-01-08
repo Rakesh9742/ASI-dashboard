@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { authenticate, authorize } from '../middleware/auth.middleware';
+import { authenticateApiKey } from '../middleware/apiKey.middleware';
 import qmsService from '../services/qms.service';
 import { pool } from '../config/database';
 
@@ -37,6 +38,38 @@ const upload = multer({
       cb(null, true);
     } else {
       cb(new Error('Only Excel files (.xlsx, .xls) are allowed'));
+    }
+  }
+});
+
+// Configure multer for CSV report uploads (external API)
+const csvStorage = multer.diskStorage({
+  destination: (req: express.Request, file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) => {
+    const uploadDir = path.join(process.cwd(), 'uploads', 'qms-reports');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req: express.Request, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) => {
+    const timestamp = Date.now();
+    const ext = path.extname(file.originalname).toLowerCase();
+    const name = path.basename(file.originalname, ext);
+    cb(null, `qms_report_${timestamp}${ext}`);
+  }
+});
+
+const csvUpload = multer({
+  storage: csvStorage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  },
+  fileFilter: (req: express.Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext === '.csv') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only CSV files are allowed'));
     }
   }
 });
@@ -589,6 +622,110 @@ router.post(
       }
       console.error('Error uploading template:', error);
       res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
+ * POST /api/qms/external/checklists/:checklistId/items/upload-report
+ * External API endpoint for uploading CSV reports to check items
+ * Requires API key authentication via X-API-Key header
+ * Accepts file upload or report_path
+ */
+router.post(
+  '/external/checklists/:checklistId/items/upload-report',
+  authenticateApiKey,
+  csvUpload.single('file'),
+  async (req, res) => {
+    try {
+      const checklistId = parseInt(req.params.checklistId, 10);
+      const { check_id, report_path } = req.body;
+      const file = (req as any).file as Express.Multer.File;
+      
+      if (isNaN(checklistId)) {
+        return res.status(400).json({ error: 'Invalid checklist ID' });
+      }
+
+      if (!check_id) {
+        return res.status(400).json({ error: 'check_id is required' });
+      }
+
+      // Get check item by check_id (name) and checklist_id
+      const checkItemResult = await pool.query(
+        'SELECT id FROM check_items WHERE checklist_id = $1 AND name = $2',
+        [checklistId, check_id]
+      );
+
+      if (checkItemResult.rows.length === 0) {
+        return res.status(404).json({ 
+          error: 'Check item not found',
+          message: `No check item found with check_id "${check_id}" in checklist ${checklistId}`
+        });
+      }
+
+      const checkItemId = checkItemResult.rows[0].id;
+      
+      // Determine report path: use uploaded file path or provided report_path
+      let finalReportPath: string;
+      if (file) {
+        // Use uploaded file path
+        finalReportPath = file.path;
+      } else if (report_path) {
+        // Use provided report_path (must exist on server)
+        if (!fs.existsSync(report_path)) {
+          return res.status(400).json({ 
+            error: 'Report file not found',
+            message: `The file at ${report_path} does not exist on the server`
+          });
+        }
+        finalReportPath = report_path;
+      } else {
+        return res.status(400).json({ 
+          error: 'No file or report_path provided',
+          message: 'Either upload a file using the "file" field or provide "report_path" in form data'
+        });
+      }
+
+      // Execute fill action (processes CSV and updates check item)
+      // Note: We need a system user ID for audit logging. Use 1 (admin) or create a system user
+      const systemUserId = 1; // Default to admin user for external API calls
+      
+      const csvData = await qmsService.executeFillAction(checkItemId, finalReportPath, systemUserId);
+
+      // Clean up uploaded file if it was uploaded (not using existing path)
+      if (file && fs.existsSync(file.path)) {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (unlinkError) {
+          console.warn('Failed to delete uploaded file:', unlinkError);
+        }
+      }
+
+      res.json({
+        success: true,
+        message: 'Report uploaded and processed successfully',
+        data: {
+          check_item_id: checkItemId,
+          check_id: check_id,
+          report_path: finalReportPath,
+          rows_count: csvData.length,
+          processed_at: new Date().toISOString()
+        }
+      });
+    } catch (error: any) {
+      // Clean up uploaded file on error
+      if ((req as any).file && fs.existsSync((req as any).file.path)) {
+        try {
+          fs.unlinkSync((req as any).file.path);
+        } catch (unlinkError) {
+          console.warn('Failed to delete uploaded file on error:', unlinkError);
+        }
+      }
+      console.error('Error uploading report via external API:', error);
+      res.status(500).json({ 
+        success: false,
+        error: error.message || 'An error occurred while processing the report'
+      });
     }
   }
 );
