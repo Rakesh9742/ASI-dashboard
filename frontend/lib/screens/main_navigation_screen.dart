@@ -46,6 +46,12 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     final isAdmin = userRole == 'admin';
     final isEngineer = userRole == 'engineer';
     final screens = _getScreens(userRole);
+    
+    // Debug: Log role detection (remove after debugging)
+    if (userRole != null) {
+      debugPrint('🔍 [NAV] User Role: $userRole, isAdmin: $isAdmin, isEngineer: $isEngineer');
+      debugPrint('🔍 [NAV] Screens count: ${screens.length}');
+    }
 
     return Scaffold(
       body: Row(

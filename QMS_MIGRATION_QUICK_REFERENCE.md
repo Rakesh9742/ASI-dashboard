@@ -57,6 +57,7 @@ sudo -u postgres psql -d ASI
 # Or with password
 PGPASSWORD=your_password psql -U asi_user -d ASI -h localhost
 ```
+docker exec -it asi_postgres psql -U postgres -d ASI
 
 **Run each migration in order:**
 

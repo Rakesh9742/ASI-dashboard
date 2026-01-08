@@ -82,6 +82,24 @@ interface CheckItemApproval {
 
 class QmsService {
   /**
+   * Check if milestones table exists
+   */
+  private async milestonesTableExists(): Promise<boolean> {
+    try {
+      const result = await pool.query(`
+        SELECT EXISTS (
+          SELECT FROM information_schema.tables 
+          WHERE table_schema = 'public' 
+          AND table_name = 'milestones'
+        );
+      `);
+      return result.rows[0]?.exists || false;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
    * Get filter options for QMS (Project → Domain → Milestone → Block)
    */
   async getFilterOptions(userId?: number, userRole?: string): Promise<FilterOptions> {
@@ -130,18 +148,38 @@ class QmsService {
         };
       });
 
-      // Get milestones
-      let milestoneQuery = 'SELECT id, name, project_id FROM milestones';
-      if (userRole === 'engineer' || userRole === 'customer') {
-        milestoneQuery += ' WHERE project_id IN (SELECT id FROM projects WHERE created_by = $1)';
+      // Get milestones (table may not exist, so handle gracefully)
+      let milestones: any[] = [];
+      try {
+        // Check if milestones table exists
+        const tableCheck = await pool.query(`
+          SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name = 'milestones'
+          );
+        `);
+        
+        if (tableCheck.rows[0]?.exists) {
+          let milestoneQuery = 'SELECT id, name, project_id FROM milestones';
+          if (userRole === 'engineer' || userRole === 'customer') {
+            milestoneQuery += ' WHERE project_id IN (SELECT id FROM projects WHERE created_by = $1)';
+          }
+          milestoneQuery += ' ORDER BY name';
+          
+          const milestonesResult = await pool.query(
+            milestoneQuery,
+            userRole === 'engineer' || userRole === 'customer' ? [userId] : []
+          );
+          milestones = milestonesResult.rows;
+        } else {
+          console.log('⚠️  Milestones table does not exist, returning empty array');
+        }
+      } catch (error: any) {
+        // If table doesn't exist or query fails, return empty array
+        console.warn('⚠️  Could not fetch milestones (table may not exist):', error.message);
+        milestones = [];
       }
-      milestoneQuery += ' ORDER BY name';
-      
-      const milestonesResult = await pool.query(
-        milestoneQuery,
-        userRole === 'engineer' || userRole === 'customer' ? [userId] : []
-      );
-      const milestones = milestonesResult.rows;
 
       // Get blocks
       let blockQuery = `
@@ -171,11 +209,19 @@ class QmsService {
    */
   async getChecklistsForBlock(blockId: number): Promise<ChecklistData[]> {
     try {
+      const hasMilestonesTable = await this.milestonesTableExists();
+      const milestoneJoin = hasMilestonesTable 
+        ? 'LEFT JOIN milestones m ON m.id = cl.milestone_id'
+        : '';
+      const milestoneSelect = hasMilestonesTable 
+        ? 'm.name as milestone_name,'
+        : 'NULL as milestone_name,';
+      
       const result = await pool.query(
         `
           SELECT 
             cl.*,
-            m.name as milestone_name,
+            ${milestoneSelect}
             u_submitted.id as submitted_by_id,
             u_submitted.username as submitted_by_username,
             u_submitted.full_name as submitted_by_name,
@@ -237,7 +283,7 @@ class QmsService {
                 AND crd.status = 'approved'
             ) as approved_items
           FROM checklists cl
-          LEFT JOIN milestones m ON m.id = cl.milestone_id
+          ${milestoneJoin}
           LEFT JOIN users u_submitted ON u_submitted.id = cl.submitted_by
           WHERE cl.block_id = $1
           ORDER BY cl.created_at ASC
@@ -417,16 +463,24 @@ class QmsService {
    */
   async getChecklistWithItems(checklistId: number): Promise<ChecklistData | null> {
     try {
+      const hasMilestonesTable = await this.milestonesTableExists();
+      const milestoneJoin = hasMilestonesTable 
+        ? 'LEFT JOIN milestones m ON m.id = cl.milestone_id'
+        : '';
+      const milestoneSelect = hasMilestonesTable 
+        ? 'm.name as milestone_name,'
+        : 'NULL as milestone_name,';
+      
       const checklistResult = await pool.query(
         `
           SELECT 
             cl.*,
-            m.name as milestone_name,
+            ${milestoneSelect}
             u_submitted.id as submitted_by_id,
             u_submitted.username as submitted_by_username,
             u_submitted.full_name as submitted_by_name
           FROM checklists cl
-          LEFT JOIN milestones m ON m.id = cl.milestone_id
+          ${milestoneJoin}
           LEFT JOIN users u_submitted ON u_submitted.id = cl.submitted_by
           WHERE cl.id = $1
         `,
