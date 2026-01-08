@@ -19,17 +19,32 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   
   // Selection state
   String? _selectedProject;
+  String? _selectedDomain;
   String? _selectedBlock;
   String? _selectedTag;
   String? _selectedExperiment;
   String _stageFilter = 'all';
+  String _viewType = 'engineer'; // 'engineer', 'lead', 'manager'
+  
+  // Lead View filters
+  String _leadStageFilter = ''; // Empty means all stages
+  String _leadStatusFilter = ''; // Empty means all statuses
   
   // Data
   bool _isLoading = false;
+  bool _isLoadingDomains = false;
+  List<dynamic> _projects = [];
+  List<String> _availableDomainsForProject = [];
   
   // Graph Selection State - Multiple selections
   Set<String> _selectedMetricGroups = {'INTERNAL (R2R)'};
   Set<String> _selectedMetricTypes = {'WNS'};
+  
+  // Visualization type: 'graph' or 'heatmap'
+  String _visualizationType = 'graph';
+  
+  // Chart type selector
+  String _selectedChartType = 'Timing Metrics';
 
   // Scroll controllers for table
   final ScrollController _horizontalScrollController = ScrollController();
@@ -38,7 +53,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   @override
   void initState() {
     super.initState();
-    _loadInitialData();
+    _loadProjectsAndDomains();
   }
 
   @override
@@ -48,7 +63,42 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     super.dispose();
   }
 
+  Future<void> _loadProjectsAndDomains() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final authState = ref.read(authProvider);
+      final token = authState.token;
+      
+      // Load projects
+      final projects = await _apiService.getProjects(token: token);
+      
+      setState(() {
+        _projects = projects;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading projects and domains: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _loadInitialData() async {
+    if (_selectedProject == null || _selectedDomain == null) {
+      return;
+    }
+
     setState(() {
       _isLoading = true;
     });
@@ -65,10 +115,17 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       
       final files = filesResponse['files'] ?? [];
       
+      // Filter files by selected project and domain
+      final filteredFiles = files.where((file) {
+        final projectName = file['project_name'] ?? 'Unknown';
+        final domainName = file['domain_name'] ?? '';
+        return projectName == _selectedProject && domainName == _selectedDomain;
+      }).toList();
+      
       // Group files by project -> block -> rtl_tag -> experiment -> stages
       final Map<String, dynamic> grouped = {};
       
-      for (var file in files) {
+      for (var file in filteredFiles) {
         final projectName = file['project_name'] ?? 'Unknown';
         final blockName = file['block_name'] ?? 'Unknown';
         final rtlTag = file['rtl_tag'] ?? 'Unknown';
@@ -141,6 +198,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           'area': _parseNumeric(file['area']),
           'inst_count': _parseNumeric(file['inst_count']),
           'utilization': _parseNumeric(file['utilization']),
+          'metal_density_max': _parseNumeric(file['metal_density_max']),
           'min_pulse_width': file['min_pulse_width']?.toString(),
           'min_period': file['min_period']?.toString(),
           'double_switching': file['double_switching']?.toString(),
@@ -168,23 +226,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           }
         }
         
-        // Auto-select first available options
-        if (grouped.isNotEmpty) {
-          _selectedProject = grouped.keys.first;
-          final projectData = grouped[_selectedProject];
-          if (projectData is Map && projectData.isNotEmpty) {
-            _selectedBlock = projectData.keys.first;
-            final blockData = projectData[_selectedBlock];
-            if (blockData is Map && blockData.isNotEmpty) {
-              _selectedTag = blockData.keys.first;
-              final tagData = blockData[_selectedTag];
-              if (tagData is Map && tagData.isNotEmpty) {
-                _selectedExperiment = tagData.keys.first;
-              }
-            }
-          }
-        }
-        
+        // Don't auto-select - user must select project manually
         _isLoading = false;
       });
     } catch (e) {
@@ -287,18 +329,50 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    if (_groupedData.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.folder_open, size: 64, color: Colors.grey.shade400),
-            const SizedBox(height: 16),
-            Text(
-              'No data available',
-              style: TextStyle(fontSize: 18, color: Colors.grey.shade700),
+    // Show project and domain selection if not selected
+    if (_selectedProject == null || _selectedDomain == null) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Center(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 800),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _buildHeader(),
+                ],
+              ),
             ),
-          ],
+          ),
+        ),
+      );
+    }
+
+    if (_groupedData.isEmpty) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Center(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 800),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _buildHeader(),
+                  const SizedBox(height: 48),
+                  Icon(Icons.folder_open, size: 64, color: Colors.grey.shade400),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No data available for selected project and domain',
+                    style: TextStyle(fontSize: 18, color: Colors.grey.shade700),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       );
     }
@@ -318,13 +392,27 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
               children: [
                 _buildHeader(),
                 const SizedBox(height: 24),
-                _buildFilterBar(),
-                const SizedBox(height: 24),
-                _buildSummarySection(activeRun, activeStages),
-                const SizedBox(height: 24),
-                _buildComparisonMatrix(activeStages),
-                const SizedBox(height: 24),
-                _buildMetricsGraphSection(activeStages),
+                if (_viewType == 'engineer') ...[
+                  _buildFilterBar(),
+                  const SizedBox(height: 24),
+                  _buildEngineerKPICards(activeRun, activeStages),
+                  const SizedBox(height: 24),
+                  _buildStageProgressVisualization(activeStages),
+                  const SizedBox(height: 24),
+                  _buildDetailedTimingMetricsTable(activeStages),
+                  const SizedBox(height: 24),
+                  _buildPhysicalMetricsTable(activeStages),
+                  const SizedBox(height: 24),
+                  _buildResourceUtilizationTable(activeStages),
+                  const SizedBox(height: 24),
+                  _buildMetricsGraphSection(activeStages),
+                ] else if (_viewType == 'lead') ...[
+                  _buildFilterBar(),
+                  const SizedBox(height: 24),
+                  _buildLeadView(activeStages),
+                ] else if (_viewType == 'manager') ...[
+                  _buildManagerView(),
+                ],
               ],
             ),
           ),
@@ -335,119 +423,272 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
 
 
 
-  Widget _buildHeader() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (_selectedProject != null || _selectedBlock != null || _selectedTag != null || _selectedExperiment != null)
-          Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            child: Wrap(
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                if (_selectedProject != null)
-                  Text(
-                    _selectedProject!.toUpperCase(),
-                    style: const TextStyle(
-                      color: Color(0xFF2563EB),
-                      fontWeight: FontWeight.w800,
-                      fontSize: 10,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                if (_selectedBlock != null) ...[
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 8.0),
-                    child: Icon(Icons.chevron_right, size: 10, color: Color(0xFF94A3B8)),
-                  ),
-                  Text(
-                    _selectedBlock!.toUpperCase(),
-                    style: const TextStyle(
-                      color: Color(0xFF94A3B8),
-                      fontWeight: FontWeight.w800,
-                      fontSize: 10,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                ],
-                if (_selectedTag != null) ...[
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 8.0),
-                    child: Icon(Icons.chevron_right, size: 10, color: Color(0xFF94A3B8)),
-                  ),
-                  Text(
-                    _selectedTag!.toUpperCase(),
-                    style: const TextStyle(
-                      color: Color(0xFF94A3B8),
-                      fontWeight: FontWeight.w800,
-                      fontSize: 10,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                ],
-                if (_selectedExperiment != null) ...[
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 8.0),
-                    child: Icon(Icons.chevron_right, size: 10, color: Color(0xFF94A3B8)),
-                  ),
-                  Text(
-                    _selectedExperiment!.toUpperCase(),
-                    style: const TextStyle(
-                      color: Color(0xFF1E293B),
-                      fontWeight: FontWeight.w800,
-                      fontSize: 10,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                ],
-              ],
+  Widget _buildViewTypeSelector() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        children: [
+          const Text(
+            'VIEW TYPE:',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF94A3B8),
+              letterSpacing: 0.5,
             ),
           ),
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: const Color(0xFF2563EB),
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF2563EB).withOpacity(0.2),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: const Icon(Icons.memory, color: Colors.white, size: 24),
-            ),
-            const SizedBox(width: 14),
-            const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'PD Flow Dashboard',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF1E293B),
-                    letterSpacing: -0.5,
-                  ),
+          const SizedBox(width: 16),
+          _buildViewTypeChip('Engineer View', 'engineer'),
+          const SizedBox(width: 8),
+          _buildViewTypeChip('Lead View', 'lead'),
+          const SizedBox(width: 8),
+          _buildViewTypeChip('Manager View', 'manager'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildViewTypeChip(String label, String value) {
+    final isSelected = _viewType == value;
+    return GestureDetector(
+      onTap: () => setState(() => _viewType = value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFE2E8F0),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: isSelected ? Colors.white : const Color(0xFF64748B),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    // Get project names and domains
+    final projectNames = <String>[];
+    try {
+      if (_projects.isNotEmpty) {
+        projectNames.addAll(
+          _projects.map((p) => p['name']?.toString() ?? 'Unknown').toList().cast<String>()
+        );
+      }
+    } catch (e) {
+      // Handle error
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          // Left side: Project and Domain dropdowns
+          Row(
+            children: [
+              // Project Dropdown
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
                 ),
-                Text(
-                  'FULL FLOW COMPARISON REPORT',
+                child: DropdownButton<String>(
+                  value: _selectedProject,
+                  hint: const Text(
+                    'Select Project',
+                    style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+                  ),
+                  underline: const SizedBox(),
+                  isDense: true,
+                  items: projectNames.map((name) {
+                    return DropdownMenuItem<String>(
+                      value: name,
+                      child: Text(
+                        name,
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF1E293B)),
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: (value) => _updateProject(value),
+                ),
+              ),
+              const SizedBox(width: 16),
+              // Domain Dropdown
+              if (_selectedProject != null) ...[
+                if (_isLoadingDomains)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF2563EB)),
+                      ),
+                    ),
+                  )
+                else if (_availableDomainsForProject.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: DropdownButton<String>(
+                      value: _selectedDomain,
+                      hint: const Text(
+                        'Select Domain',
+                        style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+                      ),
+                      underline: const SizedBox(),
+                      isDense: true,
+                      items: _availableDomainsForProject.map((domain) {
+                        return DropdownMenuItem<String>(
+                          value: domain,
+                          child: Text(
+                            domain,
+                            style: const TextStyle(fontSize: 12, color: Color(0xFF1E293B)),
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (value) => _updateDomain(value),
+                    ),
+                  ),
+              ],
+            ],
+          ),
+          // Right side: View Type Selector (only show when project and domain are selected)
+          if (_selectedProject != null && _selectedDomain != null)
+            Row(
+              children: [
+                const Text(
+                  'VIEW TYPE:',
                   style: TextStyle(
-                    fontSize: 10,
+                    fontSize: 11,
                     fontWeight: FontWeight.w800,
                     color: Color(0xFF94A3B8),
-                    letterSpacing: 1.2,
+                    letterSpacing: 0.5,
                   ),
                 ),
+                const SizedBox(width: 16),
+                _buildViewTypeChip('Engineer View', 'engineer'),
+                const SizedBox(width: 8),
+                _buildViewTypeChip('Lead View', 'lead'),
+                const SizedBox(width: 8),
+                _buildViewTypeChip('Manager View', 'manager'),
               ],
             ),
-          ],
-        ),
-      ],
+        ],
+      ),
     );
+  }
+
+  void _updateProject(String? projectName) async {
+    if (projectName == null || projectName.isEmpty) {
+      setState(() {
+        _selectedProject = null;
+        _selectedDomain = null;
+        _availableDomainsForProject = [];
+        _groupedData = {};
+        _selectedBlock = null;
+        _selectedTag = null;
+        _selectedExperiment = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _selectedProject = projectName;
+      _selectedDomain = null;
+      _availableDomainsForProject = [];
+      _isLoadingDomains = true;
+      _groupedData = {};
+      _selectedBlock = null;
+      _selectedTag = null;
+      _selectedExperiment = null;
+    });
+
+    // Get domains for this project
+    try {
+      final authState = ref.read(authProvider);
+      final token = authState.token;
+      
+      // Load EDA files to find domains for this project
+      final filesResponse = await _apiService.getEdaFiles(
+        token: token,
+        limit: 1000,
+      );
+      
+      final files = filesResponse['files'] ?? [];
+      final domainSet = <String>{};
+      
+      for (var file in files) {
+        final projectNameFromFile = file['project_name'] ?? 'Unknown';
+        final domainName = file['domain_name'] ?? '';
+        if (projectNameFromFile == projectName && domainName.isNotEmpty) {
+          domainSet.add(domainName);
+        }
+      }
+      
+      final availableDomains = domainSet.toList()..sort();
+      
+      setState(() {
+        _availableDomainsForProject = availableDomains;
+        _isLoadingDomains = false;
+        // Auto-select if only one domain
+        if (availableDomains.length == 1) {
+          _selectedDomain = availableDomains.first;
+          _loadInitialData();
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _isLoadingDomains = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading domains: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _updateDomain(String? domainName) {
+    setState(() {
+      _selectedDomain = domainName;
+      _groupedData = {};
+      _selectedBlock = null;
+      _selectedTag = null;
+      _selectedExperiment = null;
+    });
+    
+    if (domainName != null && domainName.isNotEmpty) {
+      _loadInitialData();
+    }
   }
 
   void _updateCascadingFilters({String? p, String? b, String? t, String? e}) {
@@ -497,12 +738,104 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     });
   }
 
+  Widget _buildProjectDomainSelection() {
+    // Safely get project names
+    final projectNames = <String>[];
+    try {
+      if (_projects.isNotEmpty) {
+        projectNames.addAll(
+          _projects.map((p) => p['name']?.toString() ?? 'Unknown').toList().cast<String>()
+        );
+      }
+    } catch (e) {
+      print('Error getting project names: $e');
+    }
+    
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Wrap(
+        spacing: 16,
+        runSpacing: 16,
+        children: [
+          _buildDropdown(
+            'Project',
+            projectNames,
+            _selectedProject,
+            (v) => _updateProject(v),
+            width: 300,
+            placeholder: 'Select Project',
+          ),
+          if (_selectedProject != null) ...[
+            if (_isLoadingDomains)
+              Container(
+                padding: const EdgeInsets.all(12),
+                width: 300,
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Loading domains...',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              _buildDropdown(
+                'Domain',
+                _availableDomainsForProject,
+                _selectedDomain,
+                (v) => _updateDomain(v),
+                width: 300,
+                placeholder: 'Select Domain',
+              ),
+            if (_selectedProject != null && _availableDomainsForProject.isEmpty && !_isLoadingDomains)
+              Container(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  'No domains found for this project',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey.shade600,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildFilterBar() {
     List<String> availableBlocks = [];
     List<String> availableTags = [];
     List<String> availableExperiments = [];
     
-    if (_selectedProject != null) {
+    if (_selectedProject != null && _selectedDomain != null) {
       final projectValue = _groupedData[_selectedProject];
       if (projectValue is Map) {
         final projectData = Map<String, dynamic>.from(projectValue);
@@ -601,13 +934,6 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             runSpacing: 16,
             children: [
               _buildDropdown(
-                'Project',
-                _groupedData.keys.toList().cast<String>(),
-                _selectedProject ?? '',
-                (v) => _updateCascadingFilters(p: v),
-                width: calculateWidth(false),
-              ),
-              _buildDropdown(
                 'Block Name',
                 availableBlocks,
                 _selectedBlock ?? '',
@@ -628,14 +954,16 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                 (v) => _updateCascadingFilters(e: v),
                 width: calculateWidth(false),
               ),
-              _buildDropdown(
-                'Stage Filter',
-                ['all', ...stageNames],
-                _stageFilter,
-                (v) => setState(() => _stageFilter = v ?? 'all'),
-                isBlue: true,
-                width: calculateWidth(true),
-              ),
+              // Only show stage filter in engineer view, not in lead view
+              if (_viewType != 'lead')
+                _buildDropdown(
+                  'Stage Filter',
+                  ['all', ...stageNames],
+                  _stageFilter,
+                  (v) => setState(() => _stageFilter = v ?? 'all'),
+                  isBlue: true,
+                  width: calculateWidth(true),
+                ),
             ],
           ),
         );
@@ -646,12 +974,15 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   Widget _buildDropdown(
     String label,
     List<String> items,
-    String value,
+    String? value,
     ValueChanged<String?> onChanged, {
     bool isBlue = false,
     double? width,
+    String? placeholder,
   }) {
     final validWidth = width != null && width > 0 ? width : null;
+    final hasValue = value != null && value.isNotEmpty && items.contains(value);
+    final displayValue = hasValue ? value : null;
     
     return SizedBox(
       width: validWidth,
@@ -677,8 +1008,18 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             ),
             child: DropdownButtonHideUnderline(
           child: DropdownButton<String>(
-                value: items.contains(value) ? value : (items.isNotEmpty ? items.first : null),
+                value: displayValue,
             isExpanded: true,
+            hint: placeholder != null 
+                ? Text(
+                    placeholder,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.grey.shade600,
+                    ),
+                  )
+                : null,
             style: TextStyle(
               fontSize: 12,
                   fontWeight: FontWeight.w600,
@@ -994,11 +1335,1489 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     );
   }
 
+  // ============================================================================
+  // ENGINEER VIEW - NEW IMPLEMENTATION
+  // ============================================================================
+
+  Widget _buildEngineerKPICards(Map<String, dynamic>? activeRun, List<Map<String, dynamic>> stages) {
+    if (activeRun == null || stages.isEmpty) return const SizedBox();
+
+    final lastStage = stages.last;
+    
+    // Get setup timing QOR with path group breakdown
+    final setupPathGroups = lastStage['setup_path_groups'] as Map<String, dynamic>? ?? {};
+    final reg2regWns = _parseNumeric(setupPathGroups['reg2reg']?['wns']) ?? 
+                      _parseNumeric(lastStage['internal_timing_r2r_wns']);
+    
+    // Get hold timing metrics (reg2reg focused)
+    final holdWns = _parseNumeric(lastStage['hold_wns']);
+    final holdTns = _parseNumeric(lastStage['hold_tns']);
+    final holdNvp = _parseNumeric(lastStage['hold_nvp'])?.toInt() ?? 0;
+    
+    // Physical metrics
+    final area = _parseNumeric(lastStage['area']);
+    final utilization = lastStage['utilization']?.toString() ?? 'N/A';
+    final instCount = _parseNumeric(lastStage['inst_count'])?.toInt() ?? 0;
+    
+    // Verification status
+    final drc = lastStage['pv_drc_base']?.toString() ?? 'N/A';
+    final lvs = lastStage['lvs']?.toString() ?? 'N/A';
+    final r2gLec = lastStage['r2g_lec']?.toString() ?? 'N/A';
+    final g2gLec = lastStage['g2g_lec']?.toString() ?? 'N/A';
+    
+    // Latest stage info
+    final runtime = lastStage['runtime']?.toString() ?? 'N/A';
+    final memory = lastStage['memory_usage']?.toString() ?? 'N/A';
+    final stageName = lastStage['stage']?.toString().toUpperCase() ?? 'N/A';
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 768;
+        final cardWidth = isMobile ? constraints.maxWidth : (constraints.maxWidth - 80) / 5;
+        
+        return Wrap(
+          spacing: 16,
+          runSpacing: 16,
+          children: [
+            // KPI Card 1: Latest Stage Info
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Latest Stage Info',
+                icon: Icons.info_outline,
+                color: const Color(0xFF3B82F6),
+                children: [
+                  _buildKPIValue(stageName, subtitle: 'Stage'),
+                  const SizedBox(height: 12),
+                  _buildKPIValue(runtime, subtitle: 'Runtime'),
+                  const SizedBox(height: 8),
+                  _buildKPIValue(memory, subtitle: 'Memory'),
+                ],
+              ),
+            ),
+            
+            // KPI Card 2: Setup Timing QOR
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Setup Timing QOR',
+                icon: Icons.timer_outlined,
+                color: const Color(0xFF10B981),
+                children: [
+                  _buildKPIValue(
+                    reg2regWns != null ? reg2regWns.toStringAsFixed(3) : 'N/A',
+                    subtitle: 'Reg2Reg WNS',
+                  ),
+                  const SizedBox(height: 12),
+                  _buildPathGroupBreakdown(setupPathGroups),
+                ],
+              ),
+            ),
+            
+            // KPI Card 3: Hold Timing Metrics
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Hold Timing (Reg2Reg)',
+                icon: Icons.schedule,
+                color: const Color(0xFFF59E0B),
+                children: [
+                  _buildKPIValue(
+                    holdWns != null ? holdWns.toStringAsFixed(3) : 'N/A',
+                    subtitle: 'WNS',
+                  ),
+                  const SizedBox(height: 8),
+                  _buildKPIValue(
+                    holdTns != null ? holdTns.toStringAsFixed(2) : 'N/A',
+                    subtitle: 'TNS',
+                  ),
+                  const SizedBox(height: 8),
+                  _buildKPIValue(
+                    holdNvp.toString(),
+                    subtitle: 'NVP',
+                  ),
+                ],
+              ),
+            ),
+            
+            // KPI Card 4: Physical Metrics
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Physical Metrics',
+                icon: Icons.square_foot,
+                color: const Color(0xFF8B5CF6),
+                children: [
+                  _buildKPIValue(
+                    area != null ? area.toStringAsFixed(2) : 'N/A',
+                    subtitle: 'Area',
+                  ),
+                  const SizedBox(height: 8),
+                  _buildKPIValue(utilization, subtitle: 'Utilization'),
+                  const SizedBox(height: 8),
+                  _buildKPIValue(
+                    instCount.toString(),
+                    subtitle: 'Instance Count',
+                  ),
+                ],
+              ),
+            ),
+            
+            // KPI Card 5: Verification Status
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Verification Status',
+                icon: Icons.verified_outlined,
+                color: const Color(0xFFEF4444),
+                children: [
+                  _buildVerificationItem('DRC', drc),
+                  const SizedBox(height: 8),
+                  _buildVerificationItem('LVS', lvs),
+                  const SizedBox(height: 8),
+                  _buildVerificationItem('R2G LEC', r2gLec),
+                  const SizedBox(height: 8),
+                  _buildVerificationItem('G2G LEC', g2gLec),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildKPICard({
+    required String title,
+    required IconData icon,
+    required Color color,
+    required List<Widget> children,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, size: 20, color: color),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildKPIValue(String value, {String? subtitle}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (subtitle != null)
+          Text(
+            subtitle,
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF94A3B8),
+              letterSpacing: 0.5,
+            ),
+          ),
+        if (subtitle != null) const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF1E293B),
+            fontFamily: 'monospace',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPathGroupBreakdown(Map<String, dynamic> pathGroups) {
+    final groups = ['reg2reg', 'in2reg', 'reg2out', 'all'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Path Groups',
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF94A3B8),
+            letterSpacing: 0.5,
+          ),
+        ),
+        const SizedBox(height: 8),
+        ...groups.map((group) {
+          final data = pathGroups[group] as Map<String, dynamic>?;
+          final wns = _parseNumeric(data?['wns']);
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  group.toUpperCase(),
+                  style: const TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                Text(
+                  wns != null ? wns.toStringAsFixed(3) : 'N/A',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ],
+    );
+  }
+
+  Widget _buildVerificationItem(String label, String value) {
+    final isPass = value.toString().toLowerCase() == 'pass' || 
+                   value.toString().toLowerCase() == '0' ||
+                   value.toString() == 'N/A';
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF64748B),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: isPass ? const Color(0xFFDCFCE7) : const Color(0xFFFEF2F2),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(
+              color: isPass ? const Color(0xFF16A34A) : const Color(0xFFDC2626),
+              width: 1,
+            ),
+          ),
+          child: Text(
+            value,
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+              color: isPass ? const Color(0xFF16A34A) : const Color(0xFFDC2626),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStageProgressVisualization(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    // Full stage order for sorting
+    final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+    final stageNames = {
+      'syn': 'Synthesis',
+      'init': 'Init',
+      'floorplan': 'Floorplan',
+      'place': 'Placement',
+      'cts': 'CTS',
+      'postcts': 'Post-CTS',
+      'route': 'Routing',
+      'postroute': 'Post-Route',
+    };
+
+    // Extract unique stages from the provided stages list
+    final uniqueStages = <String, Map<String, dynamic>>{};
+    for (var stage in stages) {
+      final stageKey = stage['stage']?.toString().toLowerCase() ?? '';
+      if (stageKey.isNotEmpty) {
+        // Keep the most recent stage if there are duplicates (by timestamp)
+        if (!uniqueStages.containsKey(stageKey)) {
+          uniqueStages[stageKey] = stage;
+        } else {
+          final existingTimestamp = uniqueStages[stageKey]!['timestamp']?.toString() ?? '';
+          final currentTimestamp = stage['timestamp']?.toString() ?? '';
+          if (currentTimestamp.isNotEmpty && existingTimestamp.isNotEmpty) {
+            try {
+              final existingDate = DateTime.parse(existingTimestamp);
+              final currentDate = DateTime.parse(currentTimestamp);
+              if (currentDate.isAfter(existingDate)) {
+                uniqueStages[stageKey] = stage;
+              }
+            } catch (e) {
+              // If timestamp parsing fails, keep existing
+            }
+          }
+        }
+      }
+    }
+
+    // Sort stages according to stage order
+    final sortedStageKeys = uniqueStages.keys.toList();
+    sortedStageKeys.sort((a, b) {
+      final aIdx = stageOrder.indexOf(a);
+      final bIdx = stageOrder.indexOf(b);
+      if (aIdx == -1 && bIdx == -1) return 0;
+      if (aIdx == -1) return 1;
+      if (bIdx == -1) return -1;
+      return aIdx.compareTo(bIdx);
+    });
+
+    // Determine the recent/latest stage (last one in the sorted list)
+    final recentStageKey = sortedStageKeys.isNotEmpty ? sortedStageKeys.last : null;
+
+    // Colors: green for all stages, blue for latest
+    const allStageColor = Color(0xFF10B981); // Green
+    const latestStageColor = Color(0xFF3B82F6); // Blue
+
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.timeline, size: 20, color: Color(0xFF0F172A)),
+              SizedBox(width: 12),
+              Text(
+                'Stage Progress',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF0F172A),
+                  letterSpacing: -0.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          Wrap(
+            spacing: 16,
+            runSpacing: 16,
+            children: sortedStageKeys.map((stageKey) {
+              final stage = uniqueStages[stageKey]!;
+              final isLatestStage = stageKey == recentStageKey;
+              final stageColor = isLatestStage ? latestStageColor : allStageColor;
+
+              return Container(
+                width: 140,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: stageColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: stageColor,
+                    width: isLatestStage ? 2.5 : 1.5,
+                  ),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.check_circle,
+                      color: stageColor,
+                      size: 32,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      stageNames[stageKey] ?? stageKey.toUpperCase(),
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: isLatestStage ? FontWeight.w700 : FontWeight.w600,
+                        color: stageColor,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    if (stage['timestamp'] != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        stage['timestamp']?.toString().split(' ').first ?? '',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: stageColor.withOpacity(0.7),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDetailedTimingMetricsTable(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white, // White background
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              border: const Border(bottom: BorderSide(color: Color(0xFFE2E8F0), width: 2)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.table_chart, size: 22, color: Color(0xFF0F172A)),
+                SizedBox(width: 12),
+                Text(
+                  'Detailed Timing Metrics',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF0F172A),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              border: TableBorder(
+                horizontalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                verticalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                top: BorderSide(color: Colors.grey.shade300, width: 1),
+                bottom: BorderSide(color: Colors.grey.shade300, width: 1),
+                left: BorderSide(color: Colors.grey.shade300, width: 1),
+                right: BorderSide(color: Colors.grey.shade300, width: 1),
+              ),
+              columnWidths: const {
+                0: FixedColumnWidth(120),
+                1: FixedColumnWidth(110),
+                2: FixedColumnWidth(110),
+                3: FixedColumnWidth(100),
+                4: FixedColumnWidth(110),
+                5: FixedColumnWidth(110),
+                6: FixedColumnWidth(110),
+                7: FixedColumnWidth(110),
+                8: FixedColumnWidth(110),
+                9: FixedColumnWidth(110),
+                10: FixedColumnWidth(100),
+              },
+              children: [
+                // Header Row
+                TableRow(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF0F172A),
+                  ),
+                  children: [
+                    _buildTableHeaderCell('STAGE'),
+                    _buildTableHeaderCell('Reg2Reg WNS'),
+                    _buildTableHeaderCell('Reg2Reg TNS'),
+                    _buildTableHeaderCell('Reg2Reg NVP'),
+                    _buildTableHeaderCell('I2R WNS'),
+                    _buildTableHeaderCell('I2R TNS'),
+                    _buildTableHeaderCell('R2O WNS'),
+                    _buildTableHeaderCell('R2O TNS'),
+                    _buildTableHeaderCell('Hold WNS'),
+                    _buildTableHeaderCell('Hold TNS'),
+                    _buildTableHeaderCell('Hold NVP'),
+                  ],
+                ),
+                // Data Rows
+                ...stages.map((stage) {
+                  final r2rWns = _formatTimingValueString(stage['internal_timing_r2r_wns']);
+                  final r2rTns = _formatTimingValueString(stage['internal_timing_r2r_tns']);
+                  final r2rNvp = _formatValueString(stage['internal_timing_r2r_nvp']);
+                  final i2rWns = _formatTimingValueString(stage['interface_timing_i2r_wns']);
+                  final i2rTns = _formatTimingValueString(stage['interface_timing_i2r_tns']);
+                  final r2oWns = _formatTimingValueString(stage['interface_timing_r2o_wns']);
+                  final r2oTns = _formatTimingValueString(stage['interface_timing_r2o_tns']);
+                  final holdWns = _formatTimingValueString(stage['hold_wns']);
+                  final holdTns = _formatTimingValueString(stage['hold_tns']);
+                  final holdNvp = _formatValueString(stage['hold_nvp']);
+                  
+                  return TableRow(
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                    ),
+                    children: [
+                      _buildTableCell(
+                        (stage['stage']?.toString() ?? '').toUpperCase(),
+                        isBold: true,
+                        textColor: const Color(0xFF1E293B),
+                      ),
+                      _buildTableCell(r2rWns, isNA: _isNA(r2rWns)),
+                      _buildTableCell(r2rTns, isNA: _isNA(r2rTns)),
+                      _buildTableCell(r2rNvp, isNA: _isNA(r2rNvp)),
+                      _buildTableCell(i2rWns, isNA: _isNA(i2rWns)),
+                      _buildTableCell(i2rTns, isNA: _isNA(i2rTns)),
+                      _buildTableCell(r2oWns, isNA: _isNA(r2oWns)),
+                      _buildTableCell(r2oTns, isNA: _isNA(r2oTns)),
+                      _buildTableCell(holdWns, isNA: _isNA(holdWns)),
+                      _buildTableCell(holdTns, isNA: _isNA(holdTns)),
+                      _buildTableCell(holdNvp, isNA: _isNA(holdNvp)),
+                    ],
+                  );
+                }).toList(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTableHeaderCell(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      alignment: Alignment.center,
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+          color: Colors.white,
+          letterSpacing: 0.5,
+        ),
+        textAlign: TextAlign.center,
+      ),
+    );
+  }
+
+  Widget _buildTableCell(String text, {bool isBold = false, Color? textColor, bool isNA = false}) {
+    // If text is N/A and no explicit color, use green
+    // Otherwise use dark color for white background, or provided color
+    final displayColor = isNA && textColor == null 
+        ? Colors.green 
+        : (textColor ?? const Color(0xFF1E293B)); // Dark text for white background
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      alignment: Alignment.center,
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: isBold ? FontWeight.w700 : FontWeight.w500,
+          color: displayColor,
+          fontFamily: isBold ? null : 'monospace',
+        ),
+        textAlign: TextAlign.center,
+      ),
+    );
+  }
+
+  // Build clickable block name cell for Lead View
+  Widget _buildClickableBlockNameCell(String blockName, {required VoidCallback onTap}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      alignment: Alignment.centerLeft,
+      child: InkWell(
+        onTap: onTap,
+        child: Text(
+          blockName,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF3B82F6),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _formatTimingValueString(dynamic value) {
+    final num = _parseNumeric(value);
+    if (num == null) {
+      return 'N/A';
+    }
+    return num.toStringAsFixed(3);
+  }
+
+  String _formatValueString(dynamic value) {
+    if (value == null || value.toString() == 'N/A') {
+      return 'N/A';
+    }
+    return value.toString();
+  }
+
+  String _formatAreaString(dynamic value) {
+    if (value == null || value.toString() == 'N/A') {
+      return 'N/A';
+    }
+    final num = _parseNumeric(value);
+    if (num == null) {
+      return 'N/A';
+    }
+    return '${num.toStringAsFixed(2)}';
+  }
+
+  String _formatUtilizationString(dynamic value) {
+    if (value == null || value.toString() == 'N/A') {
+      return 'N/A';
+    }
+    final num = _parseNumeric(value);
+    if (num == null) {
+      return 'N/A';
+    }
+    return '${num.toStringAsFixed(2)}';
+  }
+
+  String _formatDRCCountString(dynamic drcViolations) {
+    if (drcViolations == null || drcViolations.toString() == 'N/A') {
+      return 'N/A';
+    }
+    final num = _parseNumeric(drcViolations);
+    if (num == null) {
+      return 'N/A';
+    }
+    return num.toInt().toString();
+  }
+
+  bool _isNA(String value) {
+    return value == 'N/A';
+  }
+
+  Widget _buildPhysicalMetricsTable(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white, // White background
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              border: const Border(bottom: BorderSide(color: Color(0xFFE2E8F0), width: 2)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.square_foot, size: 22, color: Color(0xFF0F172A)),
+                SizedBox(width: 12),
+                Text(
+                  'Physical Metrics',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF0F172A),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              border: TableBorder(
+                horizontalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                verticalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                top: BorderSide(color: Colors.grey.shade300, width: 1),
+                bottom: BorderSide(color: Colors.grey.shade300, width: 1),
+                left: BorderSide(color: Colors.grey.shade300, width: 1),
+                right: BorderSide(color: Colors.grey.shade300, width: 1),
+              ),
+              columnWidths: const {
+                0: FixedColumnWidth(120),
+                1: FixedColumnWidth(140),
+                2: FixedColumnWidth(140),
+                3: FixedColumnWidth(120),
+                4: FixedColumnWidth(140),
+                5: FixedColumnWidth(140),
+              },
+              children: [
+                // Header Row
+                TableRow(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF0F172A),
+                  ),
+                  children: [
+                    _buildTableHeaderCell('STAGE'),
+                    _buildTableHeaderCell('AREA (MM²)'),
+                    _buildTableHeaderCell('UTILIZATION (%)'),
+                    _buildTableHeaderCell('DRC COUNT'),
+                    _buildTableHeaderCell('METAL DENSITY (%)'),
+                    _buildTableHeaderCell('INSTANCE COUNT'),
+                  ],
+                ),
+                // Data Rows
+                ...stages.map((stage) {
+                  final areaStr = _formatAreaString(stage['area']);
+                  final utilStr = _formatUtilizationString(stage['utilization']);
+                  final drcCountStr = _formatDRCCountString(stage['drc_violations']);
+                  final metalDensityStr = _formatUtilizationString(stage['metal_density_max']);
+                  final instCountStr = _formatValueString(stage['inst_count']);
+                  
+                  // Determine DRC color: red if > 0, green if N/A
+                  final drcColor = _isNA(drcCountStr) 
+                      ? Colors.green 
+                      : (int.tryParse(drcCountStr) ?? 0) > 0 
+                          ? Colors.red[700] 
+                          : const Color(0xFF1E293B);
+                  
+                  return TableRow(
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                    ),
+                    children: [
+                      _buildTableCell(
+                        (stage['stage']?.toString() ?? '').toUpperCase(),
+                        isBold: true,
+                        textColor: const Color(0xFF1E293B),
+                      ),
+                      _buildTableCell(
+                        _isNA(areaStr) ? areaStr : '$areaStr',
+                        isNA: _isNA(areaStr),
+                      ),
+                      _buildTableCell(
+                        _isNA(utilStr) ? utilStr : '$utilStr',
+                        isNA: _isNA(utilStr),
+                      ),
+                      _buildTableCell(
+                        drcCountStr,
+                        textColor: drcColor,
+                        isNA: _isNA(drcCountStr),
+                      ),
+                      _buildTableCell(
+                        _isNA(metalDensityStr) ? metalDensityStr : '$metalDensityStr',
+                        isNA: _isNA(metalDensityStr),
+                      ),
+                      _buildTableCell(
+                        instCountStr,
+                        isNA: _isNA(instCountStr),
+                      ),
+                    ],
+                  );
+                }).toList(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResourceUtilizationTable(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white, // White background
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              border: const Border(bottom: BorderSide(color: Color(0xFFE2E8F0), width: 2)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.memory, size: 22, color: Color(0xFF0F172A)),
+                SizedBox(width: 12),
+                Text(
+                  'Resource Utilization',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF0F172A),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              border: TableBorder(
+                horizontalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                verticalInside: BorderSide(color: Colors.grey.shade200, width: 1),
+                top: BorderSide(color: Colors.grey.shade300, width: 1),
+                bottom: BorderSide(color: Colors.grey.shade300, width: 1),
+                left: BorderSide(color: Colors.grey.shade300, width: 1),
+                right: BorderSide(color: Colors.grey.shade300, width: 1),
+              ),
+              columnWidths: const {
+                0: FixedColumnWidth(120),
+                1: FixedColumnWidth(120),
+                2: FixedColumnWidth(120),
+                3: FixedColumnWidth(100),
+                4: FixedColumnWidth(120),
+                5: FixedColumnWidth(140),
+              },
+              children: [
+                // Header Row
+                TableRow(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF0F172A),
+                  ),
+                  children: [
+                    _buildTableHeaderCell('STAGE'),
+                    _buildTableHeaderCell('Runtime'),
+                    _buildTableHeaderCell('Memory'),
+                    _buildTableHeaderCell('Errors'),
+                    _buildTableHeaderCell('Warnings'),
+                    _buildTableHeaderCell('Critical Logs'),
+                  ],
+                ),
+                // Data Rows
+                ...stages.map((stage) {
+                  final runtimeStr = _formatValueString(stage['runtime']);
+                  final memoryStr = _formatValueString(stage['memory_usage']);
+                  final errors = (stage['log_errors'] as num?)?.toInt() ?? 0;
+                  final warnings = (stage['log_warnings'] as num?)?.toInt() ?? 0;
+                  final critical = (stage['log_critical'] as num?)?.toInt() ?? 0;
+                  
+                  final errorStr = errors.toString();
+                  final warningStr = warnings.toString();
+                  final criticalStr = critical.toString();
+                  
+                  final errorColor = errors > 0 ? Colors.red[700]! : const Color(0xFF1E293B);
+                  final warningColor = warnings > 0 ? Colors.amber[700]! : const Color(0xFF1E293B);
+                  final criticalColor = critical > 0 ? Colors.red[900]! : const Color(0xFF1E293B);
+                  
+                  return TableRow(
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                    ),
+                    children: [
+                      _buildTableCell(
+                        (stage['stage']?.toString() ?? '').toUpperCase(),
+                        isBold: true,
+                        textColor: const Color(0xFF1E293B),
+                      ),
+                      _buildTableCell(runtimeStr, isNA: _isNA(runtimeStr)),
+                      _buildTableCell(memoryStr, isNA: _isNA(memoryStr)),
+                      _buildTableCell(
+                        errorStr,
+                        textColor: errorColor,
+                        isBold: errors > 0,
+                      ),
+                      _buildTableCell(
+                        warningStr,
+                        textColor: warningColor,
+                        isBold: warnings > 0,
+                      ),
+                      _buildTableCell(
+                        criticalStr,
+                        textColor: criticalColor,
+                        isBold: critical > 0,
+                      ),
+                    ],
+                  );
+                }).toList(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEngineerChartsSection(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return const SizedBox();
+
+    return Column(
+      children: [
+        // Setup Timing WNS Trend
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.show_chart, size: 20, color: Color(0xFF0F172A)),
+                  SizedBox(width: 12),
+                  Text(
+                    'Setup Timing WNS Trend',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF0F172A),
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                height: 300,
+                child: _buildSetupWNSChart(stages),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        // Area & Utilization Trend
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.trending_up, size: 20, color: Color(0xFF0F172A)),
+                  SizedBox(width: 12),
+                  Text(
+                    'Area & Utilization Trend',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF0F172A),
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                height: 300,
+                child: _buildAreaUtilizationChart(stages),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        // Runtime & Memory Usage
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.speed, size: 20, color: Color(0xFF0F172A)),
+                  SizedBox(width: 12),
+                  Text(
+                    'Runtime & Memory Usage',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF0F172A),
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                height: 300,
+                child: _buildRuntimeMemoryChart(stages),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSetupWNSChart(List<Map<String, dynamic>> stages) {
+    final spots = <FlSpot>[];
+    final stageNames = stages.map((s) => s['stage']?.toString() ?? 'Unknown').toList();
+    
+    for (int i = 0; i < stages.length; i++) {
+      final wns = _parseNumeric(stages[i]['internal_timing_r2r_wns']);
+      if (wns != null) {
+        spots.add(FlSpot(i.toDouble(), wns.toDouble()));
+      }
+    }
+
+    return LineChart(
+      LineChartData(
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          getDrawingHorizontalLine: (value) => const FlLine(color: Color(0xFFE2E8F0), strokeWidth: 1),
+        ),
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              getTitlesWidget: (value, meta) {
+                return Text(
+                  value.toStringAsFixed(2),
+                  style: const TextStyle(fontSize: 9, color: Color(0xFF64748B)),
+                );
+              },
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 24,
+              interval: 1,
+              getTitlesWidget: (value, meta) {
+                final idx = value.toInt();
+                if (idx >= 0 && idx < stageNames.length) {
+                  String name = stageNames[idx].toUpperCase();
+                  if (name.length > 8) name = '${name.substring(0, 8)}..';
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      name,
+                      style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                    ),
+                  );
+                }
+                return const Text('');
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xFFE2E8F0))),
+        lineBarsData: [
+          LineChartBarData(
+            spots: spots,
+            isCurved: true,
+            color: const Color(0xFF3B82F6),
+            barWidth: 3,
+            dotData: const FlDotData(show: true),
+            belowBarData: BarAreaData(show: true, color: Color(0xFF3B82F6).withOpacity(0.1)),
+          ),
+        ],
+        lineTouchData: LineTouchData(
+          touchTooltipData: LineTouchTooltipData(
+            tooltipBgColor: Colors.blueGrey.shade800,
+            getTooltipItems: (touchedSpots) {
+              return touchedSpots.map((spot) {
+                final idx = spot.x.toInt();
+                final stageName = idx >= 0 && idx < stageNames.length 
+                    ? stageNames[idx].toUpperCase()
+                    : 'Unknown';
+                return LineTooltipItem(
+                  '$stageName\nWNS: ${spot.y.toStringAsFixed(3)}',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                );
+              }).toList();
+            },
+          ),
+        ),
+        minY: spots.isEmpty ? 0.0 : (spots.map((p) => p.y).reduce((a, b) => a < b ? a : b) - 0.1).toDouble(),
+        maxY: spots.isEmpty ? 1.0 : (spots.map((p) => p.y).reduce((a, b) => a > b ? a : b) + 0.1).toDouble(),
+      ),
+    );
+  }
+
+  Widget _buildAreaUtilizationChart(List<Map<String, dynamic>> stages) {
+    final areaSpots = <FlSpot>[];
+    final utilSpots = <FlSpot>[];
+    final stageNames = stages.map((s) => s['stage']?.toString() ?? 'Unknown').toList();
+    
+    for (int i = 0; i < stages.length; i++) {
+      final area = _parseNumeric(stages[i]['area']);
+      final util = _parseNumeric(stages[i]['utilization']);
+      if (area != null) {
+        areaSpots.add(FlSpot(i.toDouble(), area.toDouble()));
+      }
+      if (util != null) {
+        utilSpots.add(FlSpot(i.toDouble(), util.toDouble()));
+      }
+    }
+
+    final allSpots = [...areaSpots, ...utilSpots];
+    final minY = allSpots.isEmpty ? 0 : (allSpots.map((p) => p.y).reduce((a, b) => a < b ? a : b) - 0.1);
+    final maxY = allSpots.isEmpty ? 1 : (allSpots.map((p) => p.y).reduce((a, b) => a > b ? a : b) + 0.1);
+
+    return LineChart(
+      LineChartData(
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          getDrawingHorizontalLine: (value) => const FlLine(color: Color(0xFFE2E8F0), strokeWidth: 1),
+        ),
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              getTitlesWidget: (value, meta) {
+                return Text(
+                  value.toStringAsFixed(0),
+                  style: const TextStyle(fontSize: 9, color: Color(0xFF64748B)),
+                );
+              },
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 24,
+              interval: 1,
+              getTitlesWidget: (value, meta) {
+                final idx = value.toInt();
+                if (idx >= 0 && idx < stageNames.length) {
+                  String name = stageNames[idx].toUpperCase();
+                  if (name.length > 8) name = '${name.substring(0, 8)}..';
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      name,
+                      style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                    ),
+                  );
+                }
+                return const Text('');
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xFFE2E8F0))),
+        lineBarsData: [
+          LineChartBarData(
+            spots: areaSpots,
+            isCurved: true,
+            color: const Color(0xFF10B981),
+            barWidth: 3,
+            dotData: const FlDotData(show: true),
+            belowBarData: BarAreaData(show: true, color: Color(0xFF10B981).withOpacity(0.1)),
+          ),
+          if (utilSpots.isNotEmpty)
+            LineChartBarData(
+              spots: utilSpots,
+              isCurved: true,
+              color: const Color(0xFFF59E0B),
+              barWidth: 3,
+              dotData: const FlDotData(show: true),
+              belowBarData: BarAreaData(show: true, color: Color(0xFFF59E0B).withOpacity(0.1)),
+            ),
+        ],
+        lineTouchData: LineTouchData(
+          touchTooltipData: LineTouchTooltipData(
+            tooltipBgColor: Colors.blueGrey.shade800,
+            getTooltipItems: (touchedSpots) {
+              return touchedSpots.map((spot) {
+                final idx = spot.x.toInt();
+                final stageName = idx >= 0 && idx < stageNames.length 
+                    ? stageNames[idx].toUpperCase()
+                    : 'Unknown';
+                final label = areaSpots.any((p) => p.x == spot.x) ? 'Area' : 'Utilization';
+                return LineTooltipItem(
+                  '$stageName\n$label: ${spot.y.toStringAsFixed(2)}',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                );
+              }).toList();
+            },
+          ),
+        ),
+        minY: minY.toDouble(),
+        maxY: maxY.toDouble(),
+      ),
+    );
+  }
+
+  Widget _buildRuntimeMemoryChart(List<Map<String, dynamic>> stages) {
+    // Parse runtime to minutes for chart
+    final runtimeSpots = <FlSpot>[];
+    final memorySpots = <FlSpot>[];
+    final stageNames = stages.map((s) => s['stage']?.toString() ?? 'Unknown').toList();
+    
+    for (int i = 0; i < stages.length; i++) {
+      final runtimeStr = stages[i]['runtime']?.toString() ?? '';
+      final runtimeMinutes = _parseRuntimeToMinutes(runtimeStr);
+      if (runtimeMinutes != null) {
+        runtimeSpots.add(FlSpot(i.toDouble(), runtimeMinutes));
+      }
+      
+      final memoryStr = stages[i]['memory_usage']?.toString() ?? '';
+      final memoryMB = _parseMemoryToMB(memoryStr);
+      if (memoryMB != null) {
+        memorySpots.add(FlSpot(i.toDouble(), memoryMB));
+      }
+    }
+
+    final allSpots = [...runtimeSpots, ...memorySpots];
+    final minY = allSpots.isEmpty ? 0 : (allSpots.map((p) => p.y).reduce((a, b) => a < b ? a : b) - 0.1);
+    final maxY = allSpots.isEmpty ? 1 : (allSpots.map((p) => p.y).reduce((a, b) => a > b ? a : b) + 0.1);
+
+    return LineChart(
+      LineChartData(
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          getDrawingHorizontalLine: (value) => const FlLine(color: Color(0xFFE2E8F0), strokeWidth: 1),
+        ),
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              getTitlesWidget: (value, meta) {
+                return Text(
+                  value.toStringAsFixed(0),
+                  style: const TextStyle(fontSize: 9, color: Color(0xFF64748B)),
+                );
+              },
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 24,
+              interval: 1,
+              getTitlesWidget: (value, meta) {
+                final idx = value.toInt();
+                if (idx >= 0 && idx < stageNames.length) {
+                  String name = stageNames[idx].toUpperCase();
+                  if (name.length > 8) name = '${name.substring(0, 8)}..';
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      name,
+                      style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                    ),
+                  );
+                }
+                return const Text('');
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xFFE2E8F0))),
+        lineBarsData: [
+          LineChartBarData(
+            spots: runtimeSpots,
+            isCurved: true,
+            color: const Color(0xFF8B5CF6),
+            barWidth: 3,
+            dotData: const FlDotData(show: true),
+            belowBarData: BarAreaData(show: true, color: Color(0xFF8B5CF6).withOpacity(0.1)),
+          ),
+          if (memorySpots.isNotEmpty)
+            LineChartBarData(
+              spots: memorySpots,
+              isCurved: true,
+              color: const Color(0xFFEF4444),
+              barWidth: 3,
+              dotData: const FlDotData(show: true),
+              belowBarData: BarAreaData(show: true, color: Color(0xFFEF4444).withOpacity(0.1)),
+            ),
+        ],
+        lineTouchData: LineTouchData(
+          touchTooltipData: LineTouchTooltipData(
+            tooltipBgColor: Colors.blueGrey.shade800,
+            getTooltipItems: (touchedSpots) {
+              return touchedSpots.map((spot) {
+                final idx = spot.x.toInt();
+                final stageName = idx >= 0 && idx < stageNames.length 
+                    ? stageNames[idx].toUpperCase()
+                    : 'Unknown';
+                final label = runtimeSpots.any((p) => p.x == spot.x) ? 'Runtime (min)' : 'Memory (MB)';
+                return LineTooltipItem(
+                  '$stageName\n$label: ${spot.y.toStringAsFixed(2)}',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                );
+              }).toList();
+            },
+          ),
+        ),
+        minY: minY.toDouble(),
+        maxY: maxY.toDouble(),
+      ),
+    );
+  }
+
+  double? _parseRuntimeToMinutes(String runtime) {
+    if (runtime == 'N/A' || runtime.isEmpty) return null;
+    try {
+      // Format: "HH:MM:SS"
+      final parts = runtime.split(':');
+      if (parts.length == 3) {
+        final hours = int.parse(parts[0]);
+        final minutes = int.parse(parts[1]);
+        final seconds = int.parse(parts[2]);
+        return hours * 60.0 + minutes + seconds / 60.0;
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }
+
+  double? _parseMemoryToMB(String memory) {
+    if (memory == 'N/A' || memory.isEmpty) return null;
+    try {
+      // Format: "1,046M" or similar
+      final cleaned = memory.replaceAll(',', '').replaceAll('M', '').replaceAll('G', '');
+      final value = double.parse(cleaned);
+      if (memory.contains('G')) {
+        return value * 1024; // Convert GB to MB
+      }
+      return value;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  Widget _formatTimingValue(dynamic value) {
+    final num = _parseNumeric(value);
+    if (num == null) {
+      return const Text('N/A', style: TextStyle(color: Colors.grey));
+    }
+    return Text(
+      num.toStringAsFixed(3),
+      style: TextStyle(
+        color: num < 0 ? Colors.red[700] : Colors.green[700],
+        fontWeight: FontWeight.w600,
+        fontFamily: 'monospace',
+      ),
+    );
+  }
+
+  Widget _formatValue(dynamic value) {
+    if (value == null || value.toString() == 'N/A') {
+      return const Text('N/A', style: TextStyle(color: Colors.grey));
+    }
+    return Text(
+      value.toString(),
+      style: const TextStyle(
+        fontWeight: FontWeight.w500,
+        fontFamily: 'monospace',
+      ),
+    );
+  }
+
   Widget _buildMetricsGraphSection(List<Map<String, dynamic>> stages) {
     if (stages.isEmpty) return const SizedBox();
 
     final allMetricGroups = ['INTERNAL (R2R)', 'INTERFACE I2R', 'INTERFACE R2O', 'INTERFACE I2O', 'HOLD'];
     final allMetricTypes = ['WNS', 'TNS', 'NVP'];
+    final allChartTypes = ['Timing Metrics', 'Setup WNS Trend', 'Area & Utilization', 'Runtime & Memory'];
 
     // Generate all combinations of selected groups and types
     final graphCombinations = <Map<String, String>>[];
@@ -1034,7 +2853,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                   Icon(Icons.show_chart, size: 20, color: Color(0xFF0F172A)),
                   SizedBox(width: 12),
                   Text(
-                    'Timing Metrics Matrix Visualization',
+                    'Metrics Visualization',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
@@ -1047,12 +2866,12 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             ],
           ),
           const SizedBox(height: 24),
-          // Multi-select chips for Metric Groups
+          // Chart Type Selector
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'SELECT METRIC GROUPS',
+                'SELECT CHART TYPE',
                 style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.w800,
@@ -1064,20 +2883,15 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: allMetricGroups.map((group) {
-                  final isSelected = _selectedMetricGroups.contains(group);
+                children: allChartTypes.map((chartType) {
+                  final isSelected = _selectedChartType == chartType;
                   return FilterChip(
-                    label: Text(group),
+                    label: Text(chartType),
                     selected: isSelected,
                     onSelected: (selected) {
                       setState(() {
                         if (selected) {
-                          _selectedMetricGroups.add(group);
-                        } else {
-                          _selectedMetricGroups.remove(group);
-                        }
-                        if (_selectedMetricGroups.isEmpty) {
-                          _selectedMetricGroups.add(allMetricGroups.first);
+                          _selectedChartType = chartType;
                         }
                       });
                     },
@@ -1093,64 +2907,423 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             ],
           ),
           const SizedBox(height: 24),
-          // Multi-select chips for Metric Types
-          Column(
+          // Conditional rendering based on chart type
+          if (_selectedChartType == 'Timing Metrics') ...[
+            // Multi-select chips for Metric Groups
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'SELECT METRIC GROUPS',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF94A3B8),
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: allMetricGroups.map((group) {
+                    final isSelected = _selectedMetricGroups.contains(group);
+                    return FilterChip(
+                      label: Text(group),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            _selectedMetricGroups.add(group);
+                          } else {
+                            _selectedMetricGroups.remove(group);
+                          }
+                          if (_selectedMetricGroups.isEmpty) {
+                            _selectedMetricGroups.add(allMetricGroups.first);
+                          }
+                        });
+                      },
+                      selectedColor: const Color(0xFFEFF6FF),
+                      checkmarkColor: const Color(0xFF2563EB),
+                      labelStyle: TextStyle(
+                        color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            // Multi-select chips for Metric Types
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'SELECT METRIC TYPES',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF94A3B8),
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: allMetricTypes.map((type) {
+                    final isSelected = _selectedMetricTypes.contains(type);
+                    return FilterChip(
+                      label: Text(type),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            _selectedMetricTypes.add(type);
+                          } else {
+                            _selectedMetricTypes.remove(type);
+                          }
+                          if (_selectedMetricTypes.isEmpty) {
+                            _selectedMetricTypes.add(allMetricTypes.first);
+                          }
+                        });
+                      },
+                      selectedColor: const Color(0xFFEFF6FF),
+                      checkmarkColor: const Color(0xFF2563EB),
+                      labelStyle: TextStyle(
+                        color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF64748B),
+                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 32),
+            // Visualization type selector
+            Row(
+              children: [
+                const Text(
+                  'VIEW TYPE:',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF94A3B8),
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                _buildVisualizationTypeChip('Graph', 'graph'),
+                const SizedBox(width: 8),
+                _buildVisualizationTypeChip('Heat Map', 'heatmap'),
+              ],
+            ),
+            const SizedBox(height: 24),
+            // Single combined graph or heat map with all selected metrics
+            if (graphCombinations.isEmpty)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(32.0),
+                  child: Text('Please select at least one metric group and type', style: TextStyle(color: Colors.grey)),
+                ),
+              )
+            else if (_visualizationType == 'heatmap')
+              _buildHeatMap(stages, graphCombinations)
+            else
+              _buildCombinedGraph(stages, graphCombinations),
+          ] else if (_selectedChartType == 'Setup WNS Trend') ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 300,
+              child: _buildSetupWNSChart(stages),
+            ),
+          ] else if (_selectedChartType == 'Area & Utilization') ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 300,
+              child: _buildAreaUtilizationChart(stages),
+            ),
+          ] else if (_selectedChartType == 'Runtime & Memory') ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 300,
+              child: _buildRuntimeMemoryChart(stages),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildVisualizationTypeChip(String label, String value) {
+    final isSelected = _visualizationType == value;
+    return GestureDetector(
+      onTap: () => setState(() => _visualizationType = value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF2563EB) : const Color(0xFFE2E8F0),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: isSelected ? Colors.white : const Color(0xFF64748B),
+          ),
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildHeatMap(List<Map<String, dynamic>> stages, List<Map<String, String>> combinations) {
+    if (stages.isEmpty || combinations.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text('No data available for heat map', style: TextStyle(color: Colors.grey)),
+        ),
+      );
+    }
+    
+    final stageNames = stages.map((s) => s['stage']?.toString() ?? 'Unknown').toList();
+    
+    // Build heat map data: rows = metric combinations, columns = stages
+    final heatMapData = <List<double?>>[];
+    final rowLabels = <String>[];
+    
+    for (var combo in combinations) {
+      final group = combo['group']!;
+      final type = combo['type']!;
+      final row = <double?>[];
+      
+      for (var stage in stages) {
+        final val = _getMetricValue(stage, group, type);
+        row.add(val);
+      }
+      
+      // Only add row if it has at least one value
+      if (row.any((v) => v != null)) {
+        heatMapData.add(row);
+        rowLabels.add('$group - $type');
+      }
+    }
+    
+    if (heatMapData.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text('No data available for the selected metrics', style: TextStyle(color: Colors.grey)),
+        ),
+      );
+    }
+    
+    // Calculate min/max for color scaling
+    double? minVal;
+    double? maxVal;
+    for (var row in heatMapData) {
+      for (var val in row) {
+        if (val != null) {
+          if (minVal == null || val < minVal) minVal = val;
+          if (maxVal == null || val > maxVal) maxVal = val;
+        }
+      }
+    }
+    
+    // If all values are the same, add some range for visualization
+    if (minVal != null && maxVal != null && minVal == maxVal) {
+      final absVal = minVal.abs();
+      minVal = minVal - (absVal > 0 ? absVal * 0.1 : 0.1);
+      maxVal = maxVal + (absVal > 0 ? absVal * 0.1 : 0.1);
+    }
+    
+    final range = (maxVal ?? 1.0) - (minVal ?? 0.0);
+    
+    // Color function: red for negative/bad, green for positive/good (for WNS/TNS)
+    // For NVP, reverse: green for low, red for high
+    Color getColorForValue(double? value, String type) {
+      if (value == null) return Colors.grey.shade200;
+      
+      // Normalize value to 0-1 range
+      final normalized = range > 0 ? ((value - (minVal ?? 0.0)) / range).clamp(0.0, 1.0) : 0.5;
+      
+      if (type == 'NVP') {
+        // For NVP: low is good (green), high is bad (red)
+        if (normalized < 0.33) {
+          return Color.lerp(const Color(0xFF10B981), const Color(0xFFFEF3C7), normalized * 3)!;
+        } else if (normalized < 0.67) {
+          return Color.lerp(const Color(0xFFFEF3C7), const Color(0xFFF59E0B), (normalized - 0.33) * 3)!;
+        } else {
+          return Color.lerp(const Color(0xFFF59E0B), const Color(0xFFDC2626), (normalized - 0.67) * 3)!;
+        }
+      } else {
+        // For WNS/TNS: negative is bad (red), positive is good (green)
+        if (normalized < 0.33) {
+          return Color.lerp(const Color(0xFFDC2626), const Color(0xFFF59E0B), normalized * 3)!;
+        } else if (normalized < 0.67) {
+          return Color.lerp(const Color(0xFFF59E0B), const Color(0xFFFEF3C7), (normalized - 0.33) * 3)!;
+        } else {
+          return Color.lerp(const Color(0xFFFEF3C7), const Color(0xFF10B981), (normalized - 0.67) * 3)!;
+        }
+      }
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Color scale legend
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'SELECT METRIC TYPES',
+                'Color Scale',
                 style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF94A3B8),
-                  letterSpacing: 0.5,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF0F172A),
                 ),
               ),
               const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: allMetricTypes.map((type) {
-                  final isSelected = _selectedMetricTypes.contains(type);
-                  return FilterChip(
-                    label: Text(type),
-                    selected: isSelected,
-                    onSelected: (selected) {
-                      setState(() {
-                        if (selected) {
-                          _selectedMetricTypes.add(type);
-                        } else {
-                          _selectedMetricTypes.remove(type);
-                        }
-                        if (_selectedMetricTypes.isEmpty) {
-                          _selectedMetricTypes.add(allMetricTypes.first);
-                        }
-                      });
-                    },
-                    selectedColor: const Color(0xFFEFF6FF),
-                    checkmarkColor: const Color(0xFF2563EB),
-                    labelStyle: TextStyle(
-                      color: isSelected ? const Color(0xFF2563EB) : const Color(0xFF64748B),
-                      fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+              Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      height: 20,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(4),
+                        gradient: LinearGradient(
+                          colors: [
+                            const Color(0xFFDC2626),
+                            const Color(0xFFF59E0B),
+                            const Color(0xFFFEF3C7),
+                            const Color(0xFF10B981),
+                          ],
+                        ),
+                      ),
                     ),
-                  );
-                }).toList(),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Min: ${minVal?.toStringAsFixed(2) ?? "N/A"}',
+                    style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Max: ${maxVal?.toStringAsFixed(2) ?? "N/A"}',
+                    style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                  ),
+                ],
               ),
             ],
           ),
-          const SizedBox(height: 32),
-          // Single combined graph with all selected metrics
-          if (graphCombinations.isEmpty)
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.all(32.0),
-                child: Text('Please select at least one metric group and type', style: TextStyle(color: Colors.grey)),
-              ),
-            )
-          else
-            _buildCombinedGraph(stages, graphCombinations),
-        ],
-      ),
+        ),
+        const SizedBox(height: 16),
+        // Heat map table
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SingleChildScrollView(
+            child: Table(
+              border: TableBorder.all(color: const Color(0xFFE2E8F0), width: 1),
+              defaultColumnWidth: const FixedColumnWidth(100),
+              children: [
+                // Header row with stage names
+                TableRow(
+                  decoration: const BoxDecoration(color: Color(0xFFF8FAFC)),
+                  children: [
+                    const TableCell(
+                      child: Padding(
+                        padding: EdgeInsets.all(12),
+                        child: Text(
+                          'Metric',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 11,
+                            color: Color(0xFF0F172A),
+                          ),
+                        ),
+                      ),
+                    ),
+                    ...stageNames.map((stage) => TableCell(
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(
+                          stage.toUpperCase().replaceAll('_', ' '),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 10,
+                            color: Color(0xFF64748B),
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    )).toList(),
+                  ],
+                ),
+                // Data rows
+                ...List.generate(heatMapData.length, (rowIdx) {
+                  final row = heatMapData[rowIdx];
+                  final label = rowLabels[rowIdx];
+                  final type = combinations[rowIdx]['type']!;
+                  
+                  return TableRow(
+                    children: [
+                      TableCell(
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          color: Colors.white,
+                          child: Text(
+                            label,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 10,
+                              color: Color(0xFF0F172A),
+                            ),
+                          ),
+                        ),
+                      ),
+                      ...List.generate(row.length, (colIdx) {
+                        final value = row[colIdx];
+                        final color = getColorForValue(value, type);
+                        
+                        return TableCell(
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            color: color,
+                            child: Center(
+                              child: Text(
+                                value != null ? value.toStringAsFixed(2) : '–',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 11,
+                                  color: value != null 
+                                      ? (value < 0 ? Colors.white : const Color(0xFF0F172A))
+                                      : Colors.grey.shade600,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
+                  );
+                }),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -2261,6 +4434,3793 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         return content;
       },
     );
+  }
+
+  // Lead View - Comprehensive dashboard with KPI cards and block summary table
+  Widget _buildLeadView(List<Map<String, dynamic>> stages) {
+    if (_selectedProject == null) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text(
+            'Please select a project to view lead dashboard',
+            style: TextStyle(color: Colors.grey, fontSize: 16),
+          ),
+        ),
+      );
+    }
+
+    // Get all stages for the project to calculate KPIs
+    final allProjectStages = _getAllStagesForProject();
+    
+    // Calculate KPI metrics
+    final kpiMetrics = _calculateLeadKPIMetrics(allProjectStages);
+    
+    // Get block summary data for the table
+    final blockSummaryData = _getBlockSummaryData(allProjectStages);
+    
+    // Apply filters
+    final filteredBlockSummary = _applyLeadFilters(blockSummaryData);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 5 KPI Cards
+        _buildLeadKPICards(kpiMetrics),
+        const SizedBox(height: 24),
+        
+        // Filter Section
+        _buildLeadFilterSection(),
+        const SizedBox(height: 24),
+        
+        // Block Summary Table
+        _buildLeadBlockSummaryTable(filteredBlockSummary),
+      ],
+    );
+  }
+  
+  // Calculate Lead View KPI metrics
+  Map<String, dynamic> _calculateLeadKPIMetrics(List<Map<String, dynamic>> allStages) {
+    // Get unique blocks
+    final blocks = <String>{};
+    final stageDistribution = <String, int>{};
+    int timingCriticalCount = 0;
+    int congestionIssuesCount = 0;
+    int highRuntimeCount = 0;
+    
+    // Track latest stage for each block
+    final blockLatestStages = <String, Map<String, dynamic>>{};
+    final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+    
+    for (var stage in allStages) {
+      final blockName = stage['block_name']?.toString() ?? '';
+      if (blockName.isEmpty) continue;
+      
+      blocks.add(blockName);
+      
+      // Track stage distribution
+      final stageName = stage['stage']?.toString().toLowerCase() ?? '';
+      stageDistribution[stageName] = (stageDistribution[stageName] ?? 0) + 1;
+      
+      // Track latest stage per block
+      if (!blockLatestStages.containsKey(blockName)) {
+        blockLatestStages[blockName] = stage;
+      } else {
+        final currentStage = blockLatestStages[blockName]!;
+        final currentStageName = currentStage['stage']?.toString().toLowerCase() ?? '';
+        final currentIndex = stageOrder.indexOf(currentStageName);
+        final newIndex = stageOrder.indexOf(stageName);
+        
+        if (newIndex > currentIndex) {
+          blockLatestStages[blockName] = stage;
+        }
+      }
+    }
+    
+    // Analyze latest stages for each block
+    for (var latestStage in blockLatestStages.values) {
+      // Check for timing-critical (negative WNS)
+      final wns = _parseNumeric(latestStage['internal_timing_r2r_wns']) ?? 
+                   _parseNumeric(latestStage['setup_wns']);
+      if (wns != null && wns < 0) {
+        timingCriticalCount++;
+      }
+      
+      // Check for congestion issues (DRC violations > 0)
+      final drc = _parseNumeric(latestStage['drc_violations'])?.toInt() ?? 0;
+      if (drc > 0) {
+        congestionIssuesCount++;
+      }
+      
+      // Check for high runtime (runtime > 24 hours = 86400 seconds, or if it's a large number)
+      final runtime = _parseNumeric(latestStage['runtime']);
+      if (runtime != null && runtime > 86400) {
+        highRuntimeCount++;
+      }
+    }
+    
+    return {
+      'totalBlocks': blocks.length,
+      'stageDistribution': stageDistribution,
+      'timingCriticalCount': timingCriticalCount,
+      'congestionIssuesCount': congestionIssuesCount,
+      'highRuntimeCount': highRuntimeCount,
+    };
+  }
+  
+  // Get block summary data for the table
+  List<Map<String, dynamic>> _getBlockSummaryData(List<Map<String, dynamic>> allStages) {
+    final blockDataMap = <String, Map<String, dynamic>>{};
+    final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+    
+    // Group stages by block
+    for (var stage in allStages) {
+      final blockName = stage['block_name']?.toString() ?? '';
+      if (blockName.isEmpty) continue;
+      
+      if (!blockDataMap.containsKey(blockName)) {
+        blockDataMap[blockName] = {
+          'block_name': blockName,
+          'engineer': 'TBD', // Placeholder - can be enhanced with actual assignment data
+          'latest_stage': '',
+          'latest_stage_status': 'unknown',
+          'latest_stage_index': -1,
+          'wns': null,
+          'tns': null,
+          'area': null,
+          'utilization': null,
+          'drc_violations': 0,
+          'runtime': null,
+          'stages': <Map<String, dynamic>>[],
+        };
+      }
+      
+      blockDataMap[blockName]!['stages']!.add(stage);
+    }
+    
+    // Process each block to find latest stage and calculate metrics
+    final blockSummaryList = <Map<String, dynamic>>[];
+    
+    for (var blockEntry in blockDataMap.entries) {
+      final blockName = blockEntry.key;
+      final blockData = Map<String, dynamic>.from(blockEntry.value);
+      final stages = blockData['stages'] as List<Map<String, dynamic>>;
+      
+      // Find latest stage
+      Map<String, dynamic>? latestStage;
+      int latestIndex = -1;
+      
+      for (var stage in stages) {
+        final stageName = stage['stage']?.toString().toLowerCase() ?? '';
+        final stageIndex = stageOrder.indexOf(stageName);
+        
+        if (stageIndex > latestIndex) {
+          latestIndex = stageIndex;
+          latestStage = stage;
+        }
+      }
+      
+      if (latestStage != null) {
+        blockData['latest_stage'] = latestStage['stage']?.toString().toUpperCase() ?? '';
+        blockData['latest_stage_status'] = latestStage['run_status']?.toString().toLowerCase() ?? 'unknown';
+        blockData['latest_stage_index'] = latestIndex;
+        
+        // Extract key metrics from latest stage
+        blockData['wns'] = _parseNumeric(latestStage['internal_timing_r2r_wns']) ?? 
+                          _parseNumeric(latestStage['setup_wns']);
+        blockData['tns'] = _parseNumeric(latestStage['internal_timing_r2r_tns']) ?? 
+                          _parseNumeric(latestStage['setup_tns']);
+        blockData['area'] = _parseNumeric(latestStage['area']);
+        blockData['utilization'] = latestStage['utilization']?.toString();
+        blockData['drc_violations'] = _parseNumeric(latestStage['drc_violations'])?.toInt() ?? 0;
+        blockData['runtime'] = _parseNumeric(latestStage['runtime']);
+        
+        // Calculate trend (compare with previous stage if available)
+        if (latestIndex > 0) {
+          final prevStageName = stageOrder[latestIndex - 1];
+          final prevStage = stages.firstWhere(
+            (s) => s['stage']?.toString().toLowerCase() == prevStageName,
+            orElse: () => <String, dynamic>{},
+          );
+          
+          if (prevStage.isNotEmpty) {
+            final prevWns = _parseNumeric(prevStage['internal_timing_r2r_wns']) ?? 
+                          _parseNumeric(prevStage['setup_wns']);
+            final currWns = blockData['wns'];
+            
+            if (prevWns != null && currWns != null) {
+              blockData['wns_trend'] = currWns > prevWns ? 'up' : (currWns < prevWns ? 'down' : 'neutral');
+            } else {
+              blockData['wns_trend'] = 'neutral';
+            }
+          } else {
+            blockData['wns_trend'] = 'neutral';
+          }
+        } else {
+          blockData['wns_trend'] = 'neutral';
+        }
+      }
+      
+      blockSummaryList.add(blockData);
+    }
+    
+    // Sort by block name
+    blockSummaryList.sort((a, b) => 
+      (a['block_name'] as String).compareTo(b['block_name'] as String));
+    
+    return blockSummaryList;
+  }
+  
+  // Apply filters to block summary data
+  List<Map<String, dynamic>> _applyLeadFilters(List<Map<String, dynamic>> blockSummary) {
+    return blockSummary.where((block) {
+      // Stage filter
+      if (_leadStageFilter.isNotEmpty) {
+        final latestStage = block['latest_stage']?.toString().toLowerCase() ?? '';
+        if (latestStage != _leadStageFilter.toLowerCase()) {
+          return false;
+        }
+      }
+      
+      // Status filter
+      if (_leadStatusFilter.isNotEmpty) {
+        final status = block['latest_stage_status']?.toString().toLowerCase() ?? '';
+        if (status != _leadStatusFilter.toLowerCase()) {
+          return false;
+        }
+      }
+      
+      return true;
+    }).toList();
+  }
+  
+  // Build 5 KPI Cards for Lead View
+  Widget _buildLeadKPICards(Map<String, dynamic> metrics) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 768;
+        final cardWidth = isMobile ? constraints.maxWidth : (constraints.maxWidth - 80) / 5;
+        
+        return Wrap(
+          spacing: 16,
+          runSpacing: 16,
+          children: [
+            // KPI 1: Total Blocks
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Total Blocks',
+                icon: Icons.view_module,
+                color: const Color(0xFF3B82F6),
+                children: [
+                  _buildKPIValue(
+                    metrics['totalBlocks']?.toString() ?? '0',
+                    subtitle: 'Blocks in Project',
+                  ),
+                ],
+              ),
+            ),
+            
+            // KPI 2: Stage Distribution
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Stage Distribution',
+                icon: Icons.timeline,
+                color: const Color(0xFF10B981),
+                children: [
+                  _buildKPIValue(
+                    (metrics['stageDistribution'] as Map<String, int>? ?? {}).length.toString(),
+                    subtitle: 'Active Stages',
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _formatStageDistribution(metrics['stageDistribution'] as Map<String, int>? ?? {}),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            // KPI 3: Timing-Critical Blocks
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Timing-Critical Blocks',
+                icon: Icons.warning_amber_rounded,
+                color: const Color(0xFFF59E0B),
+                children: [
+                  _buildKPIValue(
+                    metrics['timingCriticalCount']?.toString() ?? '0',
+                    subtitle: 'Blocks with Negative WNS',
+                  ),
+                ],
+              ),
+            ),
+            
+            // KPI 4: Congestion Issues
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'Congestion Issues',
+                icon: Icons.error_outline,
+                color: const Color(0xFFEF4444),
+                children: [
+                  _buildKPIValue(
+                    metrics['congestionIssuesCount']?.toString() ?? '0',
+                    subtitle: 'Blocks with DRC Violations',
+                  ),
+                ],
+              ),
+            ),
+            
+            // KPI 5: High Runtime Blocks
+            SizedBox(
+              width: isMobile ? constraints.maxWidth : cardWidth,
+              child: _buildKPICard(
+                title: 'High Runtime Blocks',
+                icon: Icons.timer_off,
+                color: const Color(0xFF8B5CF6),
+                children: [
+                  _buildKPIValue(
+                    metrics['highRuntimeCount']?.toString() ?? '0',
+                    subtitle: 'Blocks > 24h Runtime',
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+  
+  // Format stage distribution for display
+  String _formatStageDistribution(Map<String, int> distribution) {
+    if (distribution.isEmpty) return 'No stages';
+    
+    final sorted = distribution.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    
+    return sorted.take(3).map((e) => 
+      '${e.key.toUpperCase()}: ${e.value}'
+    ).join(', ');
+  }
+  
+  // Build filter section for Lead View
+  Widget _buildLeadFilterSection() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          const Text(
+            'FILTER BY:',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF94A3B8),
+              letterSpacing: 0.5,
+              ),
+            ),
+            const SizedBox(width: 24),
+          
+          // Stage Filter
+            Expanded(
+            child: Row(
+              children: [
+                const Text(
+                  'Stage:',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: DropdownButton<String>(
+                      value: _leadStageFilter.isEmpty ? null : _leadStageFilter,
+                      isExpanded: true,
+                      underline: const SizedBox(),
+                      hint: const Text(
+                        'All Stages',
+                        style: TextStyle(fontSize: 13, color: Color(0xFF64748B)),
+                      ),
+                      items: [
+                        const DropdownMenuItem<String>(
+                          value: '',
+                          child: Text('All Stages', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'syn',
+                          child: Text('Synthesis', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'place',
+                          child: Text('Placement', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'cts',
+                          child: Text('CTS', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'route',
+                          child: Text('Routing', style: TextStyle(fontSize: 13)),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        setState(() {
+                          _leadStageFilter = value ?? '';
+                        });
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+            const SizedBox(width: 24),
+          
+          // Status Filter
+            Expanded(
+            child: Row(
+              children: [
+                const Text(
+                  'Status:',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: DropdownButton<String>(
+                      value: _leadStatusFilter.isEmpty ? null : _leadStatusFilter,
+                      isExpanded: true,
+                      underline: const SizedBox(),
+                      hint: const Text(
+                        'All Status',
+                        style: TextStyle(fontSize: 13, color: Color(0xFF64748B)),
+                      ),
+                      items: [
+                        const DropdownMenuItem<String>(
+                          value: '',
+                          child: Text('All Status', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'completed',
+                          child: Text('Completed', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'in_progress',
+                          child: Text('In Progress', style: TextStyle(fontSize: 13)),
+                        ),
+                        const DropdownMenuItem<String>(
+                          value: 'fail',
+                          child: Text('Failed', style: TextStyle(fontSize: 13)),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        setState(() {
+                          _leadStatusFilter = value ?? '';
+                        });
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Build comprehensive block summary table
+  Widget _buildLeadBlockSummaryTable(List<Map<String, dynamic>> blockSummary) {
+    if (blockSummary.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(48),
+            decoration: BoxDecoration(
+              color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: const Center(
+          child: Text(
+            'No blocks found matching the current filters',
+            style: TextStyle(
+              fontSize: 14,
+              color: Color(0xFF64748B),
+            ),
+          ),
+        ),
+      );
+    }
+    
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 16,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+          // Table Header
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                  decoration: const BoxDecoration(
+              color: Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+              border: Border(bottom: BorderSide(color: Color(0xFFE2E8F0), width: 2)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.table_chart_outlined, size: 20, color: Color(0xFF0F172A)),
+                      SizedBox(width: 12),
+                      Text(
+                  'Block Summary',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF0F172A),
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+          
+          // Table
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SingleChildScrollView(
+              child: Table(
+                columnWidths: const {
+                  0: FixedColumnWidth(150), // Block Name
+                  1: FixedColumnWidth(120), // Engineer
+                  2: FixedColumnWidth(100), // Latest Stage
+                  3: FixedColumnWidth(100), // Status
+                  4: FixedColumnWidth(100), // WNS
+                  5: FixedColumnWidth(100), // TNS
+                  6: FixedColumnWidth(100), // Area
+                  7: FixedColumnWidth(100), // Utilization
+                  8: FixedColumnWidth(100), // DRC
+                  9: FixedColumnWidth(100), // Runtime
+                  10: FixedColumnWidth(80), // Trend
+                },
+                border: TableBorder(
+                  horizontalInside: BorderSide(color: Colors.grey.shade200),
+                  verticalInside: BorderSide(color: Colors.grey.shade200),
+                ),
+                children: [
+                  // Header Row
+                  TableRow(
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF0F172A),
+                    ),
+                    children: [
+                      _buildTableHeaderCell('Block Name'),
+                      _buildTableHeaderCell('Engineer'),
+                      _buildTableHeaderCell('Latest Stage'),
+                      _buildTableHeaderCell('Status'),
+                      _buildTableHeaderCell('WNS'),
+                      _buildTableHeaderCell('TNS'),
+                      _buildTableHeaderCell('Area'),
+                      _buildTableHeaderCell('Utilization'),
+                      _buildTableHeaderCell('DRC'),
+                      _buildTableHeaderCell('Runtime'),
+                      _buildTableHeaderCell('Trend'),
+                    ],
+                  ),
+                  
+                  // Data Rows
+                  ...blockSummary.map((block) {
+                    final wns = block['wns'];
+                    final tns = block['tns'];
+                    final area = block['area'];
+                    final utilization = block['utilization']?.toString() ?? 'N/A';
+                    final drc = block['drc_violations'] as int? ?? 0;
+                    final runtime = block['runtime'];
+                    final status = block['latest_stage_status']?.toString().toLowerCase() ?? 'unknown';
+                    final trend = block['wns_trend']?.toString() ?? 'neutral';
+                    
+                    return TableRow(
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                      ),
+                      children: [
+                        _buildClickableBlockNameCell(
+                          block['block_name']?.toString() ?? 'N/A',
+                          onTap: () {
+                            final blockName = block['block_name']?.toString();
+                            if (blockName != null && blockName.isNotEmpty) {
+                              _updateCascadingFilters(b: blockName);
+                              setState(() {
+                                _viewType = 'engineer';
+                              });
+                            }
+                          },
+                        ),
+                        _buildTableCell(block['engineer']?.toString() ?? 'TBD'),
+                        _buildTableCell(block['latest_stage']?.toString() ?? 'N/A'),
+                        _buildLeadStatusCell(status),
+                        _buildTableCell(
+                          wns != null ? wns.toStringAsFixed(3) : 'N/A',
+                          textColor: wns != null && wns < 0 ? Colors.red[700] : null,
+                          isBold: wns != null && wns < 0,
+                        ),
+                        _buildTableCell(tns != null ? tns.toStringAsFixed(2) : 'N/A'),
+                        _buildTableCell(area != null ? area.toStringAsFixed(2) : 'N/A'),
+                        _buildTableCell(utilization),
+                        _buildTableCell(
+                          drc.toString(),
+                          textColor: drc > 0 ? Colors.red[700] : null,
+                          isBold: drc > 0,
+                        ),
+                        _buildTableCell(
+                          runtime != null ? _formatRuntime(runtime) : 'N/A',
+                        ),
+                        _buildTrendCell(trend),
+                      ],
+                    );
+                  }).toList(),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Build status cell with badge for Lead View
+  Widget _buildLeadStatusCell(String status) {
+    Color bgColor;
+    Color textColor;
+    String displayText;
+    
+    switch (status.toLowerCase()) {
+      case 'completed':
+      case 'pass':
+        bgColor = const Color(0xFF10B981).withOpacity(0.1);
+        textColor = const Color(0xFF10B981);
+        displayText = 'Completed';
+        break;
+      case 'in_progress':
+      case 'continue_with_error':
+        bgColor = const Color(0xFFF59E0B).withOpacity(0.1);
+        textColor = const Color(0xFFF59E0B);
+        displayText = 'In Progress';
+        break;
+      case 'fail':
+      case 'failed':
+        bgColor = const Color(0xFFEF4444).withOpacity(0.1);
+        textColor = const Color(0xFFEF4444);
+        displayText = 'Failed';
+        break;
+      default:
+        bgColor = const Color(0xFF94A3B8).withOpacity(0.1);
+        textColor = const Color(0xFF94A3B8);
+        displayText = 'Unknown';
+    }
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: textColor.withOpacity(0.3)),
+      ),
+      child: Text(
+        displayText,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: textColor,
+        ),
+      ),
+    );
+  }
+  
+  // Build trend indicator cell
+  Widget _buildTrendCell(String trend) {
+    IconData icon;
+    Color color;
+    
+    switch (trend) {
+      case 'up':
+        icon = Icons.trending_up;
+        color = const Color(0xFF10B981);
+        break;
+      case 'down':
+        icon = Icons.trending_down;
+        color = const Color(0xFFEF4444);
+        break;
+      default:
+        icon = Icons.trending_flat;
+        color = const Color(0xFF94A3B8);
+    }
+    
+    return Container(
+      padding: const EdgeInsets.all(8),
+      alignment: Alignment.center,
+      child: Icon(icon, size: 18, color: color),
+    );
+  }
+  
+  // Format runtime for display
+  String _formatRuntime(double seconds) {
+    if (seconds < 60) {
+      return '${seconds.toStringAsFixed(0)}s';
+    } else if (seconds < 3600) {
+      return '${(seconds / 60).toStringAsFixed(1)}m';
+    } else if (seconds < 86400) {
+      return '${(seconds / 3600).toStringAsFixed(1)}h';
+    } else {
+      return '${(seconds / 86400).toStringAsFixed(1)}d';
+    }
+  }
+  
+  Widget _buildLeadCard(String title, Widget content) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title.toUpperCase(),
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF94A3B8),
+              letterSpacing: 1.0,
+            ),
+          ),
+          const SizedBox(height: 16),
+          content,
+        ],
+      ),
+    );
+  }
+  
+  // Get all stages for the selected block
+  List<Map<String, dynamic>> _getAllStagesForBlock() {
+    if (_selectedProject == null || _selectedBlock == null) return [];
+    
+    final allStages = <Map<String, dynamic>>[];
+    
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return [];
+      
+      final projectData = Map<String, dynamic>.from(projectValue);
+      final blockValue = projectData[_selectedBlock];
+      if (blockValue is! Map) return [];
+      
+      final blockData = Map<String, dynamic>.from(blockValue);
+      
+      // Iterate through all RTL tags
+      for (var rtlTag in blockData.keys) {
+        final tagValue = blockData[rtlTag];
+        if (tagValue is! Map) continue;
+        
+        final tagData = Map<String, dynamic>.from(tagValue);
+        
+        // Iterate through all experiments
+        for (var experiment in tagData.keys) {
+          final expValue = tagData[experiment];
+          if (expValue is! Map) continue;
+          
+          final expData = Map<String, dynamic>.from(expValue);
+          final stages = expData['stages'];
+          if (stages is! Map) continue;
+          
+          final stagesMap = Map<String, dynamic>.from(stages);
+          
+          // Add all stages from this experiment
+          for (var stageData in stagesMap.values) {
+            if (stageData is Map<String, dynamic>) {
+              final stageWithContext = Map<String, dynamic>.from(stageData);
+              stageWithContext['block_name'] = _selectedBlock;
+              stageWithContext['rtl_tag'] = rtlTag;
+              stageWithContext['experiment'] = experiment;
+              allStages.add(stageWithContext);
+            } else if (stageData is Map) {
+              final stageWithContext = Map<String, dynamic>.from(stageData);
+              stageWithContext['block_name'] = _selectedBlock;
+              stageWithContext['rtl_tag'] = rtlTag;
+              stageWithContext['experiment'] = experiment;
+              allStages.add(stageWithContext);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('Error getting all stages for block: $e');
+    }
+    
+    return allStages;
+  }
+  
+  // Get only the latest stage for each block (for lead view)
+  List<Map<String, dynamic>> _getLatestStagesForBlock() {
+    if (_selectedProject == null || _selectedBlock == null) return [];
+    
+    final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+    final latestStages = <Map<String, dynamic>>[];
+    
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return [];
+      
+      final projectData = Map<String, dynamic>.from(projectValue);
+      final blockValue = projectData[_selectedBlock];
+      if (blockValue is! Map) return [];
+      
+      final blockData = Map<String, dynamic>.from(blockValue);
+      
+      // Iterate through all RTL tags
+      for (var rtlTag in blockData.keys) {
+        final tagValue = blockData[rtlTag];
+        if (tagValue is! Map) continue;
+        
+        final tagData = Map<String, dynamic>.from(tagValue);
+        
+        // Iterate through all experiments
+        for (var experiment in tagData.keys) {
+          final expValue = tagData[experiment];
+          if (expValue is! Map) continue;
+          
+          final expData = Map<String, dynamic>.from(expValue);
+          final stages = expData['stages'];
+          if (stages is! Map) continue;
+          
+          final stagesMap = Map<String, dynamic>.from(stages);
+          
+          // Find the latest stage for this experiment
+          Map<String, dynamic>? latestStage;
+          int latestStageIndex = -1;
+          
+          for (var stageData in stagesMap.values) {
+            if (stageData is! Map) continue;
+            
+            final stage = Map<String, dynamic>.from(stageData);
+            final stageName = stage['stage']?.toString().toLowerCase() ?? '';
+            final stageIndex = stageOrder.indexOf(stageName);
+            
+            // If this stage is later in the order, it's the latest so far
+            if (stageIndex > latestStageIndex) {
+              latestStageIndex = stageIndex;
+              latestStage = stage;
+            }
+          }
+          
+          // Add the latest stage with context
+          if (latestStage != null) {
+            final stageWithContext = Map<String, dynamic>.from(latestStage);
+            stageWithContext['block_name'] = _selectedBlock;
+            stageWithContext['rtl_tag'] = rtlTag;
+            stageWithContext['experiment'] = experiment;
+            latestStages.add(stageWithContext);
+          }
+        }
+      }
+    } catch (e) {
+      print('Error getting latest stages for block: $e');
+    }
+    
+    return latestStages;
+  }
+  
+  // Get milestone progress
+  Map<String, dynamic> _getMilestoneProgress(List<Map<String, dynamic>> stages) {
+    final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+    final milestoneData = <String, Map<String, dynamic>>{};
+    
+    // Initialize all milestones
+    for (var stage in stageOrder) {
+      milestoneData[stage] = {
+        'stage': stage,
+        'completed': 0,
+        'pending': 0,
+        'failed': 0,
+        'in_progress': 0,
+      };
+    }
+    
+    // Count statuses for each stage
+    for (var stageData in stages) {
+      final stageName = stageData['stage']?.toString().toLowerCase() ?? '';
+      final status = stageData['run_status']?.toString().toLowerCase() ?? 'unknown';
+      
+      if (milestoneData.containsKey(stageName)) {
+        if (status == 'pass' || status == 'completed') {
+          milestoneData[stageName]!['completed'] = (milestoneData[stageName]!['completed'] as int) + 1;
+        } else if (status == 'fail' || status == 'failed') {
+          milestoneData[stageName]!['failed'] = (milestoneData[stageName]!['failed'] as int) + 1;
+        } else if (status == 'continue_with_error' || status == 'in_progress') {
+          milestoneData[stageName]!['in_progress'] = (milestoneData[stageName]!['in_progress'] as int) + 1;
+        } else {
+          milestoneData[stageName]!['pending'] = (milestoneData[stageName]!['pending'] as int) + 1;
+        }
+      }
+    }
+    
+    // Calculate totals
+    int totalCompleted = 0;
+    int totalPending = 0;
+    int totalFailed = 0;
+    int totalInProgress = 0;
+    
+    for (var data in milestoneData.values) {
+      totalCompleted += data['completed'] as int;
+      totalPending += data['pending'] as int;
+      totalFailed += data['failed'] as int;
+      totalInProgress += data['in_progress'] as int;
+    }
+    
+    return {
+      'milestones': milestoneData,
+      'total': {
+        'completed': totalCompleted,
+        'pending': totalPending,
+        'failed': totalFailed,
+        'in_progress': totalInProgress,
+        'total': totalCompleted + totalPending + totalFailed + totalInProgress,
+      },
+    };
+  }
+  
+  // Get block stages summary
+  Map<String, dynamic> _getBlockStagesSummary(List<Map<String, dynamic>> stages) {
+    final blockStages = <String, Set<String>>{};
+    final blockStatuses = <String, Map<String, int>>{};
+    
+    for (var stageData in stages) {
+      final blockName = stageData['block_name']?.toString() ?? 'Unknown';
+      final stageName = stageData['stage']?.toString() ?? 'Unknown';
+      final status = stageData['run_status']?.toString().toLowerCase() ?? 'unknown';
+      
+      if (!blockStages.containsKey(blockName)) {
+        blockStages[blockName] = <String>{};
+        blockStatuses[blockName] = {
+          'pass': 0,
+          'fail': 0,
+          'continue_with_error': 0,
+          'unknown': 0,
+        };
+      }
+      
+      blockStages[blockName]!.add(stageName);
+      
+      if (status == 'pass' || status == 'completed') {
+        blockStatuses[blockName]!['pass'] = (blockStatuses[blockName]!['pass'] ?? 0) + 1;
+      } else if (status == 'fail' || status == 'failed') {
+        blockStatuses[blockName]!['fail'] = (blockStatuses[blockName]!['fail'] ?? 0) + 1;
+      } else if (status == 'continue_with_error') {
+        blockStatuses[blockName]!['continue_with_error'] = (blockStatuses[blockName]!['continue_with_error'] ?? 0) + 1;
+      } else {
+        blockStatuses[blockName]!['unknown'] = (blockStatuses[blockName]!['unknown'] ?? 0) + 1;
+      }
+    }
+    
+    return {
+      'blocks': blockStages.map((key, value) => MapEntry(key, {
+        'stages': value.toList(),
+        'stageCount': value.length,
+        'statuses': blockStatuses[key] ?? {},
+      })),
+      'totalBlocks': blockStages.length,
+    };
+  }
+  
+  Widget _buildMilestoneProgress(Map<String, dynamic> progressData) {
+    final milestones = progressData['milestones'] as Map<String, dynamic>;
+    final total = progressData['total'] as Map<String, dynamic>;
+    final totalCount = total['total'] as int;
+    
+    if (totalCount == 0) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16.0),
+          child: Text(
+            'No milestone data available',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ),
+      );
+    }
+    
+    final completedPercent = totalCount > 0 
+        ? ((total['completed'] as int) / totalCount * 100).round()
+        : 0;
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Overall progress
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _buildStatusIndicator('Completed', total['completed'] as int, const Color(0xFF10B981)),
+            _buildStatusIndicator('In Progress', total['in_progress'] as int, const Color(0xFFF59E0B)),
+            _buildStatusIndicator('Failed', total['failed'] as int, const Color(0xFFDC2626)),
+            _buildStatusIndicator('Pending', total['pending'] as int, const Color(0xFF94A3B8)),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Progress bar
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Overall Progress',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF0F172A),
+                  ),
+                ),
+                Text(
+                  '$completedPercent%',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF0F172A),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: completedPercent / 100,
+                minHeight: 8,
+                backgroundColor: const Color(0xFFE2E8F0),
+                valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF10B981)),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Milestone breakdown
+        ...milestones.values.take(5).map((milestone) {
+          final stage = milestone['stage'] as String;
+          final completed = milestone['completed'] as int;
+          final milestoneTotal = (milestone['completed'] as int) + 
+                       (milestone['pending'] as int) + 
+                       (milestone['failed'] as int) + 
+                       (milestone['in_progress'] as int);
+          final percent = milestoneTotal > 0 ? (completed / milestoneTotal * 100).round() : 0;
+          
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 80,
+                  child: Text(
+                    stage.toUpperCase(),
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: milestoneTotal > 0 ? completed / milestoneTotal : 0,
+                      minHeight: 6,
+                      backgroundColor: const Color(0xFFE2E8F0),
+                      valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF10B981)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '$percent%',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ],
+    );
+  }
+  
+  Widget _buildStatusIndicator(String label, int count, Color color) {
+    return Column(
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          count.toString(),
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 9,
+            color: Color(0xFF64748B),
+          ),
+        ),
+      ],
+    );
+  }
+  
+  Widget _buildBlockStagesSummary(Map<String, dynamic> summary) {
+    final blocks = summary['blocks'] as Map<String, dynamic>;
+    final totalBlocks = summary['totalBlocks'] as int;
+    
+    if (totalBlocks == 0) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16.0),
+          child: Text(
+            'No block data available',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ),
+      );
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Total Blocks: $totalBlocks',
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF0F172A),
+          ),
+        ),
+        const SizedBox(height: 16),
+        ...blocks.entries.take(5).map((entry) {
+          final blockName = entry.key;
+          final data = entry.value as Map<String, dynamic>;
+          final stageCount = data['stageCount'] as int;
+          final statuses = data['statuses'] as Map<String, int>;
+          final passCount = statuses['pass'] ?? 0;
+          final failCount = statuses['fail'] ?? 0;
+          final errorCount = statuses['continue_with_error'] ?? 0;
+          
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        blockName,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF0F172A),
+                        ),
+                      ),
+                      Text(
+                        '$stageCount stages',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      if (passCount > 0)
+                        _buildStatusBadge('Pass', passCount, const Color(0xFF10B981)),
+                      if (failCount > 0) ...[
+                        const SizedBox(width: 8),
+                        _buildStatusBadge('Fail', failCount, const Color(0xFFDC2626)),
+                      ],
+                      if (errorCount > 0) ...[
+                        const SizedBox(width: 8),
+                        _buildStatusBadge('Error', errorCount, const Color(0xFFF59E0B)),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        }).toList(),
+      ],
+    );
+  }
+  
+  Widget _buildStatusBadge(String label, int count, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            '$label: $count',
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildBlockHealthCard(double healthIndex) {
+    Color color;
+    String status;
+    if (healthIndex >= 80) {
+      color = const Color(0xFF10B981);
+      status = 'Excellent';
+    } else if (healthIndex >= 60) {
+      color = const Color(0xFFF59E0B);
+      status = 'Good';
+    } else if (healthIndex >= 40) {
+      color = const Color(0xFFF97316);
+      status = 'Fair';
+    } else {
+      color = const Color(0xFFDC2626);
+      status = 'Poor';
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              healthIndex.toStringAsFixed(1),
+              style: TextStyle(
+                fontSize: 48,
+                fontWeight: FontWeight.w900,
+                color: color,
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: color.withOpacity(0.3)),
+              ),
+              child: Text(
+                status,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: healthIndex / 100,
+            minHeight: 12,
+            backgroundColor: const Color(0xFFE2E8F0),
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+          ),
+        ),
+        const SizedBox(height: 16),
+        const Text(
+          'Health Index',
+          style: TextStyle(
+            fontSize: 12,
+            color: Color(0xFF64748B),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLeadTable(List<Map<String, dynamic>> stages) {
+    final columnWidths = <int, TableColumnWidth>{
+      0: const FixedColumnWidth(120), // Stage
+      1: const FixedColumnWidth(100), // Status
+      2: const FixedColumnWidth(80), // Internal WNS
+      3: const FixedColumnWidth(80), // Internal TNS
+      4: const FixedColumnWidth(60), // Internal NVP
+      5: const FixedColumnWidth(80), // I2R WNS
+      6: const FixedColumnWidth(80), // I2R TNS
+      7: const FixedColumnWidth(60), // I2R NVP
+      8: const FixedColumnWidth(80), // R2O WNS
+      9: const FixedColumnWidth(80), // R2O TNS
+      10: const FixedColumnWidth(60), // R2O NVP
+      11: const FixedColumnWidth(80), // I2O WNS
+      12: const FixedColumnWidth(80), // I2O TNS
+      13: const FixedColumnWidth(60), // I2O NVP
+      14: const FixedColumnWidth(70), // Max Tran WNS
+      15: const FixedColumnWidth(70), // Max Tran NVP
+      16: const FixedColumnWidth(70), // Max Cap WNS
+      17: const FixedColumnWidth(70), // Max Cap NVP
+      18: const FixedColumnWidth(80), // Noise
+      19: const FixedColumnWidth(80), // Congestion/DRC
+      20: const FixedColumnWidth(80), // Area
+      21: const FixedColumnWidth(80), // Inst Count
+      22: const FixedColumnWidth(70), // Utilization
+      23: const FixedColumnWidth(50), // Log Errors
+      24: const FixedColumnWidth(50), // Log Warnings
+      25: const FixedColumnWidth(100), // Run Status
+      26: const FixedColumnWidth(80), // Runtime
+      27: const FixedColumnWidth(200), // AI Summary
+      28: const FixedColumnWidth(80), // IR Static
+      29: const FixedColumnWidth(80), // IR Dynamic
+      30: const FixedColumnWidth(80), // EM Power
+      31: const FixedColumnWidth(80), // EM Signal
+      32: const FixedColumnWidth(70), // PV Base
+      33: const FixedColumnWidth(70), // PV Metal
+      34: const FixedColumnWidth(70), // PV Antenna
+      35: const FixedColumnWidth(70), // LVS
+      36: const FixedColumnWidth(70), // LEC R2G
+      37: const FixedColumnWidth(70), // LEC G2G
+    };
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        double totalWidth = 0;
+        for (var width in columnWidths.values) {
+          if (width is FixedColumnWidth) {
+            totalWidth += width.value;
+          }
+        }
+
+        return SizedBox(
+          height: 600,
+          child: Scrollbar(
+            controller: _horizontalScrollController,
+            thumbVisibility: true,
+            child: SingleChildScrollView(
+              controller: _horizontalScrollController,
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: totalWidth,
+                child: Column(
+                  children: [
+                    _buildLeadHeader(columnWidths),
+                    Expanded(
+                      child: Scrollbar(
+                        controller: _verticalScrollController,
+                        thumbVisibility: true,
+                        child: SingleChildScrollView(
+                          controller: _verticalScrollController,
+                          child: Table(
+                            columnWidths: columnWidths,
+                            defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+                            border: const TableBorder(
+                              horizontalInside: BorderSide(color: Color(0xFFF1F5F9)),
+                            ),
+                            children: stages.map((s) => _buildLeadTableRow(s)).toList(),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildLeadHeader(Map<int, TableColumnWidth> colWidths) {
+    double getW(int idx) => (colWidths[idx] as FixedColumnWidth).value;
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFFF8FAFC),
+        border: Border(bottom: BorderSide(color: Color(0xFFE2E8F0))),
+      ),
+      child: Column(
+        children: [
+          // LEVEL 1: Group Headers
+          Row(
+            children: [
+              _buildHeaderCell('STAGE INFO', width: getW(0) + getW(1), isMain: true),
+              _buildHeaderCell('INTERNAL (R2R)', width: getW(2) + getW(3) + getW(4), isMain: true, color: Colors.blue[50]),
+              _buildHeaderCell('INTERFACE I2R', width: getW(5) + getW(6) + getW(7), isMain: true, color: Colors.indigo[50]),
+              _buildHeaderCell('INTERFACE R2O', width: getW(8) + getW(9) + getW(10), isMain: true, color: Colors.purple[50]),
+              _buildHeaderCell('INTERFACE I2O', width: getW(11) + getW(12) + getW(13), isMain: true, color: Colors.indigo[50]),
+              _buildHeaderCell('CONSTRAINTS', width: getW(14) + getW(15) + getW(16) + getW(17), isMain: true, color: Colors.orange[50]),
+              _buildHeaderCell('INTEGRITY', width: getW(18) + getW(19), isMain: true),
+              _buildHeaderCell('PHYSICAL STATS', width: getW(20) + getW(21) + getW(22), isMain: true),
+              _buildHeaderCell('LOGS', width: getW(23) + getW(24), isMain: true),
+              _buildHeaderCell('RUN STATUS', width: getW(25), isMain: true),
+              _buildHeaderCell('RUNTIME', width: getW(26), isMain: true),
+              _buildHeaderCell('AI SUMMARY', width: getW(27), isMain: true),
+              _buildHeaderCell('POWER / IR', width: getW(28) + getW(29), isMain: true),
+              _buildHeaderCell('EM', width: getW(30) + getW(31), isMain: true),
+              _buildHeaderCell('PHYSICAL VERIF', width: getW(32) + getW(33) + getW(34), isMain: true),
+              _buildHeaderCell('SIGNOFF', width: getW(35) + getW(36) + getW(37), isMain: true),
+            ],
+          ),
+          Divider(height: 1, color: Colors.grey.withOpacity(0.2)),
+          // LEVEL 2: Specific Metric Headers
+          Row(
+            children: [
+              _buildHeaderCell('Stage', width: getW(0)),
+              _buildHeaderCell('Status', width: getW(1)),
+              // Internal
+              _buildHeaderCell('WNS', width: getW(2)),
+              _buildHeaderCell('TNS', width: getW(3)),
+              _buildHeaderCell('NVP', width: getW(4), isLastInGroup: true),
+              // I2R
+              _buildHeaderCell('WNS', width: getW(5)),
+              _buildHeaderCell('TNS', width: getW(6)),
+              _buildHeaderCell('NVP', width: getW(7), isLastInGroup: true),
+              // R2O
+              _buildHeaderCell('WNS', width: getW(8)),
+              _buildHeaderCell('TNS', width: getW(9)),
+              _buildHeaderCell('NVP', width: getW(10), isLastInGroup: true),
+              // I2O
+              _buildHeaderCell('WNS', width: getW(11)),
+              _buildHeaderCell('TNS', width: getW(12)),
+              _buildHeaderCell('NVP', width: getW(13), isLastInGroup: true),
+              // Constraints
+              _buildHeaderCell('Tran WNS', width: getW(14)),
+              _buildHeaderCell('Tran NVP', width: getW(15)),
+              _buildHeaderCell('Cap WNS', width: getW(16)),
+              _buildHeaderCell('Cap NVP', width: getW(17), isLastInGroup: true),
+              // Integrity
+              _buildHeaderCell('Noise', width: getW(18)),
+              _buildHeaderCell('Congestion/DRC', width: getW(19), isLastInGroup: true),
+              // Physical Stats
+              _buildHeaderCell('Area', width: getW(20)),
+              _buildHeaderCell('Inst Count', width: getW(21)),
+              _buildHeaderCell('Utilization', width: getW(22), isLastInGroup: true),
+              // Logs
+              _buildHeaderCell('Errors', width: getW(23)),
+              _buildHeaderCell('Warnings', width: getW(24), isLastInGroup: true),
+              // Run Status
+              _buildHeaderCell('Status', width: getW(25), isLastInGroup: true),
+              // Runtime
+              _buildHeaderCell('Runtime', width: getW(26), isLastInGroup: true),
+              // AI Summary
+              _buildHeaderCell('Summary', width: getW(27), isLastInGroup: true),
+              // Power/IR
+              _buildHeaderCell('IR Static', width: getW(28)),
+              _buildHeaderCell('IR Dynamic', width: getW(29), isLastInGroup: true),
+              // EM
+              _buildHeaderCell('EM Power', width: getW(30)),
+              _buildHeaderCell('EM Signal', width: getW(31), isLastInGroup: true),
+              // PV
+              _buildHeaderCell('PV Base', width: getW(32)),
+              _buildHeaderCell('PV Metal', width: getW(33)),
+              _buildHeaderCell('PV Antenna', width: getW(34), isLastInGroup: true),
+              // Signoff
+              _buildHeaderCell('LVS', width: getW(35)),
+              _buildHeaderCell('LEC R2G', width: getW(36)),
+              _buildHeaderCell('LEC G2G', width: getW(37)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  TableRow _buildLeadTableRow(Map<String, dynamic> s) {
+    return TableRow(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+      ),
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          child: Text(
+            (s['stage']?.toString() ?? '–').toUpperCase(),
+            style: const TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 12,
+              color: Color(0xFF0F172A),
+            ),
+          ),
+        ),
+        Container(
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: _buildStatusCell(s['run_status']),
+        ),
+        _dataCell(s['internal_timing_r2r_wns'], isTiming: true),
+        _dataCell(s['internal_timing_r2r_tns'], isTiming: true),
+        _dataCell(s['internal_timing_r2r_nvp']),
+        _dataCell(s['interface_timing_i2r_wns'], isTiming: true),
+        _dataCell(s['interface_timing_i2r_tns'], isTiming: true),
+        _dataCell(s['interface_timing_i2r_nvp']),
+        _dataCell(s['interface_timing_r2o_wns'], isTiming: true),
+        _dataCell(s['interface_timing_r2o_tns'], isTiming: true),
+        _dataCell(s['interface_timing_r2o_nvp']),
+        _dataCell(s['interface_timing_i2o_wns'], isTiming: true),
+        _dataCell(s['interface_timing_i2o_tns'], isTiming: true),
+        _dataCell(s['interface_timing_i2o_nvp']),
+        _dataCell(s['max_tran_wns'], isTiming: true),
+        _dataCell(s['max_tran_nvp']),
+        _dataCell(s['max_cap_wns'], isTiming: true),
+        _dataCell(s['max_cap_nvp']),
+        _dataCell(s['noise_violations']),
+        _dataCell(s['drc_violations']),
+        _dataCell(s['area']),
+        _dataCell(s['inst_count']),
+        _dataCell(s['utilization']),
+        _dataCell(s['log_errors'], textColor: Colors.red[700], isBold: true),
+        _dataCell(s['log_warnings'], textColor: Colors.amber[700], isBold: true),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          alignment: Alignment.centerLeft,
+          child: _buildStatusCell(s['run_status']),
+        ),
+        _dataCell(s['runtime']),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          child: Text(
+            s['ai_summary']?.toString() ?? '',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 9, color: Color(0xFF64748B), fontStyle: FontStyle.italic),
+          ),
+        ),
+        _dataCell(s['ir_static']),
+        _dataCell(s['ir_dynamic']),
+        _dataCell(s['em_power']),
+        _dataCell(s['em_signal']),
+        _dataCell(s['pv_drc_base']),
+        _dataCell(s['pv_drc_metal']),
+        _dataCell(s['pv_drc_antenna']),
+        _dataCell(s['lvs']),
+        _dataCell(s['r2g_lec']),
+        _dataCell(s['g2g_lec']),
+      ],
+    );
+  }
+
+  // Manager View - High-level overview
+  Widget _buildManagerView() {
+    if (_selectedProject == null) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text(
+            'Please select a project to view manager dashboard',
+            style: TextStyle(color: Colors.grey, fontSize: 16),
+          ),
+        ),
+      );
+    }
+
+    // Get all stages for the selected project (across all blocks)
+    final allProjectStages = _getAllStagesForProject();
+    
+    // Get block statuses and critical blocks for the selected project
+    final blockStatuses = _getBlockStatusesForProject();
+    final criticalBlocks = _getCriticalBlocksForProject();
+
+    // Get current stage (most recent from all project stages)
+    // Sort by timestamp to find the most recent
+    final sortedStages = List<Map<String, dynamic>>.from(allProjectStages);
+    sortedStages.sort((a, b) {
+      final aTime = a['timestamp']?.toString() ?? '';
+      final bTime = b['timestamp']?.toString() ?? '';
+      if (aTime.isEmpty && bTime.isEmpty) return 0;
+      if (aTime.isEmpty) return 1;
+      if (bTime.isEmpty) return -1;
+      try {
+        final aDate = DateTime.parse(aTime);
+        final bDate = DateTime.parse(bTime);
+        return bDate.compareTo(aDate); // Descending order (most recent first)
+      } catch (e) {
+        return 0;
+      }
+    });
+    
+    final currentStage = sortedStages.isNotEmpty ? sortedStages.first : null;
+    final healthIndex = allProjectStages.isNotEmpty 
+        ? _calculateBlockHealthIndex(allProjectStages) 
+        : 0.0;
+
+    // Calculate executive summary metrics
+    final executiveMetrics = _calculateExecutiveMetrics(allProjectStages, blockStatuses, criticalBlocks);
+    
+    // Calculate project overview
+    final projectOverview = _calculateProjectOverview(allProjectStages, blockStatuses);
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Executive Summary Metrics - KPI Cards
+        _buildExecutiveSummaryMetrics(executiveMetrics),
+        const SizedBox(height: 24),
+        
+        // Project-Level Overview
+        _buildProjectLevelOverview(projectOverview, blockStatuses),
+        const SizedBox(height: 24),
+        
+        // Critical Issues Dashboard
+        _buildCriticalIssuesDashboard(criticalBlocks, allProjectStages),
+        const SizedBox(height: 24),
+        
+        // Budget and Timeline Tracking
+        _buildBudgetAndTimelineTracking(allProjectStages, projectOverview),
+        const SizedBox(height: 24),
+        
+        // Additional Charts Row
+        Row(
+          children: [
+            Expanded(
+              child: _buildManagerCard(
+                'Block Status Distribution',
+                _buildBlockStatusHistogram(blockStatuses),
+              ),
+            ),
+            const SizedBox(width: 24),
+            Expanded(
+              child: _buildManagerCard(
+                'Critical Blocks Analysis',
+                _buildCriticalBlocksChart(criticalBlocks),
+              ),
+            ),
+          ],
+        ),
+        if (allProjectStages.isNotEmpty && currentStage != null) ...[
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(child: _buildManagerCard('Current Stage', _buildCurrentStageCard(currentStage))),
+              const SizedBox(width: 24),
+              Expanded(child: _buildManagerCard('Block Health Index', _buildHealthIndexCard(healthIndex))),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+  
+  // Get all stages from all blocks in the selected project
+  List<Map<String, dynamic>> _getAllStagesForProject() {
+    if (_selectedProject == null || _selectedDomain == null) return [];
+    
+    final allStages = <Map<String, dynamic>>[];
+    
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return [];
+      
+      final projectData = Map<String, dynamic>.from(projectValue);
+      
+      // Iterate through all blocks
+      for (var blockName in projectData.keys) {
+        final blockValue = projectData[blockName];
+        if (blockValue is! Map) continue;
+        
+        final blockData = Map<String, dynamic>.from(blockValue);
+        
+        // Iterate through all RTL tags
+        for (var rtlTag in blockData.keys) {
+          final tagValue = blockData[rtlTag];
+          if (tagValue is! Map) continue;
+          
+          final tagData = Map<String, dynamic>.from(tagValue);
+          
+          // Iterate through all experiments
+          for (var experiment in tagData.keys) {
+            final expValue = tagData[experiment];
+            if (expValue is! Map) continue;
+            
+            final expData = Map<String, dynamic>.from(expValue);
+            final stages = expData['stages'];
+            if (stages is! Map) continue;
+            
+            final stagesMap = Map<String, dynamic>.from(stages);
+            
+            // Add all stages from this experiment
+            for (var stageData in stagesMap.values) {
+              if (stageData is Map<String, dynamic>) {
+                // Add block info to stage data for context
+                final stageWithContext = Map<String, dynamic>.from(stageData);
+                stageWithContext['block_name'] = blockName;
+                stageWithContext['rtl_tag'] = rtlTag;
+                stageWithContext['experiment'] = experiment;
+                allStages.add(stageWithContext);
+              } else if (stageData is Map) {
+                final stageWithContext = Map<String, dynamic>.from(stageData);
+                stageWithContext['block_name'] = blockName;
+                stageWithContext['rtl_tag'] = rtlTag;
+                stageWithContext['experiment'] = experiment;
+                allStages.add(stageWithContext);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('Error getting all stages for project: $e');
+    }
+    
+    return allStages;
+  }
+  
+  // Get block statuses for the selected project
+  Map<String, String> _getBlockStatusesForProject() {
+    final blockStatuses = <String, String>{};
+    
+    if (_selectedProject == null) return blockStatuses;
+    
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return blockStatuses;
+      
+      final projectData = Map<String, dynamic>.from(projectValue);
+      
+      // Iterate through all blocks
+      for (var blockName in projectData.keys) {
+        final blockValue = projectData[blockName];
+        if (blockValue is! Map) continue;
+        
+        final blockData = Map<String, dynamic>.from(blockValue);
+        String latestStatus = 'unknown';
+        DateTime? latestTimestamp;
+        
+        // Find the latest stage status for this block
+        for (var rtlTag in blockData.keys) {
+          final tagValue = blockData[rtlTag];
+          if (tagValue is! Map) continue;
+          
+          final tagData = Map<String, dynamic>.from(tagValue);
+          for (var experiment in tagData.keys) {
+            final expValue = tagData[experiment];
+            if (expValue is! Map) continue;
+            
+            final expData = Map<String, dynamic>.from(expValue);
+            final stages = expData['stages'];
+            if (stages is! Map) continue;
+            
+            final stagesMap = Map<String, dynamic>.from(stages);
+            for (var stageData in stagesMap.values) {
+              if (stageData is! Map) continue;
+              
+              final stage = Map<String, dynamic>.from(stageData);
+              final status = stage['run_status']?.toString().toLowerCase() ?? 'unknown';
+              final timestampStr = stage['timestamp']?.toString() ?? '';
+              
+              // Parse timestamp if available
+              DateTime? timestamp;
+              if (timestampStr.isNotEmpty) {
+                try {
+                  timestamp = DateTime.parse(timestampStr);
+                } catch (e) {
+                  // Ignore parse errors
+                }
+              }
+              
+              // Update if this is the latest
+              if (timestamp != null && (latestTimestamp == null || timestamp.isAfter(latestTimestamp))) {
+                latestTimestamp = timestamp;
+                latestStatus = status;
+              } else if (latestTimestamp == null && status != 'unknown') {
+                // If no timestamp but has status, use it
+                latestStatus = status;
+              }
+            }
+          }
+        }
+        
+        blockStatuses[blockName] = latestStatus;
+      }
+    } catch (e) {
+      print('Error getting block statuses: $e');
+    }
+    
+    return blockStatuses;
+  }
+  
+  // Get critical blocks for the selected project
+  List<Map<String, dynamic>> _getCriticalBlocksForProject() {
+    final criticalBlocks = <Map<String, dynamic>>[];
+    
+    if (_selectedProject == null) return criticalBlocks;
+    
+    try {
+      final projectValue = _groupedData[_selectedProject];
+      if (projectValue is! Map) return criticalBlocks;
+      
+      final projectData = Map<String, dynamic>.from(projectValue);
+      
+      // Iterate through all blocks
+      for (var blockName in projectData.keys) {
+        final blockValue = projectData[blockName];
+        if (blockValue is! Map) continue;
+        
+        final blockData = Map<String, dynamic>.from(blockValue);
+        double maxWns = 0.0;
+        int totalErrors = 0;
+        int totalWarnings = 0;
+        String worstStatus = 'pass';
+        int criticalScore = 0;
+        
+        // Analyze all stages for this block
+        for (var rtlTag in blockData.keys) {
+          final tagValue = blockData[rtlTag];
+          if (tagValue is! Map) continue;
+          
+          final tagData = Map<String, dynamic>.from(tagValue);
+          for (var experiment in tagData.keys) {
+            final expValue = tagData[experiment];
+            if (expValue is! Map) continue;
+            
+            final expData = Map<String, dynamic>.from(expValue);
+            final stages = expData['stages'];
+            if (stages is! Map) continue;
+            
+            final stagesMap = Map<String, dynamic>.from(stages);
+            for (var stageData in stagesMap.values) {
+              if (stageData is! Map) continue;
+              
+              final stage = Map<String, dynamic>.from(stageData);
+              
+              // Check WNS (negative is bad)
+              final wns = _parseNumeric(stage['internal_timing_r2r_wns']);
+              if (wns != null && wns < maxWns) {
+                maxWns = wns;
+              }
+              
+              // Count errors and warnings
+              final errors = _parseNumeric(stage['log_errors']) ?? 0;
+              final warnings = _parseNumeric(stage['log_warnings']) ?? 0;
+              totalErrors += (errors is int ? errors : errors.toInt()) as int;
+              totalWarnings += (warnings is int ? warnings : warnings.toInt()) as int;
+              
+              // Check status
+              final status = stage['run_status']?.toString().toLowerCase() ?? 'pass';
+              if (status == 'fail') {
+                worstStatus = 'fail';
+                criticalScore += 30;
+              } else if (status == 'continue_with_error' && worstStatus != 'fail') {
+                worstStatus = 'continue_with_error';
+                criticalScore += 15;
+              }
+            }
+          }
+        }
+        
+        // Calculate critical score
+        if (maxWns < 0) {
+          criticalScore += ((maxWns.abs() * 10).toInt()).clamp(0, 30).toInt();
+        }
+        criticalScore += ((totalErrors * 2).toInt()).clamp(0, 20).toInt();
+        criticalScore += ((totalWarnings * 0.5).toInt()).clamp(0, 10).toInt();
+        
+        // Add to critical blocks if score > 0
+        if (criticalScore > 0) {
+          criticalBlocks.add({
+            'block': blockName,
+            'score': criticalScore,
+            'status': worstStatus,
+            'wns': maxWns,
+            'errors': totalErrors,
+            'warnings': totalWarnings,
+          });
+        }
+      }
+      
+      // Sort by critical score (highest first)
+      criticalBlocks.sort((a, b) => (b['score'] as num).compareTo(a['score'] as num));
+    } catch (e) {
+      print('Error getting critical blocks: $e');
+    }
+    
+    return criticalBlocks;
+  }
+  
+  Widget _buildBlockStatusHistogram(Map<String, String> blockStatuses) {
+    if (blockStatuses.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text('No block data available', style: TextStyle(color: Colors.grey)),
+        ),
+      );
+    }
+    
+    // Count statuses
+    final statusCounts = <String, int>{};
+    for (var status in blockStatuses.values) {
+      final normalizedStatus = status.toLowerCase();
+      statusCounts[normalizedStatus] = (statusCounts[normalizedStatus] ?? 0) + 1;
+    }
+    
+    // Define status order and colors
+    final statusOrder = ['pass', 'continue_with_error', 'fail', 'unknown'];
+    final statusColors = {
+      'pass': const Color(0xFF10B981),
+      'continue_with_error': const Color(0xFFF59E0B),
+      'fail': const Color(0xFFDC2626),
+      'unknown': const Color(0xFF94A3B8),
+    };
+    final statusLabels = {
+      'pass': 'Pass',
+      'continue_with_error': 'Warning',
+      'fail': 'Fail',
+      'unknown': 'Unknown',
+    };
+    
+    // Prepare data for chart
+    final barGroups = <BarChartGroupData>[];
+    final bottomTitles = <String>[];
+    int index = 0;
+    
+    for (var status in statusOrder) {
+      final count = statusCounts[status] ?? 0;
+      if (count > 0 || status == 'pass') { // Always show pass even if 0
+        barGroups.add(
+          BarChartGroupData(
+            x: index,
+            barRods: [
+              BarChartRodData(
+                toY: count.toDouble(),
+                color: statusColors[status] ?? const Color(0xFF94A3B8),
+                width: 40,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+              ),
+            ],
+          ),
+        );
+        bottomTitles.add(statusLabels[status] ?? status);
+        index++;
+      }
+    }
+    
+    if (barGroups.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text('No status data available', style: TextStyle(color: Colors.grey)),
+        ),
+      );
+    }
+    
+    final maxCount = statusCounts.values.isEmpty ? 1 : statusCounts.values.reduce((a, b) => a > b ? a : b);
+    
+    return SizedBox(
+      height: 300,
+      child: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: maxCount.toDouble() * 1.2,
+          barTouchData: BarTouchData(
+            enabled: true,
+            touchTooltipData: BarTouchTooltipData(
+              tooltipBgColor: Colors.grey[800]!,
+              tooltipRoundedRadius: 8,
+              tooltipPadding: const EdgeInsets.all(8),
+              tooltipMargin: 8,
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final status = statusOrder[groupIndex];
+                return BarTooltipItem(
+                  '${statusLabels[status] ?? status}: ${rod.toY.toInt()}',
+                  const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                );
+              },
+            ),
+          ),
+          titlesData: FlTitlesData(
+            show: true,
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  final idx = value.toInt();
+                  if (idx >= 0 && idx < bottomTitles.length) {
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        bottomTitles[idx],
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF64748B),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    );
+                  }
+                  return const Text('');
+                },
+                reservedSize: 40,
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                getTitlesWidget: (value, meta) {
+                  if (value.toInt() == value) {
+                    return Text(
+                      value.toInt().toString(),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF64748B),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    );
+                  }
+                  return const Text('');
+                },
+              ),
+            ),
+            topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+          ),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            horizontalInterval: 1,
+            getDrawingHorizontalLine: (value) {
+              return const FlLine(
+                color: Color(0xFFE2E8F0),
+                strokeWidth: 1,
+              );
+            },
+          ),
+          borderData: FlBorderData(show: false),
+          barGroups: barGroups,
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildCriticalBlocksChart(List<Map<String, dynamic>> criticalBlocks) {
+    if (criticalBlocks.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text(
+            'No critical blocks found',
+            style: TextStyle(color: Colors.grey),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    
+    // Take top 10 critical blocks
+    final topBlocks = criticalBlocks.take(10).toList();
+    final maxScore = criticalBlocks.isNotEmpty 
+        ? (criticalBlocks.first['score'] as num).toDouble() 
+        : 100.0;
+    
+    return SizedBox(
+      height: 300,
+      child: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: maxScore * 1.2,
+          barTouchData: BarTouchData(
+            enabled: true,
+            touchTooltipData: BarTouchTooltipData(
+              tooltipBgColor: Colors.grey[800]!,
+              tooltipRoundedRadius: 8,
+              tooltipPadding: const EdgeInsets.all(8),
+              tooltipMargin: 8,
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final block = topBlocks[groupIndex];
+                final blockName = block['block'] as String;
+                final score = block['score'] as num;
+                final status = block['status'] as String;
+                final wns = block['wns'] as num?;
+                final errors = block['errors'] as num;
+                
+                return BarTooltipItem(
+                  '$blockName\nScore: ${score.toInt()}\nStatus: ${status.toUpperCase()}\nWNS: ${wns?.toStringAsFixed(2) ?? "N/A"}\nErrors: ${errors.toInt()}',
+                  const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 11,
+                  ),
+                );
+              },
+            ),
+          ),
+          titlesData: FlTitlesData(
+            show: true,
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  final idx = value.toInt();
+                  if (idx >= 0 && idx < topBlocks.length) {
+                    final blockName = topBlocks[idx]['block'] as String;
+                    // Truncate long names
+                    final displayName = blockName.length > 10 
+                        ? '${blockName.substring(0, 10)}...' 
+                        : blockName;
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: RotatedBox(
+                        quarterTurns: 1,
+                        child: Text(
+                          displayName,
+                          style: const TextStyle(
+                            fontSize: 9,
+                            color: Color(0xFF64748B),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                  return const Text('');
+                },
+                reservedSize: 60,
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                getTitlesWidget: (value, meta) {
+                  if (value.toInt() == value) {
+                    return Text(
+                      value.toInt().toString(),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF64748B),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    );
+                  }
+                  return const Text('');
+                },
+              ),
+            ),
+            topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+          ),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            horizontalInterval: maxScore / 5,
+            getDrawingHorizontalLine: (value) {
+              return const FlLine(
+                color: Color(0xFFE2E8F0),
+                strokeWidth: 1,
+              );
+            },
+          ),
+          borderData: FlBorderData(show: false),
+          barGroups: List.generate(topBlocks.length, (index) {
+            final block = topBlocks[index];
+            final score = (block['score'] as num).toDouble();
+            final status = block['status'] as String;
+            
+            // Color based on status
+            Color barColor;
+            if (status == 'fail') {
+              barColor = const Color(0xFFDC2626);
+            } else if (status == 'continue_with_error') {
+              barColor = const Color(0xFFF59E0B);
+            } else {
+              barColor = const Color(0xFFF59E0B);
+            }
+            
+            return BarChartGroupData(
+              x: index,
+              barRods: [
+                BarChartRodData(
+                  toY: score,
+                  color: barColor,
+                  width: 30,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                ),
+              ],
+            );
+          }),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildManagerCard(String title, Widget content) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title.toUpperCase(),
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF94A3B8),
+              letterSpacing: 1.0,
+            ),
+          ),
+          const SizedBox(height: 16),
+          content,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCurrentStageCard(Map<String, dynamic> stage) {
+    final stageName = stage['stage']?.toString() ?? 'Unknown';
+    final status = stage['run_status']?.toString() ?? 'unknown';
+    final timestamp = stage['timestamp']?.toString() ?? '';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    stageName.toUpperCase(),
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF1E293B),
+                    ),
+                  ),
+                  if (timestamp.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        const Icon(Icons.access_time, size: 14, color: Color(0xFF94A3B8)),
+                        const SizedBox(width: 4),
+                        Text(
+                          timestamp.length > 16 ? timestamp.substring(0, 16) : timestamp,
+                          style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            _statusBadge(status),
+          ],
+        ),
+      ],
+    );
+  }
+
+  double _calculateBlockHealthIndex(List<Map<String, dynamic>> stages) {
+    if (stages.isEmpty) return 0.0;
+
+    double totalScore = 100.0;
+    int count = 0;
+
+    for (var stage in stages) {
+      double stageScore = 100.0;
+
+      // Deduct points for violations
+      final wns = _parseNumeric(stage['internal_timing_r2r_wns']);
+      if (wns != null && wns < 0) {
+        stageScore -= (wns.abs() * 10).clamp(0, 30);
+      }
+
+      final errors = _parseNumeric(stage['log_errors']) ?? 0;
+      stageScore -= (errors * 2).clamp(0, 20);
+
+      final warnings = _parseNumeric(stage['log_warnings']) ?? 0;
+      stageScore -= (warnings * 0.5).clamp(0, 10);
+
+      final status = stage['run_status']?.toString().toLowerCase() ?? '';
+      if (status == 'fail') {
+        stageScore -= 30;
+      } else if (status == 'continue_with_error') {
+        stageScore -= 15;
+      }
+
+      totalScore += stageScore.clamp(0, 100);
+      count++;
+    }
+
+    return count > 0 ? (totalScore / count).clamp(0, 100) : 0.0;
+  }
+
+  Widget _buildHealthIndexCard(double healthIndex) {
+    Color color;
+    if (healthIndex >= 80) {
+      color = const Color(0xFF10B981);
+    } else if (healthIndex >= 60) {
+      color = const Color(0xFFF59E0B);
+    } else {
+      color = const Color(0xFFEF4444);
+    }
+
+    return Column(
+      children: [
+        Text(
+          healthIndex.toStringAsFixed(1),
+          style: TextStyle(
+            fontSize: 48,
+            fontWeight: FontWeight.w900,
+            color: color,
+          ),
+        ),
+        const SizedBox(height: 8),
+        LinearProgressIndicator(
+          value: healthIndex / 100,
+          backgroundColor: Colors.grey[200],
+          valueColor: AlwaysStoppedAnimation<Color>(color),
+          minHeight: 8,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          healthIndex >= 80 ? 'HEALTHY' : healthIndex >= 60 ? 'NEEDS ATTENTION' : 'CRITICAL',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w800,
+            color: color,
+            letterSpacing: 1.0,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBriefSummaryCard(Map<String, dynamic> stage) {
+    final summary = stage['ai_summary']?.toString() ?? 'No summary available';
+    return Text(
+      summary,
+      style: const TextStyle(
+        fontSize: 14,
+        color: Color(0xFF1E293B),
+        height: 1.5,
+      ),
+    );
+  }
+
+  Widget _buildTicketsCard() {
+    // Placeholder - would integrate with ticket system
+    return Column(
+      children: [
+        const Icon(Icons.assignment, size: 32, color: Color(0xFF94A3B8)),
+        const SizedBox(height: 8),
+        const Text(
+          '0',
+          style: TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.w900,
+            color: Color(0xFF1E293B),
+          ),
+        ),
+        const Text(
+          'Open Tickets',
+          style: TextStyle(
+            fontSize: 12,
+            color: Color(0xFF94A3B8),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMilestoneCard() {
+    // Placeholder - would integrate with milestone tracking
+    return Column(
+      children: [
+        const Icon(Icons.flag, size: 32, color: Color(0xFF94A3B8)),
+        const SizedBox(height: 8),
+        const Text(
+          'ON TRACK',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF10B981),
+            letterSpacing: 1.0,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Current Milestone',
+          style: TextStyle(
+            fontSize: 12,
+            color: Color(0xFF94A3B8),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildQMSStatusCard() {
+    // Placeholder - would integrate with QMS system
+    return Column(
+      children: [
+        const Icon(Icons.verified, size: 32, color: Color(0xFF94A3B8)),
+        const SizedBox(height: 8),
+        const Text(
+          'COMPLIANT',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            color: Color(0xFF10B981),
+            letterSpacing: 1.0,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'QMS Status',
+          style: TextStyle(
+            fontSize: 12,
+            color: Color(0xFF94A3B8),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ========================================================================
+  // ENHANCED MANAGER VIEW METHODS
+  // ========================================================================
+
+  // Calculate Executive Summary Metrics
+  Map<String, dynamic> _calculateExecutiveMetrics(
+    List<Map<String, dynamic>> allStages,
+    Map<String, String> blockStatuses,
+    List<Map<String, dynamic>> criticalBlocks,
+  ) {
+    int totalBlocks = blockStatuses.length;
+    int completedBlocks = blockStatuses.values.where((s) => s.toLowerCase() == 'pass').length;
+    int failedBlocks = blockStatuses.values.where((s) => s.toLowerCase() == 'fail').length;
+    int inProgressBlocks = totalBlocks - completedBlocks - failedBlocks;
+    
+    int totalStages = allStages.length;
+    int completedStages = allStages.where((s) => 
+      (s['run_status']?.toString().toLowerCase() ?? '') == 'pass'
+    ).length;
+    int failedStages = allStages.where((s) => 
+      (s['run_status']?.toString().toLowerCase() ?? '') == 'fail'
+    ).length;
+    
+    double avgHealthIndex = allStages.isNotEmpty 
+        ? _calculateBlockHealthIndex(allStages) 
+        : 0.0;
+    
+    int criticalIssues = criticalBlocks.length;
+    int totalErrors = allStages.fold<int>(0, (int sum, stage) {
+      final errors = (_parseNumeric(stage['log_errors']) as num?)?.toInt() ?? 0;
+      return sum + errors;
+    });
+    int totalWarnings = allStages.fold<int>(0, (int sum, stage) {
+      final warnings = (_parseNumeric(stage['log_warnings']) as num?)?.toInt() ?? 0;
+      return sum + warnings;
+    });
+    
+    double completionRate = totalBlocks > 0 ? (completedBlocks / totalBlocks) * 100 : 0.0;
+    
+    return {
+      'totalBlocks': totalBlocks,
+      'completedBlocks': completedBlocks,
+      'failedBlocks': failedBlocks,
+      'inProgressBlocks': inProgressBlocks,
+      'totalStages': totalStages,
+      'completedStages': completedStages,
+      'failedStages': failedStages,
+      'avgHealthIndex': avgHealthIndex,
+      'criticalIssues': criticalIssues,
+      'totalErrors': totalErrors,
+      'totalWarnings': totalWarnings,
+      'completionRate': completionRate,
+    };
+  }
+
+  // Calculate Project Overview
+  Map<String, dynamic> _calculateProjectOverview(
+    List<Map<String, dynamic>> allStages,
+    Map<String, String> blockStatuses,
+  ) {
+    // Get unique blocks
+    final uniqueBlocks = <String>{};
+    for (var stage in allStages) {
+      final blockName = stage['block_name']?.toString();
+      if (blockName != null && blockName.isNotEmpty) {
+        uniqueBlocks.add(blockName);
+      }
+    }
+    
+    // Calculate stage distribution
+    final stageDistribution = <String, int>{};
+    for (var stage in allStages) {
+      final stageName = stage['stage']?.toString() ?? 'Unknown';
+      stageDistribution[stageName] = (stageDistribution[stageName] ?? 0) + 1;
+    }
+    
+    // Calculate timing metrics
+    double worstWns = 0.0;
+    double bestWns = 0.0;
+    double avgWns = 0.0;
+    int wnsCount = 0;
+    
+    for (var stage in allStages) {
+      final wns = _parseNumeric(stage['internal_timing_r2r_wns']);
+      if (wns != null) {
+        if (wnsCount == 0) {
+          worstWns = wns;
+          bestWns = wns;
+        } else {
+          if (wns < worstWns) worstWns = wns;
+          if (wns > bestWns) bestWns = wns;
+        }
+        avgWns += wns;
+        wnsCount++;
+      }
+    }
+    if (wnsCount > 0) avgWns /= wnsCount;
+    
+    // Calculate area metrics
+    double totalArea = 0.0;
+    int areaCount = 0;
+    for (var stage in allStages) {
+      final area = _parseNumeric(stage['area']);
+      if (area != null && area > 0) {
+        totalArea += area;
+        areaCount++;
+      }
+    }
+    final avgArea = areaCount > 0 ? totalArea / areaCount : 0.0;
+    
+    return {
+      'uniqueBlocks': uniqueBlocks.length,
+      'stageDistribution': stageDistribution,
+      'worstWns': worstWns,
+      'bestWns': bestWns,
+      'avgWns': avgWns,
+      'avgArea': avgArea,
+      'totalStages': allStages.length,
+    };
+  }
+
+  // Build Executive Summary Metrics (KPI Cards)
+  Widget _buildExecutiveSummaryMetrics(Map<String, dynamic> metrics) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'EXECUTIVE SUMMARY',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w900,
+            color: Color(0xFF1E293B),
+            letterSpacing: 1.0,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Project Health',
+                metrics['avgHealthIndex'].toStringAsFixed(1),
+                '%',
+                metrics['avgHealthIndex'] >= 80 
+                    ? const Color(0xFF10B981)
+                    : metrics['avgHealthIndex'] >= 60
+                        ? const Color(0xFFF59E0B)
+                        : const Color(0xFFEF4444),
+                Icons.health_and_safety,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Completion Rate',
+                metrics['completionRate'].toStringAsFixed(1),
+                '%',
+                metrics['completionRate'] >= 80 
+                    ? const Color(0xFF10B981)
+                    : metrics['completionRate'] >= 60
+                        ? const Color(0xFFF59E0B)
+                        : const Color(0xFFEF4444),
+                Icons.check_circle,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Total Blocks',
+                metrics['totalBlocks'].toString(),
+                '',
+                const Color(0xFF3B82F6),
+                Icons.view_module,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Critical Issues',
+                metrics['criticalIssues'].toString(),
+                '',
+                metrics['criticalIssues'] > 0 
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF10B981),
+                Icons.warning,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Completed Blocks',
+                metrics['completedBlocks'].toString(),
+                '/${metrics['totalBlocks']}',
+                const Color(0xFF10B981),
+                Icons.done_all,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Failed Blocks',
+                metrics['failedBlocks'].toString(),
+                '',
+                metrics['failedBlocks'] > 0 
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF94A3B8),
+                Icons.error,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Total Errors',
+                metrics['totalErrors'].toString(),
+                '',
+                metrics['totalErrors'] > 0 
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF94A3B8),
+                Icons.bug_report,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildExecutiveKPICard(
+                'Total Stages',
+                metrics['totalStages'].toString(),
+                '',
+                const Color(0xFF3B82F6),
+                Icons.layers,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // Build Executive KPI Card
+  Widget _buildExecutiveKPICard(String label, String value, String suffix, Color color, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.02),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Icon(icon, color: color, size: 24),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  label.toUpperCase(),
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: color,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.w900,
+                  color: const Color(0xFF1E293B),
+                ),
+              ),
+              if (suffix.isNotEmpty) ...[
+                const SizedBox(width: 4),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    suffix,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: const Color(0xFF94A3B8),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build Project-Level Overview
+  Widget _buildProjectLevelOverview(Map<String, dynamic> overview, Map<String, String> blockStatuses) {
+    return _buildManagerCard(
+      'Project-Level Overview',
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Statistics Grid
+          Row(
+            children: [
+              Expanded(
+                child: _buildStatItem(
+                  'Unique Blocks',
+                  overview['uniqueBlocks'].toString(),
+                  Icons.view_module,
+                  const Color(0xFF3B82F6),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _buildStatItem(
+                  'Total Stages',
+                  overview['totalStages'].toString(),
+                  Icons.layers,
+                  const Color(0xFF10B981),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _buildStatItem(
+                  'Avg WNS',
+                  overview['avgWns'].toStringAsFixed(2),
+                  Icons.speed,
+                  overview['avgWns'] < 0 
+                      ? const Color(0xFFEF4444)
+                      : const Color(0xFF10B981),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _buildStatItem(
+                  'Avg Area',
+                  overview['avgArea'].toStringAsFixed(0),
+                  'μm²',
+                  const Color(0xFFF59E0B),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          
+          // Stage Distribution Chart
+          if (overview['stageDistribution'] is Map) ...[
+            const Text(
+              'Stage Distribution',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1E293B),
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 200,
+              child: _buildStageDistributionChart(overview['stageDistribution'] as Map<String, int>),
+            ),
+          ],
+          
+          const SizedBox(height: 24),
+          
+          // Timing Metrics Summary
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Worst WNS',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF94A3B8),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        overview['worstWns'].toStringAsFixed(2),
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                          color: overview['worstWns'] < 0 
+                              ? const Color(0xFFEF4444)
+                              : const Color(0xFF10B981),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Best WNS',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF94A3B8),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        overview['bestWns'].toStringAsFixed(2),
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF10B981),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build Stat Item
+  Widget _buildStatItem(String label, String value, dynamic iconOrUnit, Color color) {
+    IconData iconData;
+    String? unit;
+    
+    if (iconOrUnit is IconData) {
+      iconData = iconOrUnit;
+      unit = null;
+    } else {
+      iconData = Icons.info;
+      unit = iconOrUnit.toString();
+    }
+    
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(iconData, size: 20, color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF94A3B8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                  color: Color(0xFF1E293B),
+                ),
+              ),
+              if (unit != null) ...[
+                const SizedBox(width: 4),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    unit,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF94A3B8),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build Stage Distribution Chart
+  Widget _buildStageDistributionChart(Map<String, int> distribution) {
+    if (distribution.isEmpty) {
+      return const Center(
+        child: Text(
+          'No stage data available',
+          style: TextStyle(color: Color(0xFF94A3B8)),
+        ),
+      );
+    }
+    
+    final entries = distribution.entries.toList();
+    entries.sort((a, b) => b.value.compareTo(a.value));
+    
+    final maxValue = entries.isNotEmpty 
+        ? entries.map((e) => e.value).reduce((a, b) => a > b ? a : b)
+        : 1;
+    
+    final barGroups = <BarChartGroupData>[];
+    final bottomTitles = <String>[];
+    
+    for (int i = 0; i < entries.length; i++) {
+      final entry = entries[i];
+      barGroups.add(
+        BarChartGroupData(
+          x: i,
+          barRods: [
+            BarChartRodData(
+              toY: entry.value.toDouble(),
+              color: _getStageColor(entry.key),
+              width: 30,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+            ),
+          ],
+        ),
+      );
+      bottomTitles.add(entry.key.toUpperCase());
+    }
+    
+    return BarChart(
+      BarChartData(
+        alignment: BarChartAlignment.spaceAround,
+        maxY: maxValue.toDouble() * 1.2,
+        barTouchData: BarTouchData(
+          enabled: true,
+          touchTooltipData: BarTouchTooltipData(
+            tooltipBgColor: Colors.grey[800]!,
+            tooltipRoundedRadius: 8,
+            tooltipPadding: const EdgeInsets.all(8),
+            getTooltipItem: (group, groupIndex, rod, rodIndex) {
+              return BarTooltipItem(
+                '${bottomTitles[groupIndex]}: ${rod.toY.toInt()}',
+                const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              );
+            },
+          ),
+        ),
+        titlesData: FlTitlesData(
+          show: true,
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              getTitlesWidget: (value, meta) {
+                final idx = value.toInt();
+                if (idx >= 0 && idx < bottomTitles.length) {
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      bottomTitles[idx],
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFF64748B),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  );
+                }
+                return const Text('');
+              },
+              reservedSize: 50,
+            ),
+          ),
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              getTitlesWidget: (value, meta) {
+                if (value.toInt() == value) {
+                  return Text(
+                    value.toInt().toString(),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF64748B),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  );
+                }
+                return const Text('');
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          horizontalInterval: 1,
+          getDrawingHorizontalLine: (value) {
+            return const FlLine(
+              color: Color(0xFFE2E8F0),
+              strokeWidth: 1,
+            );
+          },
+        ),
+        borderData: FlBorderData(show: false),
+        barGroups: barGroups,
+      ),
+    );
+  }
+
+  Color _getStageColor(String stage) {
+    final stageLower = stage.toLowerCase();
+    if (stageLower.contains('syn')) return const Color(0xFF3B82F6);
+    if (stageLower.contains('place')) return const Color(0xFF10B981);
+    if (stageLower.contains('cts')) return const Color(0xFFF59E0B);
+    if (stageLower.contains('route')) return const Color(0xFFEF4444);
+    return const Color(0xFF94A3B8);
+  }
+
+  // Build Critical Issues Dashboard
+  Widget _buildCriticalIssuesDashboard(
+    List<Map<String, dynamic>> criticalBlocks,
+    List<Map<String, dynamic>> allStages,
+  ) {
+    // Get critical issues from stages
+    final criticalIssues = <Map<String, dynamic>>[];
+    
+    for (var stage in allStages) {
+      final status = stage['run_status']?.toString().toLowerCase() ?? '';
+      final wns = _parseNumeric(stage['internal_timing_r2r_wns']);
+      final errors = _parseNumeric(stage['log_errors']) ?? 0;
+      final warnings = _parseNumeric(stage['log_warnings']) ?? 0;
+      
+      bool isCritical = false;
+      String issueType = '';
+      
+      if (status == 'fail') {
+        isCritical = true;
+        issueType = 'Failed Stage';
+      } else if (wns != null && wns < -0.1) {
+        isCritical = true;
+        issueType = 'Timing Violation';
+      } else if (errors > 10) {
+        isCritical = true;
+        issueType = 'High Error Count';
+      }
+      
+      if (isCritical) {
+        criticalIssues.add({
+          'block': stage['block_name']?.toString() ?? 'Unknown',
+          'stage': stage['stage']?.toString() ?? 'Unknown',
+          'type': issueType,
+          'status': status,
+          'wns': wns,
+          'errors': errors,
+          'warnings': warnings,
+          'severity': status == 'fail' ? 'high' : (wns != null && wns < -0.5) ? 'high' : 'medium',
+        });
+      }
+    }
+    
+    // Sort by severity
+    criticalIssues.sort((a, b) {
+      final severityOrder = {'high': 0, 'medium': 1, 'low': 2};
+      final aSev = severityOrder[a['severity']] ?? 2;
+      final bSev = severityOrder[b['severity']] ?? 2;
+      if (aSev != bSev) return aSev.compareTo(bSev);
+      return (b['errors'] as num).compareTo(a['errors'] as num);
+    });
+    
+    return _buildManagerCard(
+      'Critical Issues Dashboard',
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Summary Row
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFFEE2E2)),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        criticalIssues.length.toString(),
+                        style: const TextStyle(
+                          fontSize: 32,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFFEF4444),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Critical Issues',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFFEF4444),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF3C7),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        criticalBlocks.length.toString(),
+                        style: const TextStyle(
+                          fontSize: 32,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFFF59E0B),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Critical Blocks',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFFF59E0B),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          
+          // Critical Issues List
+          if (criticalIssues.isNotEmpty) ...[
+            const Text(
+              'Recent Critical Issues',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1E293B),
+              ),
+            ),
+            const SizedBox(height: 12),
+            ...criticalIssues.take(10).map((issue) => _buildCriticalIssueItem(issue)),
+          ] else ...[
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(32.0),
+                child: Text(
+                  'No critical issues found',
+                  style: TextStyle(
+                    color: Color(0xFF10B981),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // Build Critical Issue Item
+  Widget _buildCriticalIssueItem(Map<String, dynamic> issue) {
+    final severity = issue['severity']?.toString() ?? 'medium';
+    final color = severity == 'high' 
+        ? const Color(0xFFEF4444)
+        : const Color(0xFFF59E0B);
+    
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            decoration: BoxDecoration(
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(8),
+                bottomLeft: Radius.circular(8),
+              ),
+              color: color,
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Icon(
+                      severity == 'high' ? Icons.error : Icons.warning,
+                      color: color,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${issue['block']} - ${issue['stage']}',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF1E293B),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          issue['type']?.toString() ?? 'Unknown Issue',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF64748B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (issue['wns'] != null) ...[
+                        Text(
+                          'WNS: ${(issue['wns'] as num).toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: (issue['wns'] as num) < 0 
+                                ? const Color(0xFFEF4444)
+                                : const Color(0xFF10B981),
+                          ),
+                        ),
+                      ],
+                      if (issue['errors'] != null && (issue['errors'] as num) > 0) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          'Errors: ${issue['errors']}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFFEF4444),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build Budget and Timeline Tracking
+  Widget _buildBudgetAndTimelineTracking(
+    List<Map<String, dynamic>> allStages,
+    Map<String, dynamic> projectOverview,
+  ) {
+    // Calculate timeline metrics
+    final stages = <String, DateTime?>{};
+    DateTime? earliestDate;
+    DateTime? latestDate;
+    
+    for (var stage in allStages) {
+      final timestamp = stage['timestamp']?.toString();
+      if (timestamp != null && timestamp.isNotEmpty) {
+        try {
+          final date = DateTime.parse(timestamp);
+          final stageName = stage['stage']?.toString() ?? 'Unknown';
+          if (stages[stageName] == null || date.isBefore(stages[stageName]!)) {
+            stages[stageName] = date;
+          }
+          if (earliestDate == null || date.isBefore(earliestDate)) {
+            earliestDate = date;
+          }
+          if (latestDate == null || date.isAfter(latestDate)) {
+            latestDate = date;
+          }
+        } catch (e) {
+          // Ignore parse errors
+        }
+      }
+    }
+    
+    // Calculate progress
+    final totalDays = earliestDate != null && latestDate != null
+        ? latestDate.difference(earliestDate).inDays
+        : 0;
+    final daysElapsed = earliestDate != null
+        ? DateTime.now().difference(earliestDate).inDays
+        : 0;
+    final progressPercent = totalDays > 0 
+        ? ((daysElapsed / totalDays) * 100).clamp(0, 100)
+        : 0.0;
+    
+    // Mock budget data (would come from actual budget system)
+    final budgetData = {
+      'allocated': 1000000.0,
+      'spent': 750000.0,
+      'remaining': 250000.0,
+      'utilization': 75.0,
+    };
+    
+    return Row(
+      children: [
+        Expanded(
+          child: _buildManagerCard(
+            'Timeline Tracking',
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (earliestDate != null && latestDate != null) ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      _buildTimelineItem('Start Date', _formatDate(earliestDate)),
+                      _buildTimelineItem('End Date', _formatDate(latestDate)),
+                      _buildTimelineItem('Duration', '$totalDays days'),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Project Progress',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF1E293B),
+                            ),
+                          ),
+                          Text(
+                            '${progressPercent.toStringAsFixed(1)}%',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF3B82F6),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      LinearProgressIndicator(
+                        value: progressPercent / 100,
+                        backgroundColor: Colors.grey[200],
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          progressPercent >= 75 
+                              ? const Color(0xFF10B981)
+                              : progressPercent >= 50
+                                  ? const Color(0xFFF59E0B)
+                                  : const Color(0xFFEF4444),
+                        ),
+                        minHeight: 8,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '$daysElapsed days elapsed',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF94A3B8),
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else ...[
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32.0),
+                      child: Text(
+                        'No timeline data available',
+                        style: TextStyle(color: Color(0xFF94A3B8)),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 24),
+        Expanded(
+          child: _buildManagerCard(
+            'Budget Tracking',
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    _buildBudgetItem('Allocated', '\$${(budgetData['allocated']! / 1000).toStringAsFixed(0)}K', const Color(0xFF3B82F6)),
+                    _buildBudgetItem('Spent', '\$${(budgetData['spent']! / 1000).toStringAsFixed(0)}K', const Color(0xFFF59E0B)),
+                    _buildBudgetItem('Remaining', '\$${(budgetData['remaining']! / 1000).toStringAsFixed(0)}K', const Color(0xFF10B981)),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Budget Utilization',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF1E293B),
+                          ),
+                        ),
+                        Text(
+                          '${budgetData['utilization']!.toStringAsFixed(1)}%',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: budgetData['utilization']! >= 90
+                                ? const Color(0xFFEF4444)
+                                : budgetData['utilization']! >= 75
+                                    ? const Color(0xFFF59E0B)
+                                    : const Color(0xFF10B981),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    LinearProgressIndicator(
+                      value: budgetData['utilization']! / 100,
+                      backgroundColor: Colors.grey[200],
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        budgetData['utilization']! >= 90
+                            ? const Color(0xFFEF4444)
+                            : budgetData['utilization']! >= 75
+                                ? const Color(0xFFF59E0B)
+                                : const Color(0xFF10B981),
+                      ),
+                      minHeight: 8,
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          Column(
+                            children: [
+                              Text(
+                                '\$${(budgetData['spent']! / budgetData['allocated']! * 100).toStringAsFixed(1)}%',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w900,
+                                  color: Color(0xFF1E293B),
+                                ),
+                              ),
+                              const Text(
+                                'Spent',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF94A3B8),
+                                ),
+                              ),
+                            ],
+                          ),
+                          Container(
+                            width: 1,
+                            height: 40,
+                            color: const Color(0xFFE2E8F0),
+                          ),
+                          Column(
+                            children: [
+                              Text(
+                                '\$${(budgetData['remaining']! / budgetData['allocated']! * 100).toStringAsFixed(1)}%',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w900,
+                                  color: Color(0xFF1E293B),
+                                ),
+                              ),
+                              const Text(
+                                'Remaining',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF94A3B8),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Build Timeline Item
+  Widget _buildTimelineItem(String label, String value) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF94A3B8),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF1E293B),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Build Budget Item
+  Widget _buildBudgetItem(String label, String value, Color color) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF94A3B8),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w900,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Format Date
+  String _formatDate(DateTime date) {
+    return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
   }
 }
 

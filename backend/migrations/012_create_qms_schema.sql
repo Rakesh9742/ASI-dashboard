@@ -136,3 +136,4 @@ CREATE TRIGGER update_check_item_approvals_updated_at BEFORE UPDATE ON check_ite
 -- ============================================================================
 -- MIGRATION COMPLETE
 -- ============================================================================
+

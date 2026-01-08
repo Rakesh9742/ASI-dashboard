@@ -224,3 +224,8 @@ After setting up the database:
 4. Set up database backups
 5. Configure monitoring and alerts
 
+
+
+
+
+

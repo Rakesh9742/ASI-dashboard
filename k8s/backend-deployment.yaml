@@ -49,6 +49,16 @@ spec:
             configMapKeyRef:
               name: backend-config
               key: JWT_EXPIRES_IN
+        - name: BACKEND_URL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: BACKEND_URL
+        - name: FRONTEND_URL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: FRONTEND_URL
         livenessProbe:
           httpGet:
             path: /health

@@ -65,3 +65,8 @@ The system extracts:
 - Failed files will have error messages stored
 - The original file remains in this folder after processing
 
+
+
+
+
+
