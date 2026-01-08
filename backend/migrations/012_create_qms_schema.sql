@@ -4,12 +4,26 @@
 -- This migration creates all tables required for QMS (Quality Management System)
 -- including checklists, check_items, c_report_data, check_item_approvals, and qms_audit_log
 -- ============================================================================
+-- PREREQUISITES: 
+-- - blocks table must exist (from migration 010_create_physical_design_schema.sql)
+-- - users table must exist (from migration 002_users_and_roles.sql)
+-- - update_updated_at_column() function must exist (from migration 002_users_and_roles.sql)
+-- ============================================================================
+
+-- Ensure update_updated_at_column function exists (safety check)
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
 -- Create checklists table
 CREATE TABLE IF NOT EXISTS checklists (
     id SERIAL PRIMARY KEY,
     block_id INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
-    milestone_id INTEGER REFERENCES milestones(id) ON DELETE SET NULL,
+    milestone_id INTEGER, -- Optional milestone reference (no FK constraint since milestones table may not exist)
     name VARCHAR(255) NOT NULL,
     stage VARCHAR(100),
     status VARCHAR(50) DEFAULT 'draft',
@@ -121,15 +135,19 @@ CREATE INDEX IF NOT EXISTS idx_qms_audit_log_user_id ON qms_audit_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_qms_audit_log_created_at ON qms_audit_log(created_at);
 
 -- Add triggers to update updated_at timestamp
+DROP TRIGGER IF EXISTS update_checklists_updated_at ON checklists;
 CREATE TRIGGER update_checklists_updated_at BEFORE UPDATE ON checklists
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_check_items_updated_at ON check_items;
 CREATE TRIGGER update_check_items_updated_at BEFORE UPDATE ON check_items
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_c_report_data_updated_at ON c_report_data;
 CREATE TRIGGER update_c_report_data_updated_at BEFORE UPDATE ON c_report_data
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_check_item_approvals_updated_at ON check_item_approvals;
 CREATE TRIGGER update_check_item_approvals_updated_at BEFORE UPDATE ON check_item_approvals
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 

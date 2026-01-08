@@ -84,6 +84,14 @@ sudo -u postgres psql -d ASI -f backend/migrations/014_add_version_to_check_item
 sudo -u postgres psql -d ASI -f backend/migrations/015_ensure_qms_columns_exist.sql
 sudo -u postgres psql -d ASI -f backend/migrations/016_add_checklist_submission_tracking.sql
 sudo -u postgres psql -d ASI -f backend/migrations/017_fix_qms_audit_log_foreign_keys.sql
+
+# Run all QMS migrations in order
+docker exec -i asi_postgres psql -U postgres -d ASI < 012_create_qms_schema.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 013_add_check_item_details.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 014_add_version_to_check_items.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 015_ensure_qms_columns_exist.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 016_add_checklist_submission_tracking.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 017_fix_qms_audit_log_foreign_keys.sql
 ```
 
 ## Verify QMS Tables
