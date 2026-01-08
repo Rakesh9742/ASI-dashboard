@@ -191,6 +191,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                           label: 'QMS',
                           index: isEngineer ? 3 : 3,
                           isSelected: _selectedIndex == (isEngineer ? 3 : 3),
+                          isAdmin: isAdmin,
+                          isEngineer: isEngineer,
                         ),
                         if (isAdmin) ...[
                           const SizedBox(height: 8),
