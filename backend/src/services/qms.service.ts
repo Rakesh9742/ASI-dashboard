@@ -151,33 +151,25 @@ class QmsService {
       // Get milestones (table may not exist, so handle gracefully)
       let milestones: any[] = [];
       try {
-        // Check if milestones table exists
-        const tableCheck = await pool.query(`
-          SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            AND table_name = 'milestones'
-          );
-        `);
+        // Try to query milestones table - if it doesn't exist, catch the error
+        let milestoneQuery = 'SELECT id, name, project_id FROM milestones';
+        const milestoneParams: any[] = [];
         
-        if (tableCheck.rows[0]?.exists) {
-          let milestoneQuery = 'SELECT id, name, project_id FROM milestones';
-          if (userRole === 'engineer' || userRole === 'customer') {
-            milestoneQuery += ' WHERE project_id IN (SELECT id FROM projects WHERE created_by = $1)';
-          }
-          milestoneQuery += ' ORDER BY name';
-          
-          const milestonesResult = await pool.query(
-            milestoneQuery,
-            userRole === 'engineer' || userRole === 'customer' ? [userId] : []
-          );
-          milestones = milestonesResult.rows;
-        } else {
-          console.log('⚠️  Milestones table does not exist, returning empty array');
+        if (userRole === 'engineer' || userRole === 'customer') {
+          milestoneQuery += ' WHERE project_id IN (SELECT id FROM projects WHERE created_by = $1)';
+          milestoneParams.push(userId);
         }
+        milestoneQuery += ' ORDER BY name';
+        
+        const milestonesResult = await pool.query(milestoneQuery, milestoneParams);
+        milestones = milestonesResult.rows;
       } catch (error: any) {
-        // If table doesn't exist or query fails, return empty array
-        console.warn('⚠️  Could not fetch milestones (table may not exist):', error.message);
+        // If table doesn't exist (42P01) or any other error, return empty array
+        if (error.code === '42P01') {
+          console.log('⚠️  Milestones table does not exist, returning empty array');
+        } else {
+          console.warn('⚠️  Could not fetch milestones:', error.message);
+        }
         milestones = [];
       }
 
@@ -2440,13 +2432,34 @@ class QmsService {
   ): Promise<void> {
     if (!userId) return; // Skip if no user ID provided
 
+    // Determine entity_type based on what IDs are provided
+    let entityType = 'checklist';
+    if (checkItemId) {
+      entityType = 'check_item';
+    } else if (checklistId) {
+      entityType = 'checklist';
+    }
+
+    // Store block_id in actionDetails if provided (for reference)
+    const detailsWithBlock = blockId 
+      ? { ...actionDetails, block_id: blockId }
+      : actionDetails;
+
     await client.query(
       `
         INSERT INTO qms_audit_log 
-          (check_item_id, checklist_id, block_id, user_id, action_type, action_details)
-        VALUES ($1, $2, $3, $4, $5, $6)
+          (check_item_id, checklist_id, action, entity_type, user_id, new_value, description)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
       `,
-      [checkItemId, checklistId, blockId, userId, actionType, JSON.stringify(actionDetails)]
+      [
+        checkItemId, 
+        checklistId, 
+        actionType,  // action column
+        entityType,  // entity_type column
+        userId, 
+        JSON.stringify(detailsWithBlock),  // new_value column
+        `Action: ${actionType}`  // description column
+      ]
     );
   }
 }
