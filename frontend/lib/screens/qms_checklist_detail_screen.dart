@@ -5,7 +5,6 @@ import 'package:intl/intl.dart';
 import '../providers/auth_provider.dart';
 import '../services/qms_service.dart';
 import '../widgets/qms_status_badge.dart';
-import 'qms_check_item_detail_screen.dart';
 
 class QmsChecklistDetailScreen extends ConsumerStatefulWidget {
   final int checklistId;
@@ -43,6 +42,9 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
   
   // Track expanded report path rows
   final Map<int, bool> _expandedReportPaths = {};
+  
+  // Track selected check items for batch approval/rejection
+  final Set<int> _selectedCheckItemIds = {};
 
   @override
   void initState() {
@@ -170,28 +172,30 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
   }
 
   bool _isApprover() {
-    if (_checklist == null) return false;
     final authState = ref.read(authProvider);
     final user = authState.user;
     final role = user?['role'];
     
-    // Admins can always approve
-    if (role == 'admin') return true;
+    // Admins, project managers, and leads can approve
+    return role == 'admin' || role == 'project_manager' || role == 'lead';
+  }
+
+  bool _canApproveCheckItem(Map<String, dynamic> item) {
+    if (_checklist == null) return false;
     
-    final userId = user?['id'];
-    if (userId == null) return false;
+    final checklistStatus = _checklist!['status'] ?? 'draft';
+    if (checklistStatus != 'submitted_for_approval') return false;
 
-    final checkItems = _checklist!['check_items'] as List?;
-    if (checkItems == null || checkItems.isEmpty) return false;
+    if (!_isApprover()) return false;
 
-    // Check if user is assigned approver for all items
-    return checkItems.every((item) {
-      final approval = item['approval'];
-      if (approval == null) return false;
-      final assignedApproverId = approval['assigned_approver_id'];
-      final defaultApproverId = approval['default_approver_id'];
-      return assignedApproverId == userId || defaultApproverId == userId;
-    });
+    final approval = item['approval'];
+    if (approval == null) return false;
+
+    final approvalStatus = approval['status'] ?? 'pending';
+    // Can approve if status is pending (not yet approved/rejected)
+    return approvalStatus == 'pending' || approvalStatus == 'submitted';
+
+    // Note: Admin/PM/Lead can approve any item, assigned approver check is done on backend
   }
 
   Future<void> _loadApprovers() async {
@@ -344,7 +348,210 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
     );
   }
 
-  Future<void> _approveChecklist(bool approved) async {
+  Future<void> _approveCheckItem(int checkItemId, bool approved, {String? comments}) async {
+    final authState = ref.read(authProvider);
+    final token = authState.token;
+    if (token == null) return;
+
+    try {
+      await _qmsService.approveCheckItem(
+        checkItemId,
+        approved,
+        comments: comments,
+        token: token,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Check item ${approved ? 'approved' : 'rejected'} successfully'),
+            backgroundColor: approved ? Colors.green : Colors.orange,
+          ),
+        );
+        _loadChecklist(); // Reload to update statuses
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error ${approved ? 'approving' : 'rejecting'} check item: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _selectAllCheckItems() {
+    final checklistStatus = _checklist?['status'] ?? 'draft';
+    if (checklistStatus != 'submitted_for_approval') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Checklist must be in submitted_for_approval status to select items'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final checkItems = _checklist?['check_items'] as List?;
+    if (checkItems == null || checkItems.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No check items found'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    // Select all pending/submitted items (not already approved/rejected)
+    setState(() {
+      _selectedCheckItemIds.clear();
+      for (var item in checkItems) {
+        final itemId = item['id'] as int;
+        final approval = item['approval'];
+        if (approval != null) {
+          final status = approval['status'] ?? 'pending';
+          // Only select items that can still be approved/rejected
+          if (status == 'pending' || status == 'submitted') {
+            _selectedCheckItemIds.add(itemId);
+          }
+        }
+      }
+    });
+
+    if (_selectedCheckItemIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No pending check items to select'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+  }
+
+  Future<void> _approveSelectedCheckItems() async {
+    if (_selectedCheckItemIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select check items to approve'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    final TextEditingController commentsController = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Approve ${_selectedCheckItemIds.length} Check Item(s)'),
+          content: SizedBox(
+            width: 400,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Are you sure you want to approve ${_selectedCheckItemIds.length} selected check item(s)?',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: commentsController,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    labelText: 'Comments (optional)',
+                    hintText: 'Enter approval comments',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+              child: const Text('Approve'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    await _batchApproveRejectCheckItems(true, commentsController.text.isNotEmpty ? commentsController.text : null);
+  }
+
+  Future<void> _rejectSelectedCheckItems() async {
+    if (_selectedCheckItemIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select check items to reject'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    final TextEditingController commentsController = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Reject ${_selectedCheckItemIds.length} Check Item(s)'),
+          content: SizedBox(
+            width: 400,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Are you sure you want to reject ${_selectedCheckItemIds.length} selected check item(s)?',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: commentsController,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    labelText: 'Comments (optional)',
+                    hintText: 'Enter rejection reason',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              child: const Text('Reject'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    await _batchApproveRejectCheckItems(false, commentsController.text.isNotEmpty ? commentsController.text : null);
+  }
+
+  Future<void> _batchApproveRejectCheckItems(bool approve, String? comments) async {
     final authState = ref.read(authProvider);
     final token = authState.token;
     if (token == null) return;
@@ -354,30 +561,30 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
     });
 
     try {
-      await _qmsService.approveChecklist(
-        widget.checklistId,
-        approved,
-        comments: _approvalCommentsController.text.isNotEmpty
-            ? _approvalCommentsController.text
-            : null,
+      await _qmsService.batchApproveRejectCheckItems(
+        List.from(_selectedCheckItemIds),
+        approve,
+        comments: comments,
         token: token,
       );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Checklist ${approved ? 'approved' : 'rejected'} successfully'),
-            backgroundColor: approved ? Colors.green : Colors.orange,
+            content: Text('${_selectedCheckItemIds.length} check item(s) ${approve ? 'approved' : 'rejected'} successfully'),
+            backgroundColor: approve ? Colors.green : Colors.orange,
           ),
         );
-        _approvalCommentsController.clear();
-        _loadChecklist();
+        setState(() {
+          _selectedCheckItemIds.clear();
+        });
+        _loadChecklist(); // Reload to update statuses
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error ${approved ? 'approving' : 'rejecting'} checklist: $e'),
+            content: Text('Error ${approve ? 'approving' : 'rejecting'} check items: $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -389,6 +596,294 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
         });
       }
     }
+  }
+
+  Widget _buildProgressTimeline() {
+    if (_checklist == null) return SizedBox.shrink();
+
+    final status = _checklist!['status'] ?? 'draft';
+    final createdAt = _checklist!['created_at'];
+    final submittedAt = _checklist!['submitted_at'];
+    final updatedAt = _checklist!['updated_at'];
+    final submittedByName = _checklist!['submitted_by_name'];
+    
+    // Get current user for engineer name if not submitted yet
+    final authState = ref.read(authProvider);
+    final currentUserName = authState.user?['full_name'] ?? authState.user?['username'] ?? 'Engineer';
+    final engineerName = submittedByName ?? currentUserName;
+    
+    // Parse dates
+    DateTime? createdDate;
+    DateTime? submittedDate;
+    DateTime? updatedDate;
+    
+    try {
+      if (createdAt != null) {
+        createdDate = createdAt is DateTime ? createdAt : DateTime.parse(createdAt.toString());
+      }
+      if (submittedAt != null) {
+        submittedDate = submittedAt is DateTime ? submittedAt : DateTime.parse(submittedAt.toString());
+      }
+      if (updatedAt != null) {
+        updatedDate = updatedAt is DateTime ? updatedAt : DateTime.parse(updatedAt.toString());
+      }
+    } catch (e) {
+      // Date parsing failed, use null
+    }
+
+    // Define timeline stages
+    final stages = [
+      {'title': 'Checklist', 'date': createdDate},
+      {'title': engineerName, 'date': createdDate},
+      {'title': 'Submitted for Approval', 'date': submittedDate},
+      {'title': 'Project Lead', 'date': submittedDate},
+      {'title': status == 'rejected' ? 'Rejected' : 'Approved', 'date': updatedDate},
+    ];
+
+    // Determine progress based on status
+    int completedStages = 0;
+    bool isRejected = false;
+    
+    if (status == 'draft') {
+      completedStages = 2; // "Checklist" and "Engineer" stages (both active when created)
+    } else if (status == 'submitted_for_approval') {
+      completedStages = 3; // Up to "Submitted for Approval"
+    } else if (status == 'approved') {
+      completedStages = 5; // All stages completed
+    } else if (status == 'rejected') {
+      completedStages = 5; // All stages (but red color)
+      isRejected = true;
+    }
+
+    // ASI theme colors
+    final activeColor = isRejected ? Colors.red.shade700 : Colors.green.shade700;
+    final inactiveColor = Colors.grey.shade300;
+    final activeTextColor = isRejected ? Colors.red.shade900 : Colors.green.shade900;
+    final inactiveTextColor = Colors.grey.shade600;
+
+    return Column(
+      children: [
+        // Block name and Checklist name in a Card
+        Card(
+          elevation: 2,
+          margin: const EdgeInsets.all(16.0),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              children: [
+                if (_checklist!['block_name'] != null) ...[
+                  Text(
+                    'Block: ${_checklist!['block_name']}',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey.shade700,
+                    ),
+                  ),
+                  const SizedBox(width: 20),
+                ],
+                Text(
+                  'Checklist: ${_checklist!['name'] ?? 'Unnamed Checklist'}',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        // Progress Timeline in a Card
+        Card(
+          elevation: 2,
+          margin: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 0),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 55.0, vertical: 30.0),
+            child: Row(
+              children: List.generate(stages.length, (index) {
+                final stage = stages[index];
+                final isActive = index < completedStages;
+                final stageColor = isActive ? activeColor : inactiveColor;
+                final textColor = isActive ? activeTextColor : inactiveTextColor;
+                
+                // Format date with time
+                String dateText = '';
+                if (stage['date'] != null && stage['date'] is DateTime) {
+                  final date = stage['date'] as DateTime;
+                  dateText = DateFormat('MMM dd, HH:mm').format(date);
+                }
+
+                return Expanded(
+                  flex: index == stages.length - 1 ? 0 : 1,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Date + Time above timeline - aligned to circle center
+                      SizedBox(
+                        height: 24,
+                        width: 30,
+                        child: dateText.isNotEmpty
+                            ? OverflowBox(
+                                maxWidth: 120,
+                                child: Text(
+                                  index < completedStages ? dateText : '',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+                                    color: isActive ? textColor : inactiveTextColor,
+                                  ),
+                                ),
+                              )
+                            : const SizedBox(),
+                      ),
+                      const SizedBox(height: 8),
+                      // Stage circle and connecting line
+                      Row(
+                        children: [
+                          // Circle indicator - 30px
+                          Container(
+                            width: 30,
+                            height: 30,
+                            decoration: BoxDecoration(
+                              color: isActive ? stageColor : Colors.white,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: stageColor,
+                                width: isActive ? 0 : 2,
+                              ),
+                              boxShadow: isActive
+                                  ? [
+                                      BoxShadow(
+                                        color: stageColor.withOpacity(0.3),
+                                        blurRadius: 6,
+                                        spreadRadius: 1,
+                                      ),
+                                    ]
+                                  : [],
+                            ),
+                            child: Center(
+                              child: isActive
+                                  ? Icon(
+                                      index == 0
+                                          ? Icons.rocket_launch
+                                          : index == stages.length - 1 && isRejected
+                                              ? Icons.close
+                                              : Icons.check,
+                                      color: Colors.white,
+                                      size: 16,
+                                    )
+                                  : Icon(
+                                      Icons.circle_outlined,
+                                      color: inactiveColor,
+                                      size: 16,
+                                    ),
+                            ),
+                          ),
+                          // Connecting line (except last stage)
+                          if (index < stages.length - 1)
+                            Expanded(
+                              child: Container(
+                                height: 10,
+                                decoration: BoxDecoration(
+                                  color: index < completedStages - 1 ? activeColor : inactiveColor,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      // Stage name below timeline - aligned to circle center
+                      SizedBox(
+                        height: 60,
+                        width: 30,
+                        child: OverflowBox(
+                          maxWidth: 200,
+                          maxHeight: 60,
+                          child: Text(
+                            stage['title'].toString(),
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: isActive ? FontWeight.bold : FontWeight.w500,
+                              color: textColor,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ),
+          ),
+        ),
+        const SizedBox(height: 32),
+      ],
+    );
+  }
+
+  Future<void> _showApproveRejectDialog(int checkItemId, String checkItemName, {bool? initialAction}) async {
+    final TextEditingController commentsController = TextEditingController();
+    final bool isApprove = initialAction ?? true; // Default to approve if not specified
+    
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(isApprove ? 'Approve Check Item' : 'Reject Check Item'),
+          content: SizedBox(
+            width: 400,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  checkItemName,
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                SizedBox(height: 16),
+                TextField(
+                  controller: commentsController,
+                  maxLines: 3,
+                  decoration: InputDecoration(
+                    labelText: 'Comments (optional)',
+                    hintText: isApprove ? 'Enter approval comments' : 'Enter rejection reason',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Cancel'),
+            ),
+            if (!isApprove)
+              ElevatedButton(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  await _approveCheckItem(checkItemId, false, comments: commentsController.text.isNotEmpty ? commentsController.text : null);
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                child: Text('Reject'),
+              ),
+            if (isApprove)
+              ElevatedButton(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  await _approveCheckItem(checkItemId, true, comments: commentsController.text.isNotEmpty ? commentsController.text : null);
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                child: Text('Approve'),
+              ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -492,10 +987,8 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                 _submitChecklist();
               } else if (value == 'assign') {
                 _loadApprovers().then((_) => _showAssignApproverDialog());
-              } else if (value == 'approve') {
-                _approveChecklist(true);
-              } else if (value == 'reject') {
-                _approveChecklist(false);
+              } else if (value == 'approve_all') {
+                _selectAllCheckItems();
               } else if (value == 'refresh') {
                 _loadChecklist();
               }
@@ -531,28 +1024,18 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                 );
               }
               if (_isApprover() && checklistStatus == 'submitted_for_approval') {
-                items.addAll([
+                items.add(
                   const PopupMenuItem(
-                    value: 'approve',
+                    value: 'approve_all',
                     child: Row(
                       children: [
-                        Icon(Icons.check_circle, size: 18),
+                        Icon(Icons.select_all, size: 18),
                         SizedBox(width: 8),
-                        Text('Approve'),
+                        Text('Select All Items'),
                       ],
                     ),
                   ),
-                  const PopupMenuItem(
-                    value: 'reject',
-                    child: Row(
-                      children: [
-                        Icon(Icons.cancel, size: 18),
-                        SizedBox(width: 8),
-                        Text('Reject'),
-                      ],
-                    ),
-                  ),
-                ]);
+                );
               }
               items.add(
                 const PopupMenuItem(
@@ -573,94 +1056,8 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
       ),
       body: Column(
         children: [
-          // Checklist header
-          Container(
-            padding: const EdgeInsets.all(16.0),
-            color: Colors.grey.shade100,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        _checklist!['name'] ?? 'Unnamed Checklist',
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                    QmsStatusBadge(status: checklistStatus),
-                  ],
-                ),
-                if (_checklist!['stage'] != null) ...[
-                  const SizedBox(height: 8),
-                  Text('Stage: ${_checklist!['stage']}'),
-                ],
-                if (_checklist!['milestone_name'] != null) ...[
-                  const SizedBox(height: 4),
-                  Text('Milestone: ${_checklist!['milestone_name']}'),
-                ],
-                // Show submission info
-                if (_checklist!['submitted_by'] != null) ...[
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Icon(Icons.person, size: 16, color: Colors.grey.shade600),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Submitted by: ${_checklist!['submitted_by_name'] ?? 'User ID ${_checklist!['submitted_by']}'}',
-                        style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ],
-                if (_checklist!['submitted_at'] != null) ...[
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      Icon(Icons.access_time, size: 16, color: Colors.grey.shade600),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Submitted at: ${_formatDate(_checklist!['submitted_at'])}',
-                        style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ],
-                // Show current approver
-                if (checklistStatus == 'submitted_for_approval') ...[
-                  const SizedBox(height: 8),
-                  Builder(
-                    builder: (context) {
-                      final checkItems = _checklist!['check_items'] as List? ?? [];
-                      String approverName = 'Not assigned';
-                      if (checkItems.isNotEmpty) {
-                        final firstItem = checkItems[0];
-                        final approval = firstItem['approval'];
-                        if (approval != null) {
-                          approverName = approval['assigned_approver_name'] ?? 
-                                        approval['default_approver_name'] ?? 
-                                        'Not assigned';
-                        }
-                      }
-                      return Row(
-                        children: [
-                          Icon(Icons.verified_user, size: 16, color: Colors.grey.shade600),
-                          const SizedBox(width: 4),
-                          Text(
-                            'Approver: $approverName',
-                            style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                ],
-              ],
-            ),
-          ),
+          // Progress Timeline
+          _buildProgressTimeline(),
 
           // Check items table
           Expanded(
@@ -671,8 +1068,12 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                       style: TextStyle(color: Colors.grey),
                     ),
                   )
-                : Column(
-                    children: [
+                : Card(
+                    elevation: 2,
+                    margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    clipBehavior: Clip.antiAlias,
+                    child: Column(
+                      children: [
                       // Clear filters button - appears above table when filters are active
                       if (_hasActiveFilters())
                         Container(
@@ -707,15 +1108,10 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
 
                       Expanded(
                         child: Container(
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.grey.shade200),
-                          ),
                           child: LayoutBuilder(
                             builder: (context, outerConstraints) {
                               // Define explicit column widths to ensure perfect alignment
-                              const double colSNo = 60;
+                              const double colCheckbox = 50;
                               const double colCheckId = 120;
                               const double colCategory = 150;
                               const double colSubCategory = 150;
@@ -734,10 +1130,10 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                               const double colSignoff = 120;
                               const double colAuto = 80;
 
-                              const double totalWidth = colSNo + colCheckId + colCategory + colSubCategory + colDescription + colSeverity + colBronze + colSilver + colGold + colInfo + colEvidence + colReportPath + colResult + colStatus + colComments + colReviewerComments + colSignoff + colAuto;
+                              const double totalWidth = colCheckbox + colCheckId + colCategory + colSubCategory + colDescription + colSeverity + colBronze + colSilver + colGold + colInfo + colEvidence + colReportPath + colResult + colStatus + colComments + colReviewerComments + colSignoff + colAuto;
 
                               final columnWidths = {
-                                0: const FixedColumnWidth(colSNo),
+                                0: const FixedColumnWidth(colCheckbox),
                                 1: const FixedColumnWidth(colCheckId),
                                 2: const FixedColumnWidth(colCategory),
                                 3: const FixedColumnWidth(colSubCategory),
@@ -787,7 +1183,51 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                                             children: [
                                               TableRow(
                                                 children: [
-                                                  buildHeaderCell(const Text('S.No', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13))),
+                                                  buildHeaderCell(
+                                                    Row(
+                                                      mainAxisAlignment: MainAxisAlignment.center,
+                                                      children: [
+                                                        Checkbox(
+                                                          value: paginatedItems.isNotEmpty && 
+                                                                 paginatedItems.where((item) {
+                                                            final approval = item['approval'];
+                                                            final status = approval?['status'] ?? 'pending';
+                                                            return status == 'pending' || status == 'submitted';
+                                                          }).isNotEmpty &&
+                                                                 paginatedItems.where((item) {
+                                                            final approval = item['approval'];
+                                                            final status = approval?['status'] ?? 'pending';
+                                                            final itemId = item['id'] as int;
+                                                            return (status == 'pending' || status == 'submitted') && 
+                                                                   _selectedCheckItemIds.contains(itemId);
+                                                          }).length == paginatedItems.where((item) {
+                                                            final approval = item['approval'];
+                                                            final status = approval?['status'] ?? 'pending';
+                                                            return status == 'pending' || status == 'submitted';
+                                                          }).length,
+                                                          onChanged: (bool? value) {
+                                                            setState(() {
+                                                              // Select/deselect all selectable items on current page
+                                                              for (var item in paginatedItems) {
+                                                                final itemId = item['id'] as int;
+                                                                final approval = item['approval'];
+                                                                final status = approval?['status'] ?? 'pending';
+                                                                if (status == 'pending' || status == 'submitted') {
+                                                                  if (value == true) {
+                                                                    _selectedCheckItemIds.add(itemId);
+                                                                  } else {
+                                                                    _selectedCheckItemIds.remove(itemId);
+                                                                  }
+                                                                }
+                                                              }
+                                                            });
+                                                          },
+                                                          activeColor: Colors.white,
+                                                          checkColor: Colors.grey.shade900,
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
                                                   buildHeaderCell(_buildHeaderFilter(title: 'Check ID', value: _selectedCheckId, options: checkIdOptions, onChanged: (v) => setState(() { _selectedCheckId = v; _currentPage = 0; }))),
                                                   buildHeaderCell(_buildHeaderFilter(title: 'Category', value: _selectedCategory, options: categoryOptions, onChanged: (v) => setState(() { _selectedCategory = v; _currentPage = 0; }))),
                                                   buildHeaderCell(_buildHeaderFilter(title: 'Sub-Category', value: _selectedSubCategory, options: subCategoryOptions, onChanged: (v) => setState(() { _selectedSubCategory = v; _currentPage = 0; }))),
@@ -840,35 +1280,79 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
 
                                                   Widget buildBodyCell(Widget child, {Alignment alignment = Alignment.centerLeft, VoidCallback? onTap}) {
                                                     return TableCell(
-                                                      child: InkWell(
-                                                        onTap: onTap ?? () {
-                                                          Navigator.push(
-                                                            context,
-                                                            MaterialPageRoute(
-                                                              builder: (context) => QmsCheckItemDetailScreen(
-                                                                checkItemId: item['id'],
-                                                              ),
-                                                            ),
-                                                          ).then((_) => _loadChecklist());
-                                                        },
-                                                        child: Container(
-                                                          height: 80,
-                                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                                          alignment: alignment,
-                                                          decoration: BoxDecoration(
-                                                            border: Border(
-                                                              bottom: BorderSide(color: Colors.grey.shade100),
-                                                            ),
+                                                      child: Container(
+                                                        height: 80,
+                                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                                        alignment: alignment,
+                                                        decoration: BoxDecoration(
+                                                          border: Border(
+                                                            bottom: BorderSide(color: Colors.grey.shade100),
                                                           ),
-                                                          child: child,
                                                         ),
+                                                        child: child,
                                                       ),
                                                     );
                                                   }
 
+                                                  final approvalStatus = approval?['status'] ?? 'pending';
+                                                  final canSelect = checklistStatus == 'submitted_for_approval' && 
+                                                                   (approvalStatus == 'pending' || approvalStatus == 'submitted');
+                                                  final isSelected = _selectedCheckItemIds.contains(item['id'] as int);
+                                                  
+                                                  // Build checkbox/status indicator cell
+                                                  Widget statusIndicator;
+                                                  if (approvalStatus == 'approved') {
+                                                    // Show checkbox filled with green checkmark for approved
+                                                    statusIndicator = Checkbox(
+                                                      value: true,
+                                                      onChanged: null, // Disabled
+                                                      activeColor: Colors.green,
+                                                      checkColor: Colors.white,
+                                                      fillColor: MaterialStateProperty.all(Colors.green),
+                                                    );
+                                                  } else if (approvalStatus == 'not_approved') {
+                                                    // Show checkbox filled with red X for rejected - use custom styled checkbox
+                                                    statusIndicator = Container(
+                                                      width: 24,
+                                                      height: 24,
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.red.shade700,
+                                                        border: Border.all(color: Colors.red.shade900, width: 1.5),
+                                                        borderRadius: BorderRadius.circular(4),
+                                                      ),
+                                                      child: Center(
+                                                        child: Icon(
+                                                          Icons.close,
+                                                          color: Colors.white,
+                                                          size: 16,
+                                                        ),
+                                                      ),
+                                                    );
+                                                  } else {
+                                                    // Show checkbox for pending/submitted items
+                                                    // Use blue for selected (not green, as green means approved)
+                                                    statusIndicator = Checkbox(
+                                                      value: isSelected,
+                                                      onChanged: canSelect ? (bool? value) {
+                                                        setState(() {
+                                                          final itemId = item['id'] as int;
+                                                          if (value == true) {
+                                                            _selectedCheckItemIds.add(itemId);
+                                                          } else {
+                                                            _selectedCheckItemIds.remove(itemId);
+                                                          }
+                                                        });
+                                                      } : null,
+                                                      activeColor: Colors.blue, // Blue for selected, green is reserved for approved
+                                                    );
+                                                  }
+                                                  
                                                   return TableRow(
                                                     children: [
-                                                      buildBodyCell(Text('$rowIndex', style: baseTextStyle.copyWith(color: Colors.grey.shade600))),
+                                                      buildBodyCell(
+                                                        statusIndicator,
+                                                        alignment: Alignment.center,
+                                                      ),
                                                       buildBodyCell(
                                                         Text(
                                                           item['name']?.toString() ?? item['id']?.toString() ?? 'N/A',
@@ -1065,7 +1549,54 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                             ],
                           ),
                         ),
-                    ],
+                      // Approve/Reject Selected Items buttons (only show when items are selected)
+                      if (_selectedCheckItemIds.isNotEmpty && checklistStatus == 'submitted_for_approval')
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            border: Border(
+                              top: BorderSide(color: Colors.grey.shade200),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                '${_selectedCheckItemIds.length} item(s) selected',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey.shade800,
+                                ),
+                              ),
+                              const SizedBox(width: 24),
+                              ElevatedButton.icon(
+                                onPressed: _isApproving ? null : _approveSelectedCheckItems,
+                                icon: const Icon(Icons.check_circle, size: 20),
+                                label: const Text('Approve Selected Items'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              ElevatedButton.icon(
+                                onPressed: _isApproving ? null : _rejectSelectedCheckItems,
+                                icon: const Icon(Icons.cancel, size: 20),
+                                label: const Text('Reject Selected Items'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.red,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
           ),
 
@@ -1227,6 +1758,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
       ],
     );
   }
+
 
   // Reusable header filter for DataTable columns
   Widget _buildHeaderFilter({

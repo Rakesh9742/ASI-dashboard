@@ -236,3 +236,15 @@ Before deploying to production:
 **Key Tables**: checklists, check_items, c_report_data, check_item_approvals, qms_audit_log
 **Dependencies**: blocks, milestones, users, projects tables must exist first
 
+ curl.exe -X POST "http://13.204.252.101:3000/api/qms/external/checklists/2/items/upload-report" -H "X-API-Key: sitedafilesdata" -F "check_id=SYN-TL-001" -F "report_path=/proj1/pd/users/testcase/Bharath/proj/flow28nm_dashbrd/aes_cipher_top/bronze_v1/run2/dashboard/Synthesis_QMS.csv" -F "file=@C:\Users\ganga\OneDrive\Desktop\ASI-Dashboard\ASI-dashboard\Synthesis_QMS_test.csv"
+
+
+{"success":true,"message":"Report uploaded and processed successfully","data":{"check_item_id":52,"check_id":"SYN-TL-001","report_path":"/app/uploads/qms-reports/qms_report_1767867836725.csv","rows_count":6,"processed_at":"2026-01-08T10:23:56.781Z"}}
+
+docker exec -i asi_postgres psql -U postgres -d ASI < 012_create_qms_schema.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 013_add_check_item_details.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 014_add_version_to_check_items.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 015_ensure_qms_columns_exist.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 016_add_checklist_submission_tracking.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 017_fix_qms_audit_log_foreign_keys.sql
+docker exec -i asi_postgres psql -U postgres -d ASI < 018_update_checklists_comments.sql

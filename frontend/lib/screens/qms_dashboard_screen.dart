@@ -651,26 +651,28 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                         const double colSNo = 60;
                         const double colName = 250;
                         const double colStatus = 200;
-                        const double colStage = 120;
                         const double colMilestone = 150;
                         const double colCount = 150;
                         const double colApproverName = 180;
                         const double colApproverRole = 140;
+                        const double colEngineerComments = 200;
+                        const double colReviewerComments = 200;
                         const double colDate = 200;
                         const double colActions = 80;
-                        const double totalWidth = colSNo + colName + colStatus + colStage + colMilestone + colCount + colApproverName + colApproverRole + colDate + colActions;
+                        const double totalWidth = colSNo + colName + colStatus + colMilestone + colCount + colApproverName + colApproverRole + colEngineerComments + colReviewerComments + colDate + colActions;
 
                         final columnWidths = {
                           0: const FixedColumnWidth(colSNo),
                           1: const FixedColumnWidth(colName),
                           2: const FixedColumnWidth(colStatus),
-                          3: const FixedColumnWidth(colStage),
-                          4: const FixedColumnWidth(colMilestone),
-                          5: const FixedColumnWidth(colCount),
-                          6: const FixedColumnWidth(colApproverName),
-                          7: const FixedColumnWidth(colApproverRole),
-                          8: const FixedColumnWidth(colDate),
-                          9: const FixedColumnWidth(colActions),
+                          3: const FixedColumnWidth(colMilestone),
+                          4: const FixedColumnWidth(colCount),
+                          5: const FixedColumnWidth(colApproverName),
+                          6: const FixedColumnWidth(colApproverRole),
+                          7: const FixedColumnWidth(colEngineerComments),
+                          8: const FixedColumnWidth(colReviewerComments),
+                          9: const FixedColumnWidth(colDate),
+                          10: const FixedColumnWidth(colActions),
                         };
 
                         Widget buildHeaderCell(String label) {
@@ -712,11 +714,12 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                                             buildHeaderCell('S.No'),
                                             buildHeaderCell('Name'),
                                             buildHeaderCell('Status'),
-                                            buildHeaderCell('Stage'),
                                             buildHeaderCell('Milestone'),
                                             buildHeaderCell('CheckItems Count'),
                                             buildHeaderCell('Approver Name'),
                                             buildHeaderCell('Approver Role'),
+                                            buildHeaderCell('Engineer Comments'),
+                                            buildHeaderCell('Reviewer Comments'),
                                             buildHeaderCell('Submitted Date'),
                                             buildHeaderCell('Actions'),
                                           ],
@@ -790,7 +793,6 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                                                   ),
                                                 ),
                                                 buildBodyCell(QmsStatusBadge(status: checklist['status'] ?? 'draft')),
-                                                buildBodyCell(Text(checklist['stage'] ?? 'N/A', style: baseTextStyle, overflow: TextOverflow.ellipsis)),
                                                 buildBodyCell(Text(checklist['milestone_name'] ?? 'N/A', style: baseTextStyle, overflow: TextOverflow.ellipsis)),
                                                 buildBodyCell(Text('$totalItems', style: baseTextStyle)),
                                                 buildBodyCell(
@@ -804,6 +806,28 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                                                   ),
                                                 ),
                                                 buildBodyCell(_buildRoleChip(approverRole)),
+                                                buildBodyCell(
+                                                  Text(
+                                                    checklist['engineer_comments'] ?? 'N/A',
+                                                    style: baseTextStyle.copyWith(
+                                                      color: checklist['engineer_comments'] != null ? Colors.black87 : Colors.grey.shade400,
+                                                      fontStyle: checklist['engineer_comments'] != null ? FontStyle.normal : FontStyle.italic,
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                    maxLines: 2,
+                                                  ),
+                                                ),
+                                                buildBodyCell(
+                                                  Text(
+                                                    checklist['reviewer_comments'] ?? 'N/A',
+                                                    style: baseTextStyle.copyWith(
+                                                      color: checklist['reviewer_comments'] != null ? Colors.black87 : Colors.grey.shade400,
+                                                      fontStyle: checklist['reviewer_comments'] != null ? FontStyle.normal : FontStyle.italic,
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                    maxLines: 2,
+                                                  ),
+                                                ),
                                                 buildBodyCell(
                                                   Text(
                                                     submittedAt != null ? _formatDate(submittedAt) : 'N/A',
@@ -984,6 +1008,12 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
         fg = Colors.purple.shade700;
         border = Colors.purple.shade200;
         label = 'Lead';
+        break;
+      case 'project_manager':
+        bg = Colors.orange.shade50;
+        fg = Colors.orange.shade700;
+        border = Colors.orange.shade200;
+        label = 'Project Manager';
         break;
       case 'engineer':
         bg = Colors.blue.shade50;
@@ -1422,14 +1452,51 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
       return;
     }
 
+    // Rejection should be done per item, not bulk
+    if (!approved) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Bulk rejection is not allowed. Please reject individual check items from the checklist detail page.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 5),
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _isApproving = true;
     });
 
     try {
-      await _qmsService.approveChecklist(
-        checklistId,
-        approved,
+      // Get checklist with items to find all pending items
+      final checklist = await _qmsService.getChecklistWithItems(checklistId, token: token);
+      if (checklist == null || checklist['check_items'] == null) {
+        throw Exception('Checklist not found or has no items');
+      }
+
+      // Find all pending/submitted check item IDs
+      final checkItems = checklist['check_items'] as List;
+      final pendingItemIds = <int>[];
+      
+      for (var item in checkItems) {
+        final approval = item['approval'];
+        if (approval != null) {
+          final status = approval['status'] ?? 'pending';
+          if (status == 'pending' || status == 'submitted') {
+            pendingItemIds.add(item['id'] as int);
+          }
+        }
+      }
+
+      if (pendingItemIds.isEmpty) {
+        throw Exception('No pending check items found to approve');
+      }
+
+      // Batch approve all pending items
+      await _qmsService.batchApproveRejectCheckItems(
+        pendingItemIds,
+        true, // approve
         comments: comments,
         token: token,
       );
@@ -1437,8 +1504,8 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Checklist ${approved ? 'approved' : 'rejected'} successfully'),
-            backgroundColor: approved ? Colors.green : Colors.orange,
+            content: Text('${pendingItemIds.length} check item(s) approved successfully. Checklist is now approved.'),
+            backgroundColor: Colors.green,
           ),
         );
         _refreshData();
@@ -1447,7 +1514,7 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error: $e'),
+            content: Text('Error approving all items: $e'),
             backgroundColor: Colors.red,
           ),
         );

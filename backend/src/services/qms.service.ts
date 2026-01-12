@@ -19,8 +19,9 @@ interface ChecklistData {
   block_id: number;
   milestone_id: number | null;
   name: string;
-  stage: string | null;
   status: string;
+  engineer_comments: string | null;
+  reviewer_comments: string | null;
   check_items?: CheckItemData[];
   created_at: Date;
   updated_at: Date;
@@ -468,11 +469,13 @@ class QmsService {
           SELECT 
             cl.*,
             ${milestoneSelect}
+            b.block_name,
             u_submitted.id as submitted_by_id,
             u_submitted.username as submitted_by_username,
             u_submitted.full_name as submitted_by_name
           FROM checklists cl
           ${milestoneJoin}
+          LEFT JOIN blocks b ON b.id = cl.block_id
           LEFT JOIN users u_submitted ON u_submitted.id = cl.submitted_by
           WHERE cl.id = $1
         `,
@@ -1091,6 +1094,14 @@ class QmsService {
       try {
         await client.query('BEGIN');
 
+        // Check if user is admin, project_manager, or lead (they can approve any item)
+        const userCheck = await client.query(
+          'SELECT role FROM users WHERE id = $1',
+          [userId]
+        );
+        const userRole = userCheck.rows[0]?.role;
+        const isAdminOrPMOrLead = userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
+
         // Check approval record
         const approvalResult = await client.query(
           'SELECT id, assigned_approver_id, default_approver_id FROM check_item_approvals WHERE check_item_id = $1',
@@ -1104,24 +1115,26 @@ class QmsService {
         const approval = approvalResult.rows[0];
         const approverId = approval.assigned_approver_id || approval.default_approver_id;
 
-        // Verify user is the assigned approver
-        if (approverId !== userId) {
+        // Verify user is the assigned approver (unless admin, project_manager, or lead)
+        // Also allow if no approver is assigned (null approverId)
+        if (!isAdminOrPMOrLead && approverId != null && approverId !== userId) {
           throw new Error('You are not the assigned approver for this check item.');
         }
 
         // Update approval status
         const newStatus = approved ? 'approved' : 'not_approved';
+        // Use separate query parameter for the CASE comparison to avoid type inference issues
         await client.query(
           `
             UPDATE check_item_approvals 
             SET 
               status = $1,
               comments = $2,
-              approved_at = CASE WHEN $1 = 'approved' THEN CURRENT_TIMESTAMP ELSE NULL END,
+              approved_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE NULL END,
               updated_at = CURRENT_TIMESTAMP
             WHERE check_item_id = $3
           `,
-          [newStatus, comments, checkItemId]
+          [newStatus, comments || null, checkItemId, approved]
         );
 
         // Update report data status
@@ -1159,49 +1172,54 @@ class QmsService {
         );
 
         // Check if all items in checklist are now approved/rejected
+        // Get all approval statuses for items in this checklist (only items with approval records)
         const allItemsResult = await client.query(
           `
             SELECT cia.status
             FROM check_items ci
-            JOIN check_item_approvals cia ON cia.check_item_id = ci.id
+            INNER JOIN check_item_approvals cia ON cia.check_item_id = ci.id
             WHERE ci.checklist_id = $1
           `,
           [checklistId]
         );
+        
+        // Get total count of check items that have approval records (submitted items)
+        const totalItems = allItemsResult.rows.length;
 
-        if (allItemsResult.rows.length > 0) {
-          const allApproved = allItemsResult.rows.every((row: any) => row.status === 'approved');
-          const anyRejected = allItemsResult.rows.some((row: any) => row.status === 'not_approved');
+        // Get checklist status
+        const checklistStatusResult = await client.query(
+          'SELECT status FROM checklists WHERE id = $1',
+          [checklistId]
+        );
+        const currentStatus = checklistStatusResult.rows[0]?.status;
 
-          // Get checklist status
-          const checklistStatusResult = await client.query(
-            'SELECT status FROM checklists WHERE id = $1',
-            [checklistId]
-          );
-          const currentStatus = checklistStatusResult.rows[0]?.status;
+        // Only update checklist status if it's in submitted_for_approval state
+        if (currentStatus === 'submitted_for_approval' && allItemsResult.rows.length > 0) {
+          // Count approved, rejected, and pending items
+          let approvedCount = 0;
+          let rejectedCount = 0;
+          let pendingCount = 0;
 
-          // Only update checklist status if it's in submitted_for_approval state
-          if (currentStatus === 'submitted_for_approval') {
-            if (allApproved) {
-              // All items approved - checklist is submitted
+          allItemsResult.rows.forEach((row: any) => {
+            const status = row.status;
+            if (status === 'approved') {
+              approvedCount++;
+            } else if (status === 'not_approved') {
+              rejectedCount++;
+            } else {
+              pendingCount++; // pending, null, or other statuses
+            }
+          });
+
+          // Check if all items have been reviewed (no pending items)
+          const allReviewed = pendingCount === 0 && (approvedCount + rejectedCount) === totalItems;
+
+          if (allReviewed) {
+            if (rejectedCount > 0) {
+              // Any item rejected - checklist is rejected
               await client.query(
                 'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-                ['submitted', checklistId]
-              );
-              await this.logAuditAction(
-                client,
-                null,
-                checklistId,
-                blockId,
-                userId,
-                'checklist_approved',
-                {}
-              );
-            } else if (anyRejected) {
-              // Any item rejected - checklist goes back to draft
-              await client.query(
-                'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-                ['draft', checklistId]
+                ['rejected', checklistId]
               );
               await this.logAuditAction(
                 client,
@@ -1210,7 +1228,22 @@ class QmsService {
                 blockId,
                 userId,
                 'checklist_rejected',
-                {}
+                { reason: 'One or more check items were rejected' }
+              );
+            } else if (approvedCount === totalItems) {
+              // All items approved - checklist is approved
+              await client.query(
+                'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+                ['approved', checklistId]
+              );
+              await this.logAuditAction(
+                client,
+                null,
+                checklistId,
+                blockId,
+                userId,
+                'checklist_approved',
+                { reason: 'All check items were approved' }
               );
             }
           }
@@ -1225,6 +1258,330 @@ class QmsService {
       }
     } catch (error: any) {
       console.error('Error approving check item:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Approve all check items in a checklist at once
+   * Only available when checklist is in 'submitted_for_approval' status
+   */
+  async approveAllCheckItems(
+    checklistId: number,
+    userId: number,
+    comments?: string | null
+  ): Promise<void> {
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Check if user is admin, project_manager, or lead
+        const userCheck = await client.query(
+          'SELECT role FROM users WHERE id = $1',
+          [userId]
+        );
+        const userRole = userCheck.rows[0]?.role;
+        const isAdminOrPMOrLead = userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
+
+        if (!isAdminOrPMOrLead) {
+          throw new Error('Only admin, project manager, or lead can approve all items.');
+        }
+
+        // Verify checklist exists and is in submitted_for_approval status
+        const checklistResult = await client.query(
+          'SELECT id, status, block_id FROM checklists WHERE id = $1',
+          [checklistId]
+        );
+
+        if (checklistResult.rows.length === 0) {
+          throw new Error('Checklist not found');
+        }
+
+        const checklist = checklistResult.rows[0];
+        if (checklist.status !== 'submitted_for_approval') {
+          throw new Error('Checklist must be in submitted_for_approval status to approve all items.');
+        }
+
+        const blockId = checklist.block_id;
+
+        // Get all check items with approval records (pending or submitted items)
+        const checkItemsResult = await client.query(
+          `
+            SELECT ci.id, cia.id as approval_id, cia.assigned_approver_id, cia.default_approver_id
+            FROM check_items ci
+            INNER JOIN check_item_approvals cia ON cia.check_item_id = ci.id
+            WHERE ci.checklist_id = $1
+              AND cia.status IN ('pending', 'submitted')
+          `,
+          [checklistId]
+        );
+
+        if (checkItemsResult.rows.length === 0) {
+          throw new Error('No pending check items found to approve.');
+        }
+
+        const checkItemIds = checkItemsResult.rows.map((row: any) => row.id);
+
+        // Approve all check items
+        for (const checkItemId of checkItemIds) {
+          // Update approval status
+          // Only update comments if provided (not null/undefined), otherwise keep existing
+          await client.query(
+            `
+              UPDATE check_item_approvals 
+              SET 
+                status = 'approved',
+                comments = COALESCE($1, comments),
+                approved_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE check_item_id = $2
+            `,
+            [comments || null, checkItemId]
+          );
+
+          // Update report data status
+          await client.query(
+            `
+              UPDATE c_report_data 
+              SET status = 'approved', updated_at = CURRENT_TIMESTAMP
+              WHERE check_item_id = $1
+            `,
+            [checkItemId]
+          );
+
+          // Log audit action for each item
+          await this.logAuditAction(
+            client,
+            checkItemId,
+            checklistId,
+            blockId,
+            userId,
+            'approved',
+            { comments, bulk_approved: true }
+          );
+        }
+
+        // Update checklist status to approved
+        await client.query(
+          'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          ['approved', checklistId]
+        );
+
+        // Log audit action for checklist
+        await this.logAuditAction(
+          client,
+          null,
+          checklistId,
+          blockId,
+          userId,
+          'checklist_approved',
+          { reason: 'All check items were bulk approved', comments, item_count: checkItemIds.length }
+        );
+
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error: any) {
+      console.error('Error approving all check items:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Batch approve or reject multiple check items
+   */
+  async batchApproveRejectCheckItems(
+    checkItemIds: number[],
+    approved: boolean,
+    userId: number,
+    comments?: string | null
+  ): Promise<void> {
+    if (checkItemIds.length === 0) {
+      throw new Error('No check items provided');
+    }
+
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Check if user is admin, project_manager, or lead
+        const userCheck = await client.query(
+          'SELECT role FROM users WHERE id = $1',
+          [userId]
+        );
+        const userRole = userCheck.rows[0]?.role;
+        const isAdminOrPMOrLead = userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
+
+        if (!isAdminOrPMOrLead) {
+          throw new Error('Only admin, project manager, or lead can approve/reject check items.');
+        }
+
+        const status = approved ? 'approved' : 'not_approved';
+        const reportStatus = approved ? 'approved' : 'not_approved';
+        let checklistId: number | null = null;
+        let blockId: number | null = null;
+
+        // Process each check item
+        for (const checkItemId of checkItemIds) {
+          // Get checklist and block info
+          const itemResult = await client.query(
+            `
+              SELECT ci.checklist_id, cl.block_id, cl.status as checklist_status
+              FROM check_items ci
+              JOIN checklists cl ON cl.id = ci.checklist_id
+              WHERE ci.id = $1
+            `,
+            [checkItemId]
+          );
+
+          if (itemResult.rows.length === 0) {
+            throw new Error(`Check item ${checkItemId} not found`);
+          }
+
+          const item = itemResult.rows[0];
+          if (!checklistId) {
+            checklistId = item.checklist_id;
+            blockId = item.block_id;
+          }
+
+          // Check if checklist is in submitted_for_approval status
+          if (item.checklist_status !== 'submitted_for_approval') {
+            throw new Error(`Check item ${checkItemId} belongs to a checklist that is not in submitted_for_approval status.`);
+          }
+
+          // Check approval record
+          const approvalResult = await client.query(
+            'SELECT id, status FROM check_item_approvals WHERE check_item_id = $1',
+            [checkItemId]
+          );
+
+          if (approvalResult.rows.length === 0) {
+            throw new Error(`Approval record not found for check item ${checkItemId}. Item must be submitted first.`);
+          }
+
+          const approvalRecord = approvalResult.rows[0];
+          const currentStatus = approvalRecord.status;
+
+          // Only allow approving/rejecting pending or submitted items
+          if (currentStatus !== 'pending' && currentStatus !== 'submitted') {
+            throw new Error(`Check item ${checkItemId} is already ${currentStatus}. Cannot change status.`);
+          }
+
+          // Update approval status
+          await client.query(
+            `
+              UPDATE check_item_approvals 
+              SET 
+                status = $1,
+                comments = $2,
+                approved_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE NULL END,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE check_item_id = $3
+            `,
+            [status, comments || null, checkItemId, approved]
+          );
+
+          // Update report data status
+          await client.query(
+            `
+              UPDATE c_report_data 
+              SET status = $1, updated_at = CURRENT_TIMESTAMP
+              WHERE check_item_id = $2
+            `,
+            [reportStatus, checkItemId]
+          );
+
+          // Log audit action for each item
+          await this.logAuditAction(
+            client,
+            checkItemId,
+            checklistId,
+            blockId,
+            userId,
+            approved ? 'approved' : 'rejected',
+            { comments, batch_action: true }
+          );
+        }
+
+        // Check if all items in checklist are now approved/rejected
+        const allItemsResult = await client.query(
+          `
+            SELECT cia.status
+            FROM check_items ci
+            INNER JOIN check_item_approvals cia ON cia.check_item_id = ci.id
+            WHERE ci.checklist_id = $1
+          `,
+          [checklistId]
+        );
+
+        const totalItems = allItemsResult.rows.length;
+        let approvedCount = 0;
+        let rejectedCount = 0;
+        let pendingCount = 0;
+
+        allItemsResult.rows.forEach((row: any) => {
+          const itemStatus = row.status;
+          if (itemStatus === 'approved') {
+            approvedCount++;
+          } else if (itemStatus === 'not_approved') {
+            rejectedCount++;
+          } else {
+            pendingCount++;
+          }
+        });
+
+        // Update checklist status if all items are reviewed
+        const allReviewed = pendingCount === 0 && (approvedCount + rejectedCount) === totalItems;
+
+        if (allReviewed) {
+          if (rejectedCount > 0) {
+            // Any item rejected - checklist is rejected
+            await client.query(
+              'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+              ['rejected', checklistId]
+            );
+            await this.logAuditAction(
+              client,
+              null,
+              checklistId,
+              blockId,
+              userId,
+              'checklist_rejected',
+              { reason: 'One or more check items were rejected', item_count: checkItemIds.length }
+            );
+          } else if (approvedCount === totalItems) {
+            // All items approved - checklist is approved
+            await client.query(
+              'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+              ['approved', checklistId]
+            );
+            await this.logAuditAction(
+              client,
+              null,
+              checklistId,
+              blockId,
+              userId,
+              'checklist_approved',
+              { reason: 'All check items were approved', item_count: checkItemIds.length }
+            );
+          }
+        }
+
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error: any) {
+      console.error('Error batch approving/rejecting check items:', error);
       throw error;
     }
   }
@@ -1473,6 +1830,7 @@ class QmsService {
         const projectLeadId = await this.getProjectLeadForBlock(blockId);
 
         // Update checklist status to 'submitted_for_approval' and track submission
+        // Store engineer_comments in checklists table
         await client.query(
           `
             UPDATE checklists 
@@ -1480,10 +1838,11 @@ class QmsService {
               status = 'submitted_for_approval',
               submitted_by = $1,
               submitted_at = CURRENT_TIMESTAMP,
+              engineer_comments = COALESCE($3, engineer_comments),
               updated_at = CURRENT_TIMESTAMP
             WHERE id = $2
           `,
-          [userId, checklistId]
+          [userId, checklistId, engineerComments ?? null]
         );
 
         // Get all check items in this checklist
@@ -1530,17 +1889,16 @@ class QmsService {
           }
 
           // Mark check item report data as submitted if it exists
-          // and save engineer comments if provided
+          // Note: engineer_comments are now stored in checklists table, not c_report_data
           await client.query(
             `
               UPDATE c_report_data 
               SET 
                 status = 'submitted',
-                engineer_comments = COALESCE($2, engineer_comments),
                 updated_at = CURRENT_TIMESTAMP
               WHERE check_item_id = $1
             `,
-            [checkItemId, engineerComments ?? null]
+            [checkItemId]
           );
         }
 
@@ -1628,7 +1986,7 @@ class QmsService {
       let query = `
         SELECT u.id, u.username, u.full_name, u.role, u.email
         FROM users u
-        WHERE u.role IN ('lead', 'engineer', 'admin')
+        WHERE u.role IN ('lead', 'engineer', 'admin', 'project_manager')
           AND u.is_active = true
       `;
       const params: any[] = [];
@@ -1698,6 +2056,7 @@ class QmsService {
         const checkItemIds = checkItemsResult.rows.map((row: any) => row.id);
 
         // Update all check item approvals
+        // Note: reviewer_comments are now stored in checklists table, not check_item_approvals
         const statusValue = approved ? 'approved' : 'not_approved';
         for (const checkItemId of checkItemIds) {
           if (isAdmin) {
@@ -1707,12 +2066,11 @@ class QmsService {
                 UPDATE check_item_approvals 
                 SET 
                   status = $1,
-                  comments = $2,
-                  approved_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE NULL END,
+                  approved_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE NULL END,
                   updated_at = CURRENT_TIMESTAMP
-                WHERE check_item_id = $3
+                WHERE check_item_id = $2
               `,
-              [statusValue, comments, checkItemId, approved]
+              [statusValue, checkItemId, approved]
             );
           } else {
             // Regular approver can only approve items they're assigned to
@@ -1721,13 +2079,12 @@ class QmsService {
                 UPDATE check_item_approvals 
                 SET 
                   status = $1,
-                  comments = $2,
-                  approved_at = CASE WHEN $5 THEN CURRENT_TIMESTAMP ELSE NULL END,
+                  approved_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE NULL END,
                   updated_at = CURRENT_TIMESTAMP
-                WHERE check_item_id = $3
-                  AND (assigned_approver_id = $4 OR default_approver_id = $4)
+                WHERE check_item_id = $2
+                  AND (assigned_approver_id = $3 OR default_approver_id = $3)
               `,
-              [statusValue, comments, checkItemId, userId, approved]
+              [statusValue, checkItemId, userId, approved]
             );
           }
 
@@ -1745,15 +2102,19 @@ class QmsService {
         }
 
         // Update checklist status
-        // If approved, set to 'submitted'; if rejected, set back to 'draft'
-        const newChecklistStatus = approved ? 'submitted' : 'draft';
+        // If approved, set to 'approved'; if rejected, set back to 'draft'
+        // Store reviewer_comments in checklists table
+        const newChecklistStatus = approved ? 'approved' : 'draft';
         await client.query(
           `
             UPDATE checklists 
-            SET status = $1, updated_at = CURRENT_TIMESTAMP
+            SET 
+              status = $1, 
+              reviewer_comments = COALESCE($3, reviewer_comments),
+              updated_at = CURRENT_TIMESTAMP
             WHERE id = $2
           `,
-          [newChecklistStatus, checklistId]
+          [newChecklistStatus, checklistId, comments]
         );
 
         // Get block_id for audit log
@@ -1834,8 +2195,7 @@ class QmsService {
     filePath: string,
     userId: number,
     checklistName: string | null,
-    milestoneId: number | null,
-    stage: string | null
+    milestoneId: number | null
   ): Promise<any> {
     try {
       // Read Excel file
@@ -2020,14 +2380,14 @@ class QmsService {
             checklistId = checklistResult.rows[0].id;
             // Update existing checklist
             await client.query(
-              'UPDATE checklists SET milestone_id = $1, stage = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
-              [milestoneId, stage, checklistId]
+              'UPDATE checklists SET milestone_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+              [milestoneId, checklistId]
             );
           } else {
             // Create new checklist
             const insertResult = await client.query(
-              'INSERT INTO checklists (block_id, milestone_id, name, stage, status) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-              [blockId, milestoneId, checklistName, stage, 'draft']
+              'INSERT INTO checklists (block_id, milestone_id, name, status) VALUES ($1, $2, $3, $4) RETURNING id',
+              [blockId, milestoneId, checklistName, 'draft']
             );
             checklistId = insertResult.rows[0].id;
             createdChecklists.push(checklistName);
@@ -2432,7 +2792,7 @@ class QmsService {
   ): Promise<void> {
     if (!userId) return; // Skip if no user ID provided
 
-    // Determine entity_type based on what IDs are provided
+    // Determine entity_type based on what IDs are provided and include in actionDetails
     let entityType = 'checklist';
     if (checkItemId) {
       entityType = 'check_item';
@@ -2440,25 +2800,26 @@ class QmsService {
       entityType = 'checklist';
     }
 
-    // Store block_id in actionDetails if provided (for reference)
-    const detailsWithBlock = blockId 
-      ? { ...actionDetails, block_id: blockId }
-      : actionDetails;
+    // Store block_id and entity_type in actionDetails
+    const detailsWithBlock = { 
+      ...actionDetails, 
+      entity_type: entityType,
+      ...(blockId ? { block_id: blockId } : {})
+    };
 
     await client.query(
       `
         INSERT INTO qms_audit_log 
-          (check_item_id, checklist_id, action, entity_type, user_id, new_value, description)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+          (check_item_id, checklist_id, block_id, user_id, action_type, action_details)
+        VALUES ($1, $2, $3, $4, $5, $6)
       `,
       [
         checkItemId, 
         checklistId, 
-        actionType,  // action column
-        entityType,  // entity_type column
+        blockId,
         userId, 
-        JSON.stringify(detailsWithBlock),  // new_value column
-        `Action: ${actionType}`  // description column
+        actionType,
+        JSON.stringify(detailsWithBlock)
       ]
     );
   }

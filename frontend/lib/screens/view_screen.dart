@@ -3,6 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import 'package:fl_chart/fl_chart.dart';
+import '../services/qms_service.dart';
+import 'qms_dashboard_screen.dart';
+import '../widgets/qms_status_badge.dart';
+import 'package:intl/intl.dart';
 
 class ViewScreen extends ConsumerStatefulWidget {
   const ViewScreen({super.key});
@@ -13,9 +17,14 @@ class ViewScreen extends ConsumerStatefulWidget {
 
 class _ViewScreenState extends ConsumerState<ViewScreen> {
   final ApiService _apiService = ApiService();
+  final QmsService _qmsService = QmsService();
   
   // Data structure: project -> block -> rtl_tag -> experiment -> stages
   Map<String, dynamic> _groupedData = {};
+  
+  // QMS Checklist data
+  Map<String, List<dynamic>> _blockChecklists = {};
+  Map<String, int> _blockNameToId = {};
   
   // Selection state
   String? _selectedProject;
@@ -212,8 +221,58 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         };
       }
 
+      // Fetch QMS blocks mapping
+      Map<String, int> blockNameToId = {};
+      Map<String, List<dynamic>> blockChecklistsList = {};
+      
+      try {
+        final qmsFilters = await _qmsService.getFilterOptions(token: token);
+        
+        // Map project names to IDs from QMS
+        Map<String, int> qmsProjectNameToId = {};
+        final List<dynamic> qmsProjects = qmsFilters['projects'] ?? [];
+        for (var p in qmsProjects) {
+          qmsProjectNameToId[p['name'].toString().toLowerCase()] = p['id'] as int;
+        }
+
+        // Get the QMS ID for the currently selected EDA project
+        final currentQmsProjectId = qmsProjectNameToId[_selectedProject?.toLowerCase()];
+
+        final List<dynamic> qmsBlocks = qmsFilters['blocks'] ?? [];
+        for (var b in qmsBlocks) {
+          final bName = (b['block_name'] ?? b['name'])?.toString().toLowerCase();
+          final bProjectId = b['project_id'] as int?;
+          
+          if (bName != null) {
+            // Only map blocks that belong to the current project (if project mapping exists)
+            // or map all if we can't determine the project reliably
+            if (currentQmsProjectId == null || bProjectId == currentQmsProjectId) {
+              blockNameToId[bName] = b['id'] as int;
+            }
+          }
+        }
+
+        // Fetch checklists for blocks in the current project
+        if (grouped.containsKey(_selectedProject)) {
+          final projectData = grouped[_selectedProject];
+          if (projectData is Map) {
+            for (var blockName in projectData.keys) {
+              final blockId = blockNameToId[blockName.toLowerCase()];
+              if (blockId != null) {
+                final checklists = await _qmsService.getChecklistsForBlock(blockId, token: token);
+                blockChecklistsList[blockName] = checklists;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        print('Error fetching QMS data: $e');
+      }
+
       setState(() {
         _groupedData = grouped;
+        _blockNameToId = blockNameToId;
+        _blockChecklists = blockChecklistsList;
         
         // Debug: Print grouped data structure
         print('Grouped data keys (projects): ${grouped.keys.toList()}');
@@ -5026,7 +5085,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                   7: FixedColumnWidth(100), // Utilization
                   8: FixedColumnWidth(100), // DRC
                   9: FixedColumnWidth(100), // Runtime
-                  10: FixedColumnWidth(80), // Trend
+                  10: FixedColumnWidth(420), // Checklists (QMS)
+                  11: FixedColumnWidth(80), // Trend
                 },
                 border: TableBorder(
                   horizontalInside: BorderSide(color: Colors.grey.shade200),
@@ -5049,6 +5109,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                       _buildTableHeaderCell('Utilization'),
                       _buildTableHeaderCell('DRC'),
                       _buildTableHeaderCell('Runtime'),
+                      _buildChecklistHeaderCell(),
                       _buildTableHeaderCell('Trend'),
                     ],
                   ),
@@ -5100,6 +5161,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                         _buildTableCell(
                           runtime != null ? _formatRuntime(runtime) : 'N/A',
                         ),
+                        _buildLeadChecklistsCell(block['block_name']?.toString() ?? ''),
                         _buildTrendCell(trend),
                       ],
                     );
@@ -5199,6 +5261,178 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     } else {
       return '${(seconds / 86400).toStringAsFixed(1)}d';
     }
+  }
+
+  // Build specialized header for Checklists with sub-columns
+  Widget _buildChecklistHeaderCell() {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF0F172A),
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            alignment: Alignment.center,
+            child: const Text(
+              'Checklists',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          Container(
+            height: 1,
+            color: Colors.grey.shade700,
+          ),
+          Row(
+            children: [
+              Expanded(
+                flex: 1,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  alignment: Alignment.center,
+                  child: const Text('Name', style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              Container(width: 1, height: 20, color: Colors.grey.shade700),
+              Expanded(
+                flex: 1,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  alignment: Alignment.center,
+                  child: const Text('Status', style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build QMS Checklists Cell for Lead View (Split Layout)
+  Widget _buildLeadChecklistsCell(String blockName) {
+    final checklists = _blockChecklists[blockName] ?? [];
+    if (checklists.isEmpty) {
+      return _buildTableCell('No checklists', isNA: true);
+    }
+
+    return Container(
+      // Padding removed to make borders touch edges
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: checklists.asMap().entries.map((entry) {
+          final idx = entry.key;
+          final c = entry.value;
+          final status = c['status']?.toString() ?? 'draft';
+          final approvedAt = c['updated_at'];
+          String dateStr = '';
+          if (approvedAt != null && status == 'approved') {
+            try {
+              final date = DateTime.parse(approvedAt.toString());
+              dateStr = DateFormat('MMM dd, yyyy').format(date);
+            } catch (e) {}
+          }
+
+          Color statusColor;
+          switch (status.toLowerCase()) {
+            case 'approved':
+              statusColor = const Color(0xFF10B981);
+              break;
+            case 'submitted_for_approval':
+              statusColor = const Color(0xFFF59E0B);
+              break;
+            case 'rejected':
+              statusColor = const Color(0xFFEF4444);
+              break;
+            default:
+              statusColor = const Color(0xFF64748B);
+          }
+
+          return Container(
+            decoration: BoxDecoration(
+              border: idx < checklists.length - 1 
+                ? Border(bottom: BorderSide(color: Colors.grey.shade200)) 
+                : null,
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                // Name section
+                Expanded(
+                  flex: 1,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: InkWell(
+                      onTap: () {
+                        final blockId = _blockNameToId[blockName.toLowerCase()];
+                        if (blockId != null) {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => QmsDashboardScreen(blockId: blockId),
+                            ),
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('QMS Block ID not found for this block')),
+                          );
+                        }
+                      },
+                      child: Text(
+                        c['name'] ?? 'Unnamed Checklist',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          color: Color(0xFF3B82F6),
+                          decoration: TextDecoration.underline,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                ),
+                // Vertical divider
+                Container(
+                  width: 1,
+                  height: 40, // Height to cover reasonable content
+                  color: Colors.grey.shade200,
+                ),
+                // Status section
+                Expanded(
+                  flex: 1,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        QmsStatusBadge(status: status),
+                        if (dateStr.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            dateStr,
+                            style: TextStyle(
+                              fontSize: 9,
+                              color: Colors.grey.shade500,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
   }
   
   Widget _buildLeadCard(String title, Widget content) {

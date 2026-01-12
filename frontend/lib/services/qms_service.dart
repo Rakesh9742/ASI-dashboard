@@ -314,18 +314,19 @@ class QmsService {
     }
   }
 
-  // Approve/reject entire checklist (approver)
-  Future<Map<String, dynamic>> approveChecklist(
-    int checklistId,
+  // Batch approve or reject multiple check items
+  Future<Map<String, dynamic>> batchApproveRejectCheckItems(
+    List<int> checkItemIds,
     bool approved, {
     String? comments,
     String? token,
   }) async {
     try {
-      final response = await http.put(
-        Uri.parse('${ApiService.baseUrl}/qms/checklists/$checklistId/approve'),
+      final response = await http.post(
+        Uri.parse('${ApiService.baseUrl}/qms/check-items/batch-approve-reject'),
         headers: _getHeaders(token: token),
         body: json.encode({
+          'check_item_ids': checkItemIds,
           'approved': approved,
           'comments': comments,
         }),
@@ -335,10 +336,10 @@ class QmsService {
         return json.decode(response.body);
       } else {
         final error = json.decode(response.body);
-        throw Exception(error['error'] ?? 'Failed to approve/reject checklist');
+        throw Exception(error['error'] ?? 'Failed to batch approve/reject check items');
       }
     } catch (e) {
-      throw Exception('Error approving checklist: $e');
+      throw Exception('Error batch approving/rejecting check items: $e');
     }
   }
 

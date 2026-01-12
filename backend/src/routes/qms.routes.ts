@@ -480,35 +480,38 @@ router.put(
 );
 
 /**
- * PUT /api/qms/checklists/:checklistId/approve
- * Approve/reject entire checklist (approver)
+ * POST /api/qms/check-items/batch-approve-reject
+ * Batch approve or reject multiple check items
  */
-router.put(
-  '/checklists/:checklistId/approve',
+router.post(
+  '/check-items/batch-approve-reject',
   authenticate,
+  authorize('admin', 'project_manager', 'lead'),
   async (req, res) => {
     try {
-      const checklistId = parseInt(req.params.checklistId, 10);
-      const { approved, comments } = req.body;
+      const { check_item_ids, approved, comments } = req.body;
       const userId = (req as any).user?.id;
       
-      if (isNaN(checklistId)) {
-        return res.status(400).json({ error: 'Invalid checklist ID' });
+      if (!Array.isArray(check_item_ids) || check_item_ids.length === 0) {
+        return res.status(400).json({ error: 'check_item_ids must be a non-empty array' });
       }
 
       if (typeof approved !== 'boolean') {
         return res.status(400).json({ error: 'approved must be a boolean' });
       }
 
-      await qmsService.approveChecklist(checklistId, approved, comments || null, userId);
+      await qmsService.batchApproveRejectCheckItems(
+        check_item_ids.map((id: any) => parseInt(id, 10)),
+        approved,
+        userId,
+        comments || null
+      );
 
-      const updatedChecklist = await qmsService.getChecklistWithItems(checklistId);
       res.json({
-        message: `Checklist ${approved ? 'approved' : 'rejected'}`,
-        checklist: updatedChecklist
+        message: `${check_item_ids.length} check item(s) ${approved ? 'approved' : 'rejected'} successfully`
       });
     } catch (error: any) {
-      console.error('Error approving checklist:', error);
+      console.error('Error batch approving/rejecting check items:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -589,15 +592,14 @@ router.post(
         return res.status(400).json({ error: 'No file uploaded' });
       }
 
-      const { checklist_name, milestone_id, stage } = req.body;
+      const { checklist_name, milestone_id } = req.body;
 
       const result = await qmsService.uploadTemplate(
         blockId,
         req.file.path,
         userId,
         checklist_name || null,
-        milestone_id ? parseInt(milestone_id, 10) : null,
-        stage || null
+        milestone_id ? parseInt(milestone_id, 10) : null
       );
 
       // Clean up uploaded file
