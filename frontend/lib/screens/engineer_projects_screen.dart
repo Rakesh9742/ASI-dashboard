@@ -1,6 +1,9 @@
+import 'dart:convert';
+import 'dart:html' as html;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
+import '../providers/view_screen_provider.dart';
 import '../services/api_service.dart';
 
 class EngineerProjectsScreen extends ConsumerStatefulWidget {
@@ -82,6 +85,973 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
         );
       }
     }
+  }
+
+  void _navigateToViewScreen(dynamic project) {
+    final isMapped = project['is_mapped'] == true;
+    
+    // If project is mapped, show dialog with two buttons
+    if (isMapped) {
+      _showMappedProjectOptions(project);
+    } else {
+      // Project not mapped - show details dialog instead
+      _showProjectDetails(project);
+    }
+  }
+
+  void _showMappedProjectOptions(dynamic project) {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 500),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E1E),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Header
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2D2D2D),
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(12),
+                    topRight: Radius.circular(12),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.green.shade700,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.check_circle,
+                            size: 16,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: 6),
+                          const Text(
+                            'Mapped Project',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.grey, size: 20),
+                      onPressed: () => Navigator.of(context).pop(),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
+              ),
+              // Content
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      project['name'] ?? 'Project',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Choose an option to proceed:',
+                      style: TextStyle(
+                        color: Colors.grey,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    // Project Plan Button
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          _showProjectPlan(project);
+                        },
+                        icon: const Icon(Icons.list_alt, size: 20),
+                        label: const Text(
+                          'Project Plan',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue.shade700,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // View Button
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          // Navigate to View screen
+      ref.read(viewScreenParamsProvider.notifier).state = ViewScreenParams(
+        project: project['name'],
+        viewType: 'engineer',
+      );
+      // Switch to View tab (index 2 for engineers) in MainNavigationScreen
+      ref.read(navigationIndexProvider.notifier).state = 2;
+      // Pop any dialogs first, then the ViewScreen in MainNavigationScreen will read params and auto-load
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).popUntil((route) => route.isFirst || route.settings.name == '/');
+      }
+                        },
+                        icon: const Icon(Icons.visibility, size: 20),
+                        label: const Text(
+                          'View',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.purple.shade700,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showProjectPlan(dynamic project) async {
+    // Show loading dialog first
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
+
+    try {
+      final authState = ref.read(authProvider);
+      final token = authState.token;
+
+      if (token == null) {
+        if (mounted) {
+          Navigator.of(context).pop(); // Close loading
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Not authenticated'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      // Get project ID - handle both zoho_ prefix and direct ID
+      final projectId = project['zoho_project_id']?.toString() ?? 
+                       project['id']?.toString() ?? '';
+      
+      // Remove zoho_ prefix if present
+      final actualProjectId = projectId.startsWith('zoho_') 
+          ? projectId.replaceFirst('zoho_', '') 
+          : projectId;
+      
+      if (actualProjectId.isEmpty) {
+        if (mounted) {
+          Navigator.of(context).pop(); // Close loading
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Project ID not found'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+      
+      // Get portal ID from zoho_data if available
+      final zohoData = project['zoho_data'] as Map<String, dynamic>?;
+      final portalId = zohoData?['portal_id']?.toString() ?? 
+                      zohoData?['portal']?.toString();
+      
+      final response = await _apiService.getZohoTasks(
+        projectId: actualProjectId,
+        token: token,
+        portalId: portalId,
+      );
+      
+      final tasks = response['tasks'] ?? [];
+
+      if (mounted) {
+        Navigator.of(context).pop(); // Close loading dialog
+        
+        // Show tasks and subtasks dialog
+        _showTasksDialog(project, tasks);
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop(); // Close loading dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading tasks: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // Map Zoho tasks to project structure
+  // Task lists = Domains
+  // Tasks = Blocks (for PD) or Modules/Blocks (for DV)
+  // Subtasks = Requirements (only for DV, not for PD)
+  Map<String, dynamic> _mapTasksToProjectStructure(List<dynamic> tasks) {
+    final mappedData = <String, dynamic>{
+      'domains': <Map<String, dynamic>>[],
+    };
+    
+    for (final task in tasks) {
+      final taskName = (task['name'] ?? task['task_name'] ?? 'Unnamed Task').toString();
+      final subtasks = task['subtasks'] as List<dynamic>? ?? [];
+      
+      // Get domain from tasklist_name (this is where the domain is stored)
+      final tasklistName = (task['tasklist_name'] ?? task['tasklistName'] ?? '').toString();
+      final tasklistNameLower = tasklistName.toLowerCase();
+      
+      // Determine domain type from tasklist name
+      // Check if it's PD (Physical Design) or DV (Design Verification)
+      final isPD = tasklistNameLower.contains('pd') || 
+                   tasklistNameLower == 'pd' ||
+                   tasklistNameLower.contains('physical') || 
+                   tasklistNameLower.contains('physical design');
+      final isDV = tasklistNameLower.contains('dv') || 
+                   tasklistNameLower == 'dv' ||
+                   tasklistNameLower.contains('design verification') ||
+                   tasklistNameLower.contains('verification');
+      
+      // If tasklist_name doesn't help, try task name as fallback
+      final taskNameLower = taskName.toLowerCase();
+      final isPDFromTask = !isPD && !isDV && (taskNameLower.contains('pd') || 
+                   taskNameLower.contains('physical') || 
+                   taskNameLower.contains('physical design'));
+      final isDVFromTask = !isPD && !isDV && (taskNameLower.contains('dv') || 
+                   taskNameLower.contains('design verification') ||
+                   taskNameLower.contains('verification'));
+      
+      // Determine domain type
+      final domainType = (isPD || isPDFromTask) ? 'PD' : ((isDV || isDVFromTask) ? 'DV' : 'DV');
+      final domainCode = (isPD || isPDFromTask) ? 'PHYSICAL' : 'DV';
+      final domainName = (isPD || isPDFromTask) ? 'Physical Design' : 'Design Verification';
+      
+      // Create domain entry
+      final domain = <String, dynamic>{
+        'name': domainName,
+        'code': domainCode,
+        'type': domainType,
+        'blocks': <Map<String, dynamic>>[],
+      };
+      
+      // Map tasks as blocks/modules
+      // For PD: tasks are blocks
+      // For DV: tasks are modules/blocks
+      final block = <String, dynamic>{
+        'name': taskName,
+        'type': domainType == 'PD' ? 'block' : 'module',
+        'requirements': <Map<String, dynamic>>[],
+      };
+      
+      // Map subtasks as requirements (only for DV)
+      if (domainType == 'DV' && subtasks.isNotEmpty) {
+        for (final subtask in subtasks) {
+          final subtaskName = (subtask['name'] ?? subtask['task_name'] ?? 'Unnamed Subtask').toString();
+          block['requirements'].add({
+            'name': subtaskName,
+            'original_data': subtask,
+          });
+        }
+      }
+      
+      domain['blocks'].add(block);
+      
+      // Check if domain already exists, if so merge blocks
+      final existingDomainIndex = mappedData['domains'].indexWhere(
+        (d) => d['code'] == domainCode
+      );
+      
+      if (existingDomainIndex >= 0) {
+        mappedData['domains'][existingDomainIndex]['blocks'].addAll(domain['blocks']);
+      } else {
+        mappedData['domains'].add(domain);
+      }
+    }
+    
+    return mappedData;
+  }
+
+  void _showTasksDialog(dynamic project, List<dynamic> tasks) {
+    final projectName = project['name'] ?? 'Project';
+    
+    // Map tasks to project structure
+    final mappedData = _mapTasksToProjectStructure(tasks);
+    final domains = mappedData['domains'] as List<dynamic>;
+    
+    // Store original tasks and project for export
+    final originalTasks = List<dynamic>.from(tasks);
+    final projectData = project;
+    
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 1000, maxHeight: 900),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E1E1E),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2D2D2D),
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(12),
+                      topRight: Radius.circular(12),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade700,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.list_alt,
+                              size: 16,
+                              color: Colors.white,
+                            ),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'Project Plan',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Spacer(),
+                      // Export Button
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          _exportMappedData(projectName, mappedData, originalTasks: originalTasks, project: projectData);
+                        },
+                        icon: const Icon(Icons.download, size: 16),
+                        label: const Text('Export JSON'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green.shade700,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.grey, size: 20),
+                        onPressed: () => Navigator.of(context).pop(),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                    ],
+                  ),
+                ),
+                // Title
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text(
+                    projectName,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                // Mapped Structure: Domains -> Blocks -> Requirements
+                Expanded(
+                  child: domains.isEmpty
+                      ? const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(40),
+                            child: Text(
+                              'No domains found',
+                              style: TextStyle(
+                                color: Colors.grey,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          itemCount: domains.length,
+                          itemBuilder: (context, domainIndex) {
+                            final domain = domains[domainIndex];
+                            final domainName = domain['name'] ?? 'Domain';
+                            final domainCode = domain['code'] ?? '';
+                            final domainType = domain['type'] ?? 'DV';
+                            final blocks = domain['blocks'] as List<dynamic>? ?? [];
+                            final isDomainExpanded = domain['_isExpanded'] == true;
+                            
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 16),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF2D2D2D),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: domainType == 'PD' ? Colors.orange.shade700 : Colors.blue.shade700,
+                                  width: 2,
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // Domain Header
+                                  InkWell(
+                                    onTap: () {
+                                      setState(() {
+                                        domain['_isExpanded'] = !isDomainExpanded;
+                                      });
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(16),
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            isDomainExpanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_right,
+                                            color: domainType == 'PD' ? Colors.orange.shade300 : Colors.blue.shade300,
+                                            size: 24,
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                            decoration: BoxDecoration(
+                                              color: domainType == 'PD' ? Colors.orange.shade700 : Colors.blue.shade700,
+                                              borderRadius: BorderRadius.circular(6),
+                                            ),
+                                            child: Text(
+                                              domainCode,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: Text(
+                                              domainName,
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 18,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: Colors.grey.shade700,
+                                              borderRadius: BorderRadius.circular(4),
+                                            ),
+                                            child: Text(
+                                              '${blocks.length} ${domainType == 'PD' ? 'block' : 'module'}${blocks.length != 1 ? 's' : ''}',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  // Blocks/Modules
+                                  if (isDomainExpanded && blocks.isNotEmpty)
+                                    Container(
+                                      margin: const EdgeInsets.only(left: 32, right: 16, bottom: 16),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: blocks.asMap().entries.map((blockEntry) {
+                                          final block = blockEntry.value;
+                                          final blockName = block['name'] ?? 'Unnamed Block';
+                                          final requirements = block['requirements'] as List<dynamic>? ?? [];
+                                          final isBlockExpanded = block['_isExpanded'] == true;
+                                          
+                                          return Container(
+                                            margin: const EdgeInsets.only(bottom: 12),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF1E1E1E),
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color: domainType == 'PD' ? Colors.orange.shade500 : Colors.blue.shade500,
+                                                width: 1,
+                                              ),
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                // Block Header
+                                                InkWell(
+                                                  onTap: () {
+                                                    setState(() {
+                                                      block['_isExpanded'] = !isBlockExpanded;
+                                                    });
+                                                  },
+                                                  child: Padding(
+                                                    padding: const EdgeInsets.all(14),
+                                                    child: Row(
+                                                      children: [
+                                                        Icon(
+                                                          isBlockExpanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_right,
+                                            color: Colors.grey,
+                                            size: 20,
+                                          ),
+                                          const SizedBox(width: 12),
+                                                        Icon(
+                                                          domainType == 'PD' ? Icons.view_module : Icons.widgets,
+                                                          color: domainType == 'PD' ? Colors.orange.shade400 : Colors.blue.shade400,
+                                                          size: 18,
+                                                        ),
+                                                        const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                                            blockName,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 16,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
+                                                        if (domainType == 'DV' && requirements.isNotEmpty)
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: Colors.blue.shade700,
+                                                borderRadius: BorderRadius.circular(4),
+                                              ),
+                                              child: Text(
+                                                              '${requirements.length} requirement${requirements.length != 1 ? 's' : ''}',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                                fontSize: 11,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                                // Requirements (only for DV)
+                                                if (isBlockExpanded && domainType == 'DV' && requirements.isNotEmpty)
+                                    Container(
+                                      margin: const EdgeInsets.only(left: 48, right: 16, bottom: 16),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                                      children: requirements.asMap().entries.map((reqEntry) {
+                                                        final reqIndex = reqEntry.key;
+                                                        final requirement = reqEntry.value;
+                                                        final reqName = requirement['name'] ?? 'Unnamed Requirement';
+                                          
+                                          return Container(
+                                            margin: const EdgeInsets.only(bottom: 8),
+                                            padding: const EdgeInsets.all(12),
+                                            decoration: BoxDecoration(
+                                                            color: const Color(0xFF2D2D2D),
+                                              borderRadius: BorderRadius.circular(6),
+                                                            border: Border.all(color: Colors.blue.shade700, width: 1),
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                Container(
+                                                                width: 24,
+                                                                height: 24,
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.blue.shade700,
+                                                    shape: BoxShape.circle,
+                                                  ),
+                                                  child: Center(
+                                                    child: Text(
+                                                                    '${reqIndex + 1}',
+                                                      style: const TextStyle(
+                                                        color: Colors.white,
+                                                        fontSize: 11,
+                                                        fontWeight: FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 12),
+                                                Expanded(
+                                                  child: Text(
+                                                                  reqName,
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 14,
+                                                    ),
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        );
+                                                      }).toList(),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                        }).toList(),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                ),
+                // Footer
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2D2D2D),
+                    borderRadius: const BorderRadius.only(
+                      bottomLeft: Radius.circular(12),
+                      bottomRight: Radius.circular(12),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      // View Button
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          Navigator.of(context).pop(); // Close Project Plan dialog
+                          // Navigate to View screen
+                          ref.read(viewScreenParamsProvider.notifier).state = ViewScreenParams(
+                            project: project['name'],
+                            viewType: 'engineer',
+                          );
+                          // Switch to View tab (index 2 for engineers) in MainNavigationScreen
+                          ref.read(navigationIndexProvider.notifier).state = 2;
+                          // Pop any dialogs first, then the ViewScreen in MainNavigationScreen will read params and auto-load
+                          if (Navigator.of(context).canPop()) {
+                            Navigator.of(context).popUntil((route) => route.isFirst || route.settings.name == '/');
+                          }
+                        },
+                        icon: const Icon(Icons.visibility, size: 18),
+                        label: const Text('View'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.purple.shade700,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        ),
+                      ),
+                      // Close Button
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text(
+                          'Close',
+                          style: TextStyle(color: Colors.grey),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _exportMappedData(String projectName, Map<String, dynamic> mappedData, {List<dynamic>? originalTasks, dynamic project}) {
+    // Create simplified export data structure with only essential fields
+    final domains = mappedData['domains'] as List<dynamic>;
+    
+    // Get project dates
+    final startDate = project?['start_date']?.toString() ?? '';
+    final updatedDate = project?['updated_at']?.toString() ?? '';
+    
+    // Build simplified export structure
+    final exportDomains = <Map<String, dynamic>>[];
+    
+    for (final domain in domains) {
+      final domainName = domain['name'] ?? '';
+      final blocks = domain['blocks'] as List<dynamic>? ?? [];
+      
+      // Build simplified blocks with only name and requirements
+      final simplifiedBlocks = <Map<String, dynamic>>[];
+      
+      for (final block in blocks) {
+        final blockName = block['name'] ?? '';
+        final requirements = block['requirements'] as List<dynamic>? ?? [];
+        
+        // Get dates from original task if available
+        String? blockStartDate;
+        String? blockUpdatedDate;
+        
+        if (originalTasks != null) {
+          for (final task in originalTasks) {
+            final taskName = (task['name'] ?? task['task_name'] ?? '').toString();
+            if (taskName == blockName) {
+              blockStartDate = task['start_date']?.toString() ?? task['created_time']?.toString() ?? '';
+              blockUpdatedDate = task['updated_at']?.toString() ?? task['modified_time']?.toString() ?? '';
+              break;
+            }
+          }
+        }
+        
+        final simplifiedBlock = <String, dynamic>{
+          'block': blockName,
+          if (blockStartDate != null && blockStartDate.isNotEmpty) 'start_date': blockStartDate,
+          if (blockUpdatedDate != null && blockUpdatedDate.isNotEmpty) 'updated_date': blockUpdatedDate,
+        };
+        
+        // Add requirements/modules only for DV domains
+        if (requirements.isNotEmpty) {
+          simplifiedBlock['requirements'] = requirements.map((req) {
+            final reqName = req['name'] ?? '';
+            return reqName;
+          }).toList();
+        }
+        
+        simplifiedBlocks.add(simplifiedBlock);
+      }
+      
+      // Build domain export structure
+      final domainExport = <String, dynamic>{
+        'domain_name': domainName,
+        'blocks': simplifiedBlocks,
+      };
+      
+      exportDomains.add(domainExport);
+    }
+    
+    // Create simplified export data structure
+    final exportData = {
+      'project_name': projectName,
+      if (startDate.isNotEmpty) 'start_date': startDate,
+      if (updatedDate.isNotEmpty) 'updated_date': updatedDate,
+      'domains': exportDomains,
+    };
+    
+    // Convert to JSON string with pretty formatting
+    final jsonString = const JsonEncoder.withIndent('  ').convert(exportData);
+    
+    // Show dialog with JSON data
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 800, maxHeight: 700),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E1E),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Header
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2D2D2D),
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(12),
+                    topRight: Radius.circular(12),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.green.shade700,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.download,
+                            size: 16,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: 6),
+                          const Text(
+                            'Exported Mapped Data',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.grey, size: 20),
+                      onPressed: () => Navigator.of(context).pop(),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
+              ),
+              // JSON Content
+              Expanded(
+                child: Container(
+                  margin: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0D0D0D),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade800, width: 1),
+                  ),
+                  child: SingleChildScrollView(
+                    child: SelectableText(
+                      jsonString,
+                      style: const TextStyle(
+                        color: Colors.green,
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              // Footer with Copy button
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2D2D2D),
+                  borderRadius: const BorderRadius.only(
+                    bottomLeft: Radius.circular(12),
+                    bottomRight: Radius.circular(12),
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        // Download JSON file
+                        final blob = html.Blob([jsonString], 'application/json');
+                        final url = html.Url.createObjectUrlFromBlob(blob);
+                        final anchor = html.AnchorElement(href: url)
+                          ..setAttribute('download', '${projectName.replaceAll(' ', '_')}_project_plan.json')
+                          ..click();
+                        html.Url.revokeObjectUrl(url);
+                        
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('JSON file downloaded: ${projectName.replaceAll(' ', '_')}_project_plan.json'),
+                            backgroundColor: Colors.green,
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.download, size: 18),
+                      label: const Text('Download JSON'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green.shade700,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        // Copy to clipboard
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('JSON data is selectable. Copy manually or use browser copy (Ctrl+C)'),
+                            backgroundColor: Colors.blue,
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.copy, size: 18),
+                      label: const Text('Copy'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue.shade700,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text(
+                        'Close',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _showProjectDetails(dynamic project) {
@@ -433,15 +1403,42 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
                       bottomRight: Radius.circular(12),
                     ),
                   ),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: TextButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: const Text(
-                        'Close',
-                        style: TextStyle(color: Colors.grey),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      // View Data button (only show if project has domains and is mapped)
+                      if (domains.isNotEmpty && project['is_mapped'] == true) ...[
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            // Set parameters and switch to View tab
+                            final firstDomain = domains[0];
+                            ref.read(viewScreenParamsProvider.notifier).state = ViewScreenParams(
+                              project: project['name'],
+                              domain: firstDomain['name'],
+                              viewType: 'engineer',
+                            );
+                            // Switch to View tab (index 2 for engineers)
+                            ref.read(navigationIndexProvider.notifier).state = 2;
+                          },
+                          icon: const Icon(Icons.visibility, size: 18),
+                          label: const Text('View Data'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue.shade700,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                      ],
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text(
+                          'Close',
+                          style: TextStyle(color: Colors.grey),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
                 ),
               ],
@@ -492,6 +1489,69 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
             ),
           ),
           if (isExpanded) child,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoChip(IconData icon, String label, MaterialColor color, {double iconSize = 14}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.shade50,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.shade200, width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: iconSize, color: color.shade700),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              color: color.shade700,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoItem(IconData icon, String label, String value, MaterialColor color) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 14, color: color.shade600),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.grey.shade600,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.grey.shade900,
+              fontWeight: FontWeight.w600,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ],
       ),
     );
@@ -667,7 +1727,7 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
       onRefresh: _loadProjects,
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -683,20 +1743,22 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
                       style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                             fontWeight: FontWeight.bold,
                             color: Colors.grey.shade800,
+                            fontSize: 20,
                           ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 1),
                     Text(
                       '${_projects.length} project${_projects.length != 1 ? 's' : ''} assigned',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             color: Colors.grey.shade600,
+                            fontSize: 12,
                           ),
                     ),
                   ],
                 ),
               ],
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 10),
             // Projects Table View
             if (_projects.isEmpty)
               Center(
@@ -722,373 +1784,282 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
                 ),
               )
             else
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.grey.shade200),
-                ),
-                child: Scrollbar(
-                  controller: _horizontalScrollController,
-                  thumbVisibility: true,
-                  thickness: 8,
-                  radius: const Radius.circular(4),
-                  child: SingleChildScrollView(
-                    controller: _horizontalScrollController,
-                    scrollDirection: Axis.horizontal,
-                    child: DataTable(
-                    headingRowColor: MaterialStateProperty.all(Colors.grey.shade900),
-                    headingRowHeight: 56,
-                    dataRowMinHeight: 64,
-                    dataRowMaxHeight: 80,
-                    columnSpacing: 24,
-                    headingTextStyle: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    columns: [
-                      DataColumn(
-                        label: Text('ID', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Project Name', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Source', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Status', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Start Date', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Due Date', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Duration', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Owner', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Created By', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Completion %', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Work Hours', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Priority', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Team', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Billing Type', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                      DataColumn(
-                        label: Text('Timelog Total', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
-                      ),
-                    ],
-                    rows: _projects.map((project) {
-                      final isZohoProject = project['source'] == 'zoho';
-                      final zohoData = project['zoho_data'] as Map<String, dynamic>?;
-                      final projectId = project['id']?.toString() ?? 'N/A';
-                      final projectName = project['name'] ?? 'Project';
-                      final startDate = _formatDate(project['start_date']);
-                      final dueDate = _formatDate(project['target_date']);
-                      final duration = _calculateDuration(project['start_date'], project['target_date']);
-                      
-                      // Extract Zoho-specific fields
-                      final owner = isZohoProject && zohoData != null 
-                          ? (zohoData['owner_name'] ?? 'N/A').toString()
-                          : 'N/A';
-                      final createdBy = isZohoProject && zohoData != null
-                          ? (zohoData['created_by_name'] ?? zohoData['created_by'] ?? 'N/A').toString()
-                          : 'N/A';
-                      final completionPercentage = isZohoProject && zohoData != null && zohoData['completion_percentage'] != null
-                          ? '${zohoData['completion_percentage']}%'
-                          : '-';
-                      final workHours = isZohoProject && zohoData != null
-                          ? (zohoData['work_hours_p'] ?? zohoData['work_hours'] ?? '00:00').toString()
-                          : '-';
-                      final priority = isZohoProject && zohoData != null && zohoData['priority'] != null
-                          ? zohoData['priority'].toString()
-                          : 'None';
-                      final associatedTeam = isZohoProject && zohoData != null
-                          ? (zohoData['team_name'] ?? zohoData['associated_team'] ?? 'Not Associated').toString()
-                          : 'N/A';
-                      final billingType = isZohoProject && zohoData != null && zohoData['billing_type'] != null
-                          ? zohoData['billing_type'].toString()
-                          : 'None';
-                      final timelogTotal = isZohoProject && zohoData != null
-                          ? (zohoData['timelog_total_t'] ?? zohoData['timelog_total'] ?? '00:00').toString()
-                          : '-';
-                      
-                      return DataRow(
-                        cells: [
-                          DataCell(
-                            InkWell(
-                              onTap: () => _showProjectDetails(project),
-                              child: Text(
-                                projectId.length > 12 ? '${projectId.substring(0, 12)}...' : projectId,
-                                style: TextStyle(
-                                  fontFamily: 'monospace',
-                                  color: Colors.grey.shade800,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _projects.length,
+                separatorBuilder: (context, index) => const SizedBox(height: 8),
+                itemBuilder: (context, index) {
+                  final project = _projects[index];
+                  final isZohoProject = project['source'] == 'zoho';
+                  final zohoData = project['zoho_data'] as Map<String, dynamic>?;
+                  final projectName = project['name'] ?? 'Project';
+                  final startDate = _formatDate(project['start_date']);
+                  final dueDate = _formatDate(project['target_date']);
+                  final duration = _calculateDuration(project['start_date'], project['target_date']);
+                  
+                  // Extract Zoho-specific fields
+                  final completionPercentage = isZohoProject && zohoData != null && zohoData['completion_percentage'] != null
+                      ? '${zohoData['completion_percentage']}%'
+                      : '-';
+                  
+                  // Get status from Zoho data or default to Active
+                  final status = isZohoProject && zohoData != null && zohoData['status'] != null
+                      ? zohoData['status'].toString()
+                      : 'Active';
+                  
+                  final isMapped = project['is_mapped'] == true;
+                  
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: () => _navigateToViewScreen(project),
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: isMapped ? Colors.green.shade200 : Colors.grey.shade200,
+                              width: 1,
                             ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: isMapped 
+                                  ? Colors.green.shade100.withOpacity(0.5)
+                                  : Colors.black.withOpacity(0.04),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
                           ),
-                          DataCell(
-                            InkWell(
-                              onTap: () => _showProjectDetails(project),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Header Row
+                              Row(
                                 children: [
+                                  // Icon with gradient background
                                   Container(
-                                    padding: const EdgeInsets.all(6),
+                                    width: 48,
+                                    height: 48,
                                     decoration: BoxDecoration(
-                                      color: isZohoProject ? Colors.blue.shade50 : Colors.purple.shade50,
-                                      borderRadius: BorderRadius.circular(6),
+                                      gradient: LinearGradient(
+                                        begin: Alignment.topLeft,
+                                        end: Alignment.bottomRight,
+                                        colors: isMapped
+                                          ? [Colors.green.shade400, Colors.green.shade600]
+                                          : (isZohoProject 
+                                              ? [Colors.blue.shade400, Colors.blue.shade600]
+                                              : [Colors.purple.shade400, Colors.purple.shade600]),
+                                      ),
+                                      borderRadius: BorderRadius.circular(10),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: (isMapped ? Colors.green : (isZohoProject ? Colors.blue : Colors.purple))
+                                            .withOpacity(0.3),
+                                          blurRadius: 8,
+                                          offset: const Offset(0, 2),
+                                        ),
+                                      ],
                                     ),
                                     child: Icon(
-                                      isZohoProject ? Icons.cloud : Icons.folder,
-                                      size: 18,
-                                      color: isZohoProject ? Colors.blue.shade700 : Colors.purple.shade700,
+                                      isMapped
+                                        ? Icons.check_circle
+                                        : (isZohoProject ? Icons.cloud : Icons.folder),
+                                      size: 24,
+                                      color: Colors.white,
                                     ),
                                   ),
                                   const SizedBox(width: 12),
-                                  Flexible(
-                                    child: Text(
-                                      projectName,
-                                      style: const TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.black87,
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          DataCell(
-                            isZohoProject
-                                ? Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: Colors.blue.shade50,
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(color: Colors.blue.shade200, width: 1),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
+                                  // Project Name and Mapped Badge
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Icon(Icons.cloud, size: 14, color: Colors.blue.shade700),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          'Zoho',
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            color: Colors.blue.shade700,
-                                            fontWeight: FontWeight.w600,
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                projectName,
+                                                style: TextStyle(
+                                                  fontSize: 16,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.grey.shade900,
+                                                  letterSpacing: 0.2,
+                                                ),
+                                              ),
+                                            ),
+                                            if (isMapped)
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                decoration: BoxDecoration(
+                                                  gradient: LinearGradient(
+                                                    colors: [Colors.green.shade400, Colors.green.shade600],
+                                                  ),
+                                                  borderRadius: BorderRadius.circular(6),
+                                                  boxShadow: [
+                                                    BoxShadow(
+                                                      color: Colors.green.withOpacity(0.3),
+                                                      blurRadius: 4,
+                                                      offset: const Offset(0, 2),
+                                                    ),
+                                                  ],
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Icon(
+                                                      Icons.check_circle,
+                                                      size: 12,
+                                                      color: Colors.white,
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      'Mapped',
+                                                      style: TextStyle(
+                                                        fontSize: 11,
+                                                        fontWeight: FontWeight.bold,
+                                                        color: Colors.white,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 4),
+                                        // Source Badge
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: (isZohoProject ? Colors.blue : Colors.purple).shade50,
+                                            borderRadius: BorderRadius.circular(6),
+                                            border: Border.all(
+                                              color: (isZohoProject ? Colors.blue : Colors.purple).shade200,
+                                              width: 1,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                isZohoProject ? Icons.cloud : Icons.folder,
+                                                size: 12,
+                                                color: (isZohoProject ? Colors.blue : Colors.purple).shade700,
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                isZohoProject ? 'Zoho Project' : 'Local Project',
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: (isZohoProject ? Colors.blue : Colors.purple).shade700,
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
                                       ],
                                     ),
-                                  )
-                                : Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: Colors.purple.shade50,
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(color: Colors.purple.shade200, width: 1),
-                                    ),
-                                    child: Text(
-                                      'Local',
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        color: Colors.purple.shade700,
-                                        fontWeight: FontWeight.w600,
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              // Info Grid
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey.shade50,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  children: [
+                                    // Status
+                                    Expanded(
+                                      child: _buildInfoItem(
+                                        Icons.circle,
+                                        'Status',
+                                        status,
+                                        Colors.green,
                                       ),
                                     ),
-                                  ),
-                          ),
-                          DataCell(
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: Colors.green.shade50,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: Colors.green.shade200, width: 1),
-                              ),
-                              child: Text(
-                                'Active',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: Colors.green.shade700,
-                                  fontWeight: FontWeight.w600,
+                                    Container(
+                                      width: 1,
+                                      height: 30,
+                                      color: Colors.grey.shade300,
+                                    ),
+                                    // Start Date
+                                    if (startDate != 'N/A')
+                                      Expanded(
+                                        child: _buildInfoItem(
+                                          Icons.calendar_today,
+                                          'Start',
+                                          startDate,
+                                          Colors.blue,
+                                        ),
+                                      ),
+                                    if (startDate != 'N/A')
+                                      Container(
+                                        width: 1,
+                                        height: 30,
+                                        color: Colors.grey.shade300,
+                                      ),
+                                    // End Date
+                                    if (dueDate != 'N/A')
+                                      Expanded(
+                                        child: _buildInfoItem(
+                                          Icons.event,
+                                          'End',
+                                          dueDate,
+                                          Colors.orange,
+                                        ),
+                                      ),
+                                    if (dueDate != 'N/A' && duration != '-')
+                                      Container(
+                                        width: 1,
+                                        height: 30,
+                                        color: Colors.grey.shade300,
+                                      ),
+                                    // Duration
+                                    if (duration != '-')
+                                      Expanded(
+                                        child: _buildInfoItem(
+                                          Icons.access_time,
+                                          'Duration',
+                                          duration,
+                                          Colors.purple,
+                                        ),
+                                      ),
+                                    if (duration != '-' && completionPercentage != '-')
+                                      Container(
+                                        width: 1,
+                                        height: 30,
+                                        color: Colors.grey.shade300,
+                                      ),
+                                    // Completion %
+                                    if (completionPercentage != '-')
+                                      Expanded(
+                                        child: _buildInfoItem(
+                                          Icons.percent,
+                                          'Progress',
+                                          completionPercentage,
+                                          Colors.teal,
+                                        ),
+                                      ),
+                                  ],
                                 ),
                               ),
-                            ),
+                            ],
                           ),
-                          DataCell(
-                            Text(
-                              startDate,
-                              style: const TextStyle(fontSize: 14, color: Colors.black87),
-                            ),
-                          ),
-                          DataCell(
-                            dueDate != 'N/A'
-                                ? Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(
-                                        dueDate,
-                                        style: const TextStyle(fontSize: 14, color: Colors.black87),
-                                      ),
-                                      if (project['target_date'] != null)
-                                        Text(
-                                          _getRemainingDays(project['target_date']),
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Colors.green.shade700,
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                    ],
-                                  )
-                                : Text(
-                                    '-',
-                                    style: TextStyle(fontSize: 14, color: Colors.grey.shade500),
-                                  ),
-                          ),
-                          DataCell(
-                            Text(
-                              duration,
-                              style: const TextStyle(fontSize: 14, color: Colors.black87, fontWeight: FontWeight.w500),
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              owner,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.black87,
-                                fontWeight: isZohoProject ? FontWeight.w500 : FontWeight.normal,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              createdBy,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.black87,
-                                fontWeight: isZohoProject ? FontWeight.w500 : FontWeight.normal,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          DataCell(
-                            completionPercentage != '-'
-                                ? Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: Colors.blue.shade50,
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: Text(
-                                      completionPercentage,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.blue.shade700,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  )
-                                : Text(
-                                    '-',
-                                    style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
-                                  ),
-                          ),
-                          DataCell(
-                            Text(
-                              workHours,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.black87,
-                                fontFamily: 'monospace',
-                              ),
-                            ),
-                          ),
-                          DataCell(
-                            priority != 'None'
-                                ? Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: _getPriorityColor(priority).withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(color: _getPriorityColor(priority), width: 1),
-                                    ),
-                                    child: Text(
-                                      priority,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: _getPriorityColor(priority),
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  )
-                                : Text(
-                                    'None',
-                                    style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
-                                  ),
-                          ),
-                          DataCell(
-                            Text(
-                              associatedTeam,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.black87,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              billingType,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.black87,
-                              ),
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              timelogTotal,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.black87,
-                                fontFamily: 'monospace',
-                              ),
-                            ),
-                          ),
-                        ],
-                      );
-                    }).toList(),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
+                  );
+                },
               ),
           ],
         ),

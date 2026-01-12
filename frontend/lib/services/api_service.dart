@@ -461,6 +461,33 @@ class ApiService {
     }
   }
 
+  Future<Map<String, dynamic>> getZohoTasks({
+    required String projectId,
+    String? token,
+    String? portalId,
+  }) async {
+    // Extract actual project ID if it's prefixed with "zoho_"
+    final actualProjectId = projectId.startsWith('zoho_') 
+        ? projectId.replaceFirst('zoho_', '') 
+        : projectId;
+    
+    final uri = portalId != null
+        ? Uri.parse('$baseUrl/zoho/projects/$actualProjectId/tasks?portalId=$portalId')
+        : Uri.parse('$baseUrl/zoho/projects/$actualProjectId/tasks');
+    
+    final response = await http.get(
+      uri,
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get Zoho tasks');
+    }
+  }
+
   Future<void> disconnectZoho({String? token}) async {
     final response = await http.post(
       Uri.parse('$baseUrl/zoho/disconnect'),

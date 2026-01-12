@@ -90,6 +90,8 @@ class ZohoService {
       'email',
       'ZohoProjects.projects.READ',
       'ZohoProjects.portals.READ',
+      'ZohoProjects.tasks.READ',  // Required for reading tasks and subtasks
+      'ZohoProjects.tasklists.READ',  // Required for reading tasklists
       'ZOHOPEOPLE.forms.ALL',  // Required for accessing employee forms/records
       'ZOHOPEOPLE.employee.ALL',  // Also include employee scope
     ].join(' ');
@@ -658,6 +660,774 @@ class ZohoService {
     } catch (error: any) {
       console.error('Error fetching project:', error.response?.data || error.message);
       throw new Error(`Failed to fetch project: ${error.response?.data?.error?.message || error.message}`);
+    }
+  }
+
+  /**
+   * Get tasks for a project
+   * Zoho Projects organizes tasks under tasklists, so we need to:
+   * 1. Get all tasklists for the project
+   * 2. Get tasks from each tasklist
+   * 3. Get subtasks for each task
+   */
+  async getTasks(userId: number, projectId: string, portalId?: string): Promise<any[]> {
+    try {
+      const client = await this.getAuthenticatedClient(userId);
+      
+      let portal = portalId;
+      let portalName: string | undefined;
+      if (!portal) {
+        const portals = await this.getPortals(userId);
+        if (portals.length === 0) {
+          throw new Error('No portals found.');
+        }
+        portal = portals[0].id;
+        portalName = portals[0].name || portals[0].portal_name || portals[0].id_string;
+        console.log('Portal details:', {
+          id: portal,
+          name: portalName,
+          allKeys: Object.keys(portals[0])
+        });
+      } else {
+        // If portal ID provided, try to get portal name
+        try {
+          const portals = await this.getPortals(userId);
+          const matchingPortal = portals.find(p => p.id === portal || p.id_string === portal);
+          if (matchingPortal) {
+            portalName = matchingPortal.name || matchingPortal.portal_name || matchingPortal.id_string;
+          }
+        } catch (e) {
+          // Ignore if we can't get portal name
+        }
+      }
+
+      console.log('Using portal:', { id: portal, name: portalName });
+
+      // Zoho Projects organizes tasks under tasklists
+      // We need to get tasklists first, then tasks from each tasklist
+      let allTasks: any[] = [];
+      let correctProjectId = projectId; // Will be updated when we get the project
+      
+      try {
+        // First, try to get the project to see if it has task links or tasklist info
+        // Try multiple endpoint formats since single project endpoint might use different format
+        console.log('Fetching project details...');
+        let projectResponse;
+        let project;
+        
+        // Try different endpoint formats for getting project
+        const projectEndpointVariations = [];
+        
+        // Try with portal name if available
+        if (portalName) {
+          projectEndpointVariations.push({
+            name: 'portal name',
+            url: `/restapi/portal/${portalName}/projects/${projectId}/`
+          });
+        }
+        
+        // Try with portal ID
+        projectEndpointVariations.push({
+          name: 'portal ID',
+          url: `/restapi/portal/${portal}/projects/${projectId}/`
+        });
+        
+        // Try without /restapi/ prefix
+        if (portalName) {
+          projectEndpointVariations.push({
+            name: 'portal name without /restapi/',
+            url: `/portal/${portalName}/projects/${projectId}/`
+          });
+        }
+        projectEndpointVariations.push({
+          name: 'portal ID without /restapi/',
+          url: `/portal/${portal}/projects/${projectId}/`
+        });
+        
+        let projectFetchSuccess = false;
+        for (const variation of projectEndpointVariations) {
+          try {
+            console.log(`Trying project endpoint: ${variation.name} - ${variation.url}`);
+            projectResponse = await client.get(variation.url);
+            project = projectResponse.data.response?.result || projectResponse.data;
+            console.log('✅ Project fetched successfully via', variation.name);
+            projectFetchSuccess = true;
+            break;
+          } catch (projectError: any) {
+            console.log(`❌ Project endpoint ${variation.name} failed:`, projectError.response?.data?.error?.message || projectError.message);
+            // Continue to next variation
+          }
+        }
+        
+        // If all project endpoints failed, try getting from projects list
+        if (!projectFetchSuccess) {
+          console.log('⚠️  Single project endpoint failed, trying to get from projects list...');
+          try {
+            const projectsResponse = await client.get(`/restapi/portal/${portal}/projects/`);
+            let projects: any[] = [];
+            
+            if (projectsResponse.data.response?.result?.projects) {
+              projects = projectsResponse.data.response.result.projects;
+            } else if (projectsResponse.data.projects) {
+              projects = projectsResponse.data.projects;
+            } else if (Array.isArray(projectsResponse.data)) {
+              projects = projectsResponse.data;
+            }
+            
+            // Find the project by ID
+            project = projects.find((p: any) => 
+              p.id === projectId || 
+              p.id_string === projectId || 
+              p.id?.toString() === projectId.toString()
+            );
+            
+            if (project) {
+              console.log('✅ Found project in projects list');
+              projectFetchSuccess = true;
+            } else {
+              console.error('❌ Project not found in projects list. Available project IDs:', projects.map((p: any) => p.id || p.id_string));
+            }
+          } catch (listError: any) {
+            console.error('❌ Failed to get projects list:', listError.response?.data?.error?.message || listError.message);
+          }
+        }
+        
+        if (!projectFetchSuccess || !project) {
+          console.error('❌ Could not fetch project data. Cannot proceed with task fetching.');
+          // Don't throw - return empty array so UI can still show project info
+          return [];
+        }
+        
+        console.log('=== PROJECT DATA INSPECTION ===');
+        console.log('Project data keys:', Object.keys(project || {}));
+        console.log('Total number of fields:', Object.keys(project || {}).length);
+        console.log('Project ID:', projectId);
+        console.log('Portal ID:', portal);
+        console.log('Portal Name:', portalName);
+        
+        // Log ALL project fields and their values (for debugging)
+        if (project) {
+          console.log('\n--- ALL PROJECT FIELDS ---');
+          Object.keys(project).forEach(key => {
+            const value = project[key];
+            let displayValue = value;
+            if (value === null || value === undefined) {
+              displayValue = 'null/undefined';
+            } else if (typeof value === 'object') {
+              if (Array.isArray(value)) {
+                displayValue = `[Array with ${value.length} items]`;
+              } else {
+                displayValue = `{Object with keys: ${Object.keys(value).join(', ')}` + (Object.keys(value).length > 10 ? '...' : '') + '}';
+              }
+            } else if (typeof value === 'string' && value.length > 100) {
+              displayValue = value.substring(0, 100) + '...';
+            }
+            console.log(`  ${key}: ${displayValue}`);
+          });
+          console.log('--- END ALL PROJECT FIELDS ---\n');
+          
+          // Check if project has any task-related fields
+          const taskRelatedKeys = Object.keys(project).filter(key => 
+            key.toLowerCase().includes('task') || 
+            key.toLowerCase().includes('milestone') ||
+            key.toLowerCase().includes('list')
+          );
+          console.log('Task-related keys in project:', taskRelatedKeys);
+          
+          // Log important project fields
+          console.log('\n--- IMPORTANT PROJECT FIELDS ---');
+          console.log('  id:', project.id);
+          console.log('  id_string:', project.id_string);
+          console.log('  name:', project.name);
+          console.log('  link:', project.link);
+          console.log('  url:', project.url);
+          console.log('  portal_id:', project.portal_id);
+          console.log('  owner_id:', project.owner_id);
+          console.log('  owner_name:', project.owner_name);
+          console.log('  status:', project.status);
+          console.log('  description:', project.description?.substring(0, 100) || 'N/A');
+          console.log('--- END IMPORTANT FIELDS ---\n');
+        } else {
+          console.error('❌ Project object is null or undefined!');
+        }
+        console.log('=== END PROJECT DATA INSPECTION ===');
+        
+        // Use the correct project ID - prefer id_string over id (as seen in link URLs)
+        correctProjectId = project?.id_string || projectId;
+        console.log(`🔑 Using project ID: ${correctProjectId} (original: ${projectId}, id_string: ${project?.id_string})`);
+        
+        // Try different endpoint variations for tasklists
+        // Based on Zoho Projects API, try multiple formats
+        const endpointVariations = [];
+        
+        // 0. FIRST: Try using the link URL from project object (this is the correct one!)
+        if (project?.link?.tasklist?.url) {
+          const tasklistUrl = project.link.tasklist.url;
+          const tasklistPath = tasklistUrl.replace('https://projectsapi.zoho.in', '');
+          endpointVariations.push({
+            name: 'project.link.tasklist URL (CORRECT)',
+            url: tasklistPath
+          });
+        }
+        
+        // 1. Try with id_string (the correct project ID)
+        if (correctProjectId !== projectId) {
+          endpointVariations.push({
+            name: 'portal ID with id_string',
+            url: `/restapi/portal/${portal}/projects/${correctProjectId}/tasklists/`
+          });
+        }
+        
+        // 2. Try with portal name (as seen in web URL: portal/sumedhadesignsystemspvtltd231)
+        if (portalName) {
+          endpointVariations.push({
+            name: 'portal name with /restapi/',
+            url: `/restapi/portal/${portalName}/projects/${correctProjectId}/tasklists/`
+          });
+          endpointVariations.push({
+            name: 'portal name without /restapi/',
+            url: `/portal/${portalName}/projects/${correctProjectId}/tasklists/`
+          });
+        }
+        
+        // 3. Try with portal ID (standard REST API format) using id_string
+        endpointVariations.push({
+          name: 'portal ID with /restapi/ (id_string)',
+          url: `/restapi/portal/${portal}/projects/${correctProjectId}/tasklists/`
+        });
+        endpointVariations.push({
+          name: 'portal ID without /restapi/ (id_string)',
+          url: `/portal/${portal}/projects/${correctProjectId}/tasklists/`
+        });
+        
+        // 4. Try with original projectId as fallback
+        endpointVariations.push({
+          name: 'portal ID with /restapi/ (original id)',
+          url: `/restapi/portal/${portal}/projects/${projectId}/tasklists/`
+        });
+        
+        // 5. Try with API versions using id_string
+        endpointVariations.push({
+          name: 'v3 API with portal ID (id_string)',
+          url: `/restapi/v3/portal/${portal}/projects/${correctProjectId}/tasklists/`
+        });
+        endpointVariations.push({
+          name: 'v1 API with portal ID (id_string)',
+          url: `/restapi/v1/portal/${portal}/projects/${correctProjectId}/tasklists/`
+        });
+        
+        let tasklists: any[] = [];
+        let tasklistsResponse;
+        
+        for (const variation of endpointVariations) {
+          if (tasklists.length > 0) break; // Stop if we found tasklists
+          
+          try {
+            console.log(`Trying tasklists endpoint: ${variation.name} - ${variation.url}`);
+            tasklistsResponse = await client.get(variation.url);
+            
+            if (tasklistsResponse.data.response?.result?.tasklists) {
+              tasklists = tasklistsResponse.data.response.result.tasklists;
+            } else if (tasklistsResponse.data.tasklists) {
+              tasklists = tasklistsResponse.data.tasklists;
+            } else if (Array.isArray(tasklistsResponse.data)) {
+              tasklists = tasklistsResponse.data;
+            } else if (tasklistsResponse.data.response?.result && Array.isArray(tasklistsResponse.data.response.result)) {
+              tasklists = tasklistsResponse.data.response.result;
+            }
+            
+            if (tasklists.length > 0) {
+              console.log(`✅ Found ${tasklists.length} tasklists via ${variation.name}`);
+              break;
+            }
+          } catch (error: any) {
+            console.log(`❌ ${variation.name} failed:`, error.response?.data?.error?.message || error.message);
+            // Continue to next variation
+          }
+        }
+        
+        // If still no tasklists found, try using the link URLs from project object
+        if (tasklists.length === 0 && project?.link) {
+          console.log('💡 Trying to use link URLs from project object...');
+          
+          // Use the tasklist URL from project.link if available
+          if (project.link.tasklist?.url) {
+            try {
+              // Extract the path from the full URL
+              const tasklistUrl = project.link.tasklist.url;
+              // Remove the base URL to get just the path
+              const tasklistPath = tasklistUrl.replace('https://projectsapi.zoho.in', '');
+              console.log(`Trying tasklist URL from project.link: ${tasklistPath}`);
+              
+              tasklistsResponse = await client.get(tasklistPath);
+              
+              if (tasklistsResponse.data.response?.result?.tasklists) {
+                tasklists = tasklistsResponse.data.response.result.tasklists;
+              } else if (tasklistsResponse.data.tasklists) {
+                tasklists = tasklistsResponse.data.tasklists;
+              } else if (Array.isArray(tasklistsResponse.data)) {
+                tasklists = tasklistsResponse.data;
+              } else if (tasklistsResponse.data.response?.result && Array.isArray(tasklistsResponse.data.response.result)) {
+                tasklists = tasklistsResponse.data.response.result;
+              }
+              
+              if (tasklists.length > 0) {
+                console.log(`✅ Found ${tasklists.length} tasklists using project.link.tasklist URL!`);
+              }
+            } catch (linkError: any) {
+              console.log(`❌ project.link.tasklist URL failed:`, linkError.response?.data?.error?.message || linkError.message);
+            }
+          }
+        }
+        
+        // If still no tasklists found after trying all variations
+        if (tasklists.length === 0) {
+          console.error('=== ALL TASKLIST ENDPOINT VARIATIONS FAILED ===');
+          console.error('Tried all endpoint variations but none worked');
+          console.error('Portal ID:', portal);
+          console.error('Portal Name:', portalName);
+          console.error('Project ID (id):', projectId);
+          console.error('Project ID (id_string):', project?.id_string);
+          console.error('Project link.tasklist URL:', project?.link?.tasklist?.url);
+          console.error('');
+          console.error('⚠️  ROOT CAUSE ANALYSIS:');
+          console.error('The Zoho Projects REST API may not expose tasks/tasklists through these endpoints.');
+          console.error('Possible reasons:');
+          console.error('1. Tasks API might require different endpoint structure');
+          console.error('2. Tasks might be accessed through milestones or different resource');
+          console.error('3. API version mismatch - tasks might be in a different API version');
+          console.error('4. Additional permissions or different authentication required');
+          console.error('5. Tasks might only be accessible through Zoho Projects web interface, not REST API');
+          console.error('');
+          console.error('💡 SUGGESTION: Check Zoho Projects API documentation for correct tasks endpoint format');
+          console.error('=== END TASKLIST FAILURE ===');
+          // Will fall through to try direct tasks endpoint
+        }
+        
+        console.log(`Found ${tasklists.length} tasklists for project ${projectId}`);
+        
+        // Get tasks from each tasklist
+        for (const tasklist of tasklists) {
+          const tasklistId = tasklist.id_string || tasklist.id;
+          const tasklistName = tasklist.name || tasklist.tasklist_name || 'Unnamed Tasklist';
+          
+          if (!tasklistId) {
+            console.warn('Tasklist missing ID, skipping:', tasklist);
+            continue;
+          }
+          
+          try {
+            // Try different endpoint formats
+            let tasksResponse;
+            let tasks: any[] = [];
+            
+            // Try different endpoint formats for tasks
+            // Use correctProjectId (id_string) instead of projectId
+            // Add query parameters to get all task details
+            try {
+              // Try with correctProjectId first (the correct one) - request all fields
+              try {
+                tasksResponse = await client.get(
+                  `/restapi/portal/${portal}/projects/${correctProjectId}/tasklists/${tasklistId}/tasks/?fields=all`
+                );
+              } catch (defaultError: any) {
+                // Try without fields parameter
+                try {
+                  tasksResponse = await client.get(
+                    `/restapi/portal/${portal}/projects/${correctProjectId}/tasklists/${tasklistId}/tasks/`
+                  );
+                } catch (noFieldsError: any) {
+                  // Try v3 API with correctProjectId
+                  try {
+                    tasksResponse = await client.get(
+                      `/restapi/v3/portal/${portal}/projects/${correctProjectId}/tasklists/${tasklistId}/tasks/?fields=all`
+                    );
+                  } catch (v3Error: any) {
+                    try {
+                      tasksResponse = await client.get(
+                        `/restapi/v3/portal/${portal}/projects/${correctProjectId}/tasklists/${tasklistId}/tasks/`
+                      );
+                    } catch (v3NoFieldsError: any) {
+                      // Try v1 API with correctProjectId
+                      try {
+                        tasksResponse = await client.get(
+                          `/restapi/v1/portal/${portal}/projects/${correctProjectId}/tasklists/${tasklistId}/tasks/?fields=all`
+                        );
+                      } catch (v1Error: any) {
+                        try {
+                          tasksResponse = await client.get(
+                            `/restapi/v1/portal/${portal}/projects/${correctProjectId}/tasklists/${tasklistId}/tasks/`
+                          );
+                        } catch (v1NoFieldsError: any) {
+                          // Last resort: try with original projectId
+                          tasksResponse = await client.get(
+                            `/restapi/portal/${portal}/projects/${projectId}/tasklists/${tasklistId}/tasks/`
+                          );
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              
+              if (tasksResponse.data.response?.result?.tasks) {
+                tasks = tasksResponse.data.response.result.tasks;
+              } else if (tasksResponse.data.tasks) {
+                tasks = tasksResponse.data.tasks;
+              } else if (Array.isArray(tasksResponse.data)) {
+                tasks = tasksResponse.data;
+              } else if (tasksResponse.data.response?.result && Array.isArray(tasksResponse.data.response.result)) {
+                tasks = tasksResponse.data.response.result;
+              }
+            } catch (tasklistTasksError: any) {
+              // If tasklist-specific endpoint fails, try getting all tasks with filter
+              console.log(`Tasklist-specific endpoint failed for ${tasklistId}, trying alternative:`, tasklistTasksError.response?.data?.error?.message || tasklistTasksError.message);
+              
+              try {
+                // Try getting all tasks and filter by tasklist - use correctProjectId
+                let allTasksResponse;
+                try {
+                  allTasksResponse = await client.get(
+                    `/restapi/portal/${portal}/projects/${correctProjectId}/tasks/?tasklist_id=${tasklistId}`
+                  );
+                } catch (defaultError: any) {
+                  try {
+                    allTasksResponse = await client.get(
+                      `/restapi/v3/portal/${portal}/projects/${correctProjectId}/tasks/?tasklist_id=${tasklistId}`
+                    );
+                  } catch (v3Error: any) {
+                    try {
+                      allTasksResponse = await client.get(
+                        `/restapi/v1/portal/${portal}/projects/${correctProjectId}/tasks/?tasklist_id=${tasklistId}`
+                      );
+                    } catch (v1Error: any) {
+                      // Last resort: try with original projectId
+                      allTasksResponse = await client.get(
+                        `/restapi/portal/${portal}/projects/${projectId}/tasks/?tasklist_id=${tasklistId}`
+                      );
+                    }
+                  }
+                }
+                
+                if (allTasksResponse.data.response?.result?.tasks) {
+                  tasks = allTasksResponse.data.response.result.tasks;
+                } else if (allTasksResponse.data.tasks) {
+                  tasks = allTasksResponse.data.tasks;
+                } else if (Array.isArray(allTasksResponse.data)) {
+                  tasks = allTasksResponse.data;
+                }
+              } catch (allTasksError: any) {
+                console.warn(`Failed to fetch tasks for tasklist ${tasklistId} (${tasklistName}):`, allTasksError.response?.data?.error?.message || allTasksError.message);
+                // Continue to next tasklist
+                continue;
+              }
+            }
+            
+            console.log(`Found ${tasks.length} tasks in tasklist "${tasklistName}" (ID: ${tasklistId})`);
+            
+            // Log task details for debugging
+            if (tasks.length > 0) {
+              console.log(`📋 Sample task from "${tasklistName}":`, JSON.stringify(tasks[0], null, 2).substring(0, 500));
+              // Log all task names to see what we got
+              const taskNames = tasks.map(t => t.name || t.task_name || 'Unnamed').join(', ');
+              console.log(`📋 Task names in "${tasklistName}": ${taskNames}`);
+            }
+            
+            // Add tasklist info to each task
+            tasks = tasks.map(task => ({
+              ...task,
+              tasklist_id: tasklistId,
+              tasklist_name: tasklistName
+            }));
+            
+            allTasks = allTasks.concat(tasks);
+          } catch (tasklistError: any) {
+            console.warn(`Failed to fetch tasks from tasklist ${tasklistId} (${tasklistName}):`, tasklistError.response?.data?.error?.message || tasklistError.message);
+            // Continue to next tasklist instead of failing completely
+          }
+        }
+        
+        // If no tasks found through tasklists, try direct tasks endpoint as fallback
+        if (allTasks.length === 0) {
+          console.log('No tasks found through tasklists, trying direct tasks endpoint...');
+          try {
+            // Try different API versions for direct tasks
+            let directTasksResponse;
+            try {
+              // Try without /restapi/ prefix first
+              directTasksResponse = await client.get(`/portal/${portal}/projects/${projectId}/tasks/`);
+            } catch (noRestApiError: any) {
+              try {
+                directTasksResponse = await client.get(`/restapi/v3/portal/${portal}/projects/${projectId}/tasks/`);
+              } catch (v3Error: any) {
+                try {
+                  directTasksResponse = await client.get(`/restapi/v1/portal/${portal}/projects/${projectId}/tasks/`);
+                } catch (v1Error: any) {
+                  directTasksResponse = await client.get(`/restapi/portal/${portal}/projects/${projectId}/tasks/`);
+                }
+              }
+            }
+            
+            if (directTasksResponse.data.response?.result?.tasks) {
+              allTasks = directTasksResponse.data.response.result.tasks;
+            } else if (directTasksResponse.data.tasks) {
+              allTasks = directTasksResponse.data.tasks;
+            } else if (Array.isArray(directTasksResponse.data)) {
+              allTasks = directTasksResponse.data;
+            } else if (directTasksResponse.data.response?.result && Array.isArray(directTasksResponse.data.response.result)) {
+              allTasks = directTasksResponse.data.response.result;
+            }
+            
+            console.log(`Found ${allTasks.length} tasks via direct endpoint`);
+          } catch (directError: any) {
+            console.error('=== DIRECT TASKS ENDPOINT FAILURE DETAILS ===');
+            console.error('Error message:', directError.message);
+            console.error('Status:', directError.response?.status);
+            console.error('Status Text:', directError.response?.statusText);
+            console.error('Error data:', JSON.stringify(directError.response?.data, null, 2));
+            console.error('Request URL:', directError.config?.url);
+            console.error('Base URL:', directError.config?.baseURL);
+            console.error('=== END DIRECT TASKS ERROR DETAILS ===');
+          }
+        }
+      } catch (tasklistsError: any) {
+        console.error('=== TASKLISTS ERROR (CATCH BLOCK) ===');
+        console.error('Error message:', tasklistsError.message);
+        console.error('Status:', tasklistsError.response?.status);
+        console.error('Error data:', JSON.stringify(tasklistsError.response?.data, null, 2));
+        console.error('=== END TASKLISTS ERROR ===');
+        // Try direct tasks endpoint as last resort with different API versions
+        try {
+          console.log('Trying direct tasks endpoint as fallback...');
+          let directTasksResponse;
+          try {
+            // Try without /restapi/ prefix first
+            directTasksResponse = await client.get(`/portal/${portal}/projects/${projectId}/tasks/`);
+          } catch (noRestApiError: any) {
+            try {
+              directTasksResponse = await client.get(`/restapi/v3/portal/${portal}/projects/${projectId}/tasks/`);
+            } catch (v3Error: any) {
+              try {
+                directTasksResponse = await client.get(`/restapi/v1/portal/${portal}/projects/${projectId}/tasks/`);
+              } catch (v1Error: any) {
+                directTasksResponse = await client.get(`/restapi/portal/${portal}/projects/${projectId}/tasks/`);
+              }
+            }
+          }
+          
+          if (directTasksResponse.data.response?.result?.tasks) {
+            allTasks = directTasksResponse.data.response.result.tasks;
+          } else if (directTasksResponse.data.tasks) {
+            allTasks = directTasksResponse.data.tasks;
+          } else if (Array.isArray(directTasksResponse.data)) {
+            allTasks = directTasksResponse.data;
+          }
+          
+          console.log(`Found ${allTasks.length} tasks via fallback direct endpoint`);
+        } catch (directError: any) {
+          console.error('=== FINAL FALLBACK TASKS ENDPOINT FAILURE ===');
+          console.error('Error message:', directError.message);
+          console.error('Status:', directError.response?.status);
+          console.error('Status Text:', directError.response?.statusText);
+          console.error('Error data:', JSON.stringify(directError.response?.data, null, 2));
+          console.error('Request URL:', directError.config?.url);
+          console.error('Base URL:', directError.config?.baseURL);
+          console.error('All task fetching methods failed');
+          console.error('=== END FINAL FALLBACK ERROR ===');
+          // Don't throw error - return empty array so UI can show "No tasks found" instead of error
+          return [];
+        }
+      }
+
+      // If no tasks found, return empty array
+      if (allTasks.length === 0) {
+        return [];
+      }
+
+      // Recursively fetch subtasks for each task
+      // Use correctProjectId (id_string) instead of projectId
+      // Note: correctProjectId was defined earlier in the try block, but we need to recalculate it here
+      // since project might not be in scope. We'll use the same logic.
+      // Get project again if needed, or use the correctProjectId that was calculated earlier
+      // For now, we'll try to get it from the first task's context or recalculate
+      let correctProjectIdForSubtasks = projectId;
+      
+      // Try to get id_string from the first task if available (tasks might have project_id_string)
+      if (allTasks.length > 0 && allTasks[0].project_id_string) {
+        correctProjectIdForSubtasks = allTasks[0].project_id_string;
+      } else {
+        // Fallback: try to get project again or use a pattern
+        // Since we successfully fetched tasks using correctProjectId, we know it exists
+        // We'll try both id_string pattern and original projectId
+        correctProjectIdForSubtasks = projectId;
+      }
+      console.log(`\n🔄 Starting to fetch subtasks for ${allTasks.length} tasks...`);
+      
+      const tasksWithSubtasks = await Promise.all(
+        allTasks.map(async (task) => {
+          try {
+            const taskId = task.id_string || task.id;
+            const taskName = task.name || task.task_name || 'Unnamed Task';
+            if (!taskId) {
+              console.warn(`⚠️ Task has no ID, skipping subtask fetch:`, taskName);
+              return { ...task, subtasks: [] };
+            }
+            
+            // Try different endpoint formats for subtasks
+            let subtasks: any[] = [];
+            let subtasksResponse;
+            
+            // First, try using correctProjectId (id_string) - request all fields
+            try {
+              // Try with fields=all parameter first
+              try {
+                subtasksResponse = await client.get(
+                  `/restapi/portal/${portal}/projects/${correctProjectId}/tasks/${taskId}/subtasks/?fields=all`
+                );
+              } catch (fieldsError: any) {
+                // Try without fields parameter
+                subtasksResponse = await client.get(
+                  `/restapi/portal/${portal}/projects/${correctProjectId}/tasks/${taskId}/subtasks/`
+                );
+              }
+              
+              // Check multiple possible response structures
+              if (subtasksResponse.data.response?.result?.subtasks) {
+                subtasks = subtasksResponse.data.response.result.subtasks;
+              } else if (subtasksResponse.data.response?.result?.tasks) {
+                // Sometimes subtasks are returned as "tasks" in the result
+                subtasks = subtasksResponse.data.response.result.tasks;
+              } else if (subtasksResponse.data.subtasks) {
+                subtasks = subtasksResponse.data.subtasks;
+              } else if (subtasksResponse.data.tasks) {
+                // Sometimes subtasks are returned as "tasks" at root level
+                subtasks = subtasksResponse.data.tasks;
+              } else if (Array.isArray(subtasksResponse.data)) {
+                subtasks = subtasksResponse.data;
+              } else if (subtasksResponse.data.response?.result && Array.isArray(subtasksResponse.data.response.result)) {
+                subtasks = subtasksResponse.data.response.result;
+              }
+              
+              if (subtasks.length > 0) {
+                console.log(`✅ Found ${subtasks.length} subtasks for task ${taskId} (${task.name || task.task_name || 'Unnamed'}) using correctProjectId`);
+                // Log sample subtask data
+                console.log(`📋 Sample subtask data:`, JSON.stringify(subtasks[0], null, 2).substring(0, 300));
+              } else {
+                console.log(`ℹ️ No subtasks found for task ${taskId} (${task.name || task.task_name || 'Unnamed'})`);
+                // Log the full response structure to debug
+                if (subtasksResponse?.data) {
+                  console.log(`📋 Subtask response keys:`, Object.keys(subtasksResponse.data));
+                  if (subtasksResponse.data.response) {
+                    console.log(`📋 Response.result keys:`, subtasksResponse.data.response.result ? Object.keys(subtasksResponse.data.response.result) : 'result is null');
+                  }
+                  // Log a sample of the actual response
+                  console.log(`📋 Sample response:`, JSON.stringify(subtasksResponse.data, null, 2).substring(0, 500));
+                }
+              }
+            } catch (correctIdError: any) {
+              console.log(`⚠️ Subtask fetch failed for task ${taskId} (${task.name || task.task_name || 'Unnamed'}):`, 
+                         correctIdError.response?.data?.error?.message || correctIdError.message);
+              console.log(`   Attempted URL: /restapi/portal/${portal}/projects/${correctProjectId}/tasks/${taskId}/subtasks/`);
+              // If that fails, try with original projectId
+              try {
+                subtasksResponse = await client.get(
+                  `/restapi/portal/${portal}/projects/${projectId}/tasks/${taskId}/subtasks/`
+                );
+                
+                if (subtasksResponse.data.response?.result?.subtasks) {
+                  subtasks = subtasksResponse.data.response.result.subtasks;
+                } else if (subtasksResponse.data.subtasks) {
+                  subtasks = subtasksResponse.data.subtasks;
+                } else if (Array.isArray(subtasksResponse.data)) {
+                  subtasks = subtasksResponse.data;
+                }
+                
+                if (subtasks.length > 0) {
+                  console.log(`✅ Found ${subtasks.length} subtasks for task ${taskId} using original projectId`);
+                }
+              } catch (originalIdError: any) {
+                // Try alternative endpoint formats
+                try {
+                  // Try without /restapi/ prefix
+                  subtasksResponse = await client.get(
+                    `/portal/${portal}/projects/${correctProjectId}/tasks/${taskId}/subtasks/`
+                  );
+                  
+                  if (subtasksResponse.data.response?.result?.subtasks) {
+                    subtasks = subtasksResponse.data.response.result.subtasks;
+                  } else if (subtasksResponse.data.subtasks) {
+                    subtasks = subtasksResponse.data.subtasks;
+                  } else if (Array.isArray(subtasksResponse.data)) {
+                    subtasks = subtasksResponse.data;
+                  }
+                } catch (altError: any) {
+                  // If all fail, check if task has subtasks already embedded
+                  if (task.subtasks && Array.isArray(task.subtasks) && task.subtasks.length > 0) {
+                    subtasks = task.subtasks;
+                    console.log(`✅ Using embedded subtasks for task ${taskId} (${subtasks.length} subtasks)`);
+                  } else {
+                    // Check for subtasks in different possible locations
+                    if (task.sub_tasks && Array.isArray(task.sub_tasks) && task.sub_tasks.length > 0) {
+                      subtasks = task.sub_tasks;
+                      console.log(`✅ Using sub_tasks field for task ${taskId} (${subtasks.length} subtasks)`);
+                    } else if (task.subtask_list && Array.isArray(task.subtask_list) && task.subtask_list.length > 0) {
+                      subtasks = task.subtask_list;
+                      console.log(`✅ Using subtask_list field for task ${taskId} (${subtasks.length} subtasks)`);
+                    } else {
+                      // Log task structure to help debug
+                      console.log(`🔍 Task structure for ${taskId}:`, JSON.stringify(Object.keys(task), null, 2));
+                      console.log(`   Has 'subtasks' field:`, !!task.subtasks);
+                      console.log(`   Has 'sub_tasks' field:`, !!task.sub_tasks);
+                      console.log(`   Has 'subtask_list' field:`, !!task.subtask_list);
+                      // Don't throw, just return empty subtasks
+                      subtasks = [];
+                    }
+                  }
+                }
+              }
+            }
+            
+            return {
+              ...task,
+              subtasks: subtasks || []
+            };
+          } catch (subtaskError: any) {
+            // If subtasks endpoint fails, check if task already has subtasks embedded
+            if (task.subtasks && Array.isArray(task.subtasks) && task.subtasks.length > 0) {
+              console.log(`✅ Using embedded subtasks for task ${task.id_string || task.id} (${task.subtasks.length} subtasks)`);
+              return {
+                ...task,
+                subtasks: task.subtasks
+              };
+            }
+            
+            // If subtasks endpoint fails, just return task without subtasks
+            console.warn(`Failed to fetch subtasks for task ${task.id_string || task.id}:`, subtaskError.response?.data?.error?.message || subtaskError.message);
+            return {
+              ...task,
+              subtasks: []
+            };
+          }
+        })
+      );
+
+      // Log summary of what was fetched
+      const totalSubtasks = tasksWithSubtasks.reduce((sum, task) => sum + (task.subtasks?.length || 0), 0);
+      console.log(`\n✅ Task Fetching Complete:`);
+      console.log(`   - Total Tasks: ${tasksWithSubtasks.length}`);
+      console.log(`   - Total Subtasks: ${totalSubtasks}`);
+      tasksWithSubtasks.forEach((task, index) => {
+        const subtaskCount = task.subtasks?.length || 0;
+        if (subtaskCount > 0) {
+          console.log(`   - Task ${index + 1}: "${task.name || task.task_name || 'Unnamed'}" has ${subtaskCount} subtask(s)`);
+        }
+      });
+      console.log(`\n`);
+
+      return tasksWithSubtasks;
+    } catch (error: any) {
+      console.error('Error fetching tasks:', error.response?.data || error.message);
+      throw new Error(`Failed to fetch tasks: ${error.response?.data?.error?.message || error.message}`);
     }
   }
 

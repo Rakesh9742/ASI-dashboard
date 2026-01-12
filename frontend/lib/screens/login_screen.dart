@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:html' as html;
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
-import 'main_navigation_screen.dart';
+import 'projects_screen.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -139,7 +139,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
 
       if (result && mounted) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const MainNavigationScreen()),
+          MaterialPageRoute(builder: (_) => const ProjectsScreen()),
         );
       }
     } catch (e) {
@@ -279,11 +279,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
             ),
           );
 
-          // AuthWrapper will automatically show MainNavigationScreen when auth state changes
-          // But we can also manually navigate to ensure it happens immediately
-          print('Navigating to MainNavigationScreen...');
+          // Navigate to Projects screen after Zoho login
+          print('Navigating to ProjectsScreen...');
           Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (_) => const MainNavigationScreen()),
+            MaterialPageRoute(builder: (_) => const ProjectsScreen()),
             (route) => false, // Remove all previous routes
           );
           print('Navigation completed');
@@ -320,19 +319,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     final size = MediaQuery.of(context).size;
     
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Colors.purple.shade50,
-              Colors.white,
-              Colors.teal.shade50,
-            ],
-          ),
-        ),
-        child: SafeArea(
+      backgroundColor: Colors.white,
+      body: SafeArea(
           child: Center(
             child: SingleChildScrollView(
               padding: EdgeInsets.symmetric(
@@ -348,7 +336,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                       ),
                     )
                   : _buildLoginContent(theme, size),
-            ),
           ),
         ),
       ),
@@ -375,27 +362,47 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
   Widget _buildLogoSection(ThemeData theme) {
     return Column(
       children: [
-        Text(
-          'ASI Dashboard',
-          style: TextStyle(
-            fontSize: 42,
-            fontWeight: FontWeight.bold,
-            foreground: Paint()
-              ..shader = LinearGradient(
-                colors: [
-                  Colors.purple.shade600,
-                  Colors.blue.shade600,
-                  Colors.teal.shade600,
-                ],
-              ).createShader(const Rect.fromLTWH(0, 0, 200, 70)),
-            letterSpacing: -1.5,
+        // Logo - Teal square with microchip icon
+        Container(
+          width: 64,
+          height: 64,
+          decoration: BoxDecoration(
+            color: const Color(0xFF14B8A6), // Teal color
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Icon(
+            Icons.memory, // Microchip icon
+            color: Colors.white,
+            size: 32,
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
+        // Brand name - "Semicon" in black, "OS" in teal
+        RichText(
+          text: TextSpan(
+            style: const TextStyle(
+              fontSize: 36,
+            fontWeight: FontWeight.bold,
+              letterSpacing: -0.5,
+            ),
+            children: [
+              const TextSpan(
+                text: 'Semicon',
+                style: TextStyle(color: Colors.black),
+              ),
+              TextSpan(
+                text: 'OS',
+                style: TextStyle(color: const Color(0xFF14B8A6)), // Teal
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        // Tagline
         Text(
-          'Chip Design Management System',
+          'AI-Driven RTL-to-GDS Orchestration',
           style: TextStyle(
-            fontSize: 16,
+            fontSize: 14,
             color: Colors.grey.shade600,
             fontWeight: FontWeight.w400,
           ),
@@ -409,12 +416,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
       constraints: BoxConstraints(maxWidth: 450),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 30,
-            offset: const Offset(0, 10),
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 20,
+            offset: const Offset(0, 4),
             spreadRadius: 0,
           ),
         ],
@@ -426,38 +433,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                children: [
-                  Container(
-                    width: 4,
-                    height: 24,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.purple.shade600,
-                          Colors.teal.shade600,
-                        ],
-                      ),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
                   Text(
-                    'Sign In',
+                'Sign in',
                     style: TextStyle(
-                      fontSize: 24,
+                  fontSize: 28,
                       fontWeight: FontWeight.bold,
                       color: Colors.grey.shade900,
                       letterSpacing: -0.5,
                     ),
-                  ),
-                ],
               ),
               const SizedBox(height: 8),
               Text(
-                'Welcome back! Please enter your credentials',
+                'Enter your credentials to access your RTL2GDS projects',
                 style: TextStyle(
                   fontSize: 14,
                   color: Colors.grey.shade600,
@@ -465,16 +452,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
               ),
               const SizedBox(height: 32),
 
-              // Username Field
+              // Email Field
               _buildTextField(
                 controller: _usernameController,
-                label: 'Username or Email',
-                hint: 'Enter your username or email',
-                icon: Icons.person_outline_rounded,
+                label: 'Email',
+                hint: 'you@example.com',
+                icon: Icons.email_outlined,
                 keyboardType: TextInputType.emailAddress,
                 validator: (value) {
                   if (value == null || value.isEmpty) {
-                    return 'Please enter your username or email';
+                    return 'Please enter your email';
+                  }
+                  if (!value.contains('@')) {
+                    return 'Please enter a valid email';
                   }
                   return null;
                 },
@@ -513,6 +503,53 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
               ),
               const SizedBox(height: 24),
 
+              // Sign In Button (Teal with padlock icon)
+              Container(
+                height: 56,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF14B8A6), // Teal
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF14B8A6).withOpacity(0.3),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: ElevatedButton.icon(
+                  onPressed: _isLoading ? null : _handleLogin,
+                  icon: _isLoading
+                      ? SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : const Icon(Icons.lock, color: Colors.white, size: 20),
+                  label: Text(
+                    _isLoading ? 'Signing in...' : 'Sign in',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.5,
+                      color: Colors.white,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.transparent,
+                    shadowColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
               // Divider with "OR"
               Row(
                 children: [
@@ -524,6 +561,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                       style: TextStyle(
                         color: Colors.grey.shade600,
                         fontWeight: FontWeight.w500,
+                        fontSize: 14,
                       ),
                     ),
                   ),
@@ -537,20 +575,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
               Container(
                 height: 56,
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      Colors.blue.shade600,
-                      Colors.blue.shade700,
-                    ],
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Colors.grey.shade300,
+                    width: 1.5,
                   ),
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.blue.shade600.withOpacity(0.4),
-                      blurRadius: 15,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
                 ),
                 child: ElevatedButton.icon(
                   onPressed: _isZohoLoading ? null : _handleZohoLogin,
@@ -560,88 +590,30 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                           height: 20,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.grey.shade900),
                           ),
                         )
-                      : const Icon(Icons.cloud, color: Colors.white),
+                      : Icon(
+                          Icons.cloud,
+                          color: Colors.grey.shade900,
+                          size: 20,
+                        ),
                   label: Text(
                     _isZohoLoading ? 'Connecting...' : 'Login with Zoho',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                       letterSpacing: 0.5,
-                      color: Colors.white,
+                      color: Colors.grey.shade900,
                     ),
                   ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.transparent,
                     shadowColor: Colors.transparent,
+                    elevation: 0,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 32),
-
-              // Regular Login Button
-              Container(
-                height: 56,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      Colors.purple.shade600,
-                      Colors.blue.shade600,
-                      Colors.teal.shade600,
-                    ],
-                  ),
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.purple.shade600.withOpacity(0.4),
-                      blurRadius: 15,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: ElevatedButton(
-                  onPressed: _isLoading ? null : _handleLogin,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    shadowColor: Colors.transparent,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                  child: _isLoading
-                      ? SizedBox(
-                          height: 24,
-                          width: 24,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                          ),
-                        )
-                      : Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Text(
-                              'Sign In',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 0.5,
-                                color: Colors.white,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Icon(
-                              Icons.arrow_forward_rounded,
-                              size: 20,
-                              color: Colors.white,
-                            ),
-                          ],
                         ),
                 ),
               ),
@@ -679,32 +651,32 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
         labelText: label,
         hintText: hint,
         hintStyle: TextStyle(color: Colors.grey.shade400),
-                              prefixIcon: Icon(icon, color: Colors.purple.shade600),
+        prefixIcon: Icon(icon, color: Colors.grey.shade600),
         suffixIcon: suffixIcon,
         filled: true,
         fillColor: Colors.grey.shade50,
         contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(color: Colors.grey.shade300, width: 1.5),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(color: Colors.grey.shade300, width: 1.5),
         ),
                               focusedBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
                                 borderSide: BorderSide(
-                                  color: Colors.purple.shade600,
+            color: const Color(0xFF14B8A6), // Teal
                                   width: 2,
                                 ),
                               ),
         errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(color: Colors.red.shade400, width: 1.5),
         ),
         focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(color: Colors.red.shade400, width: 2),
         ),
         labelStyle: TextStyle(
@@ -712,7 +684,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
           fontSize: 15,
         ),
         floatingLabelStyle: TextStyle(
-          color: Colors.purple.shade600,
+          color: const Color(0xFF14B8A6), // Teal
           fontSize: 15,
           fontWeight: FontWeight.w500,
         ),

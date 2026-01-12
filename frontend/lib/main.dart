@@ -1,18 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'widgets/auth_wrapper.dart';
+import 'screens/standalone_project_screen.dart';
+import 'screens/standalone_view_screen.dart';
+import 'providers/theme_provider.dart';
 
 void main() {
   runApp(const ProviderScope(child: MyApp()));
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends ConsumerWidget {
   const MyApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeMode = ref.watch(themeModeProvider);
+    
     return MaterialApp(
-      title: 'ASI Dashboard',
+      title: 'SemiconOS',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.blue,
@@ -22,6 +27,7 @@ class MyApp extends StatelessWidget {
         ),
         useMaterial3: true,
         scaffoldBackgroundColor: Colors.grey.shade50,
+        dividerColor: Colors.grey.shade300,
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: Colors.grey.shade50,
@@ -48,9 +54,58 @@ class MyApp extends StatelessWidget {
           ),
         ),
       ),
-      // Force light theme
-      themeMode: ThemeMode.light,
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.blue,
+          brightness: Brightness.dark,
+          primary: Colors.blue.shade300,
+          secondary: Colors.blue.shade400,
+        ),
+        useMaterial3: true,
+        scaffoldBackgroundColor: Colors.grey.shade900,
+        cardColor: Colors.grey.shade800,
+        dividerColor: Colors.grey.shade700,
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.grey.shade800,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade700),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade700),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.blue.shade300, width: 2),
+          ),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            elevation: 2,
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        ),
+      ),
+      themeMode: themeMode,
       home: const AuthWrapper(),
+      onGenerateRoute: (settings) {
+        if (settings.name == '/project' || settings.name?.contains('/project') == true) {
+          return MaterialPageRoute(
+            builder: (context) => const StandaloneProjectScreen(),
+          );
+        }
+        if (settings.name == '/view' || settings.name?.contains('/view') == true) {
+          return MaterialPageRoute(
+            builder: (context) => const StandaloneViewScreen(),
+          );
+        }
+        return null;
+      },
       debugShowCheckedModeBanner: false,
     );
   }

@@ -33,6 +33,32 @@ const fetchProjectWithDomains = async (projectId: number, client: any) => {
   return projectResult.rows[0];
 };
 
+/**
+ * Check if a project has matching EDA output (is "mapped")
+ * A project is mapped if there's EDA output data for it
+ */
+async function checkProjectMapping(projectName: string): Promise<boolean> {
+  try {
+    const result = await pool.query(
+      `
+        SELECT COUNT(DISTINCT p.id) as count
+        FROM projects p
+        INNER JOIN blocks b ON b.project_id = p.id
+        INNER JOIN runs r ON r.block_id = b.id
+        INNER JOIN stages s ON s.run_id = r.id
+        WHERE LOWER(p.name) = LOWER($1)
+        LIMIT 1
+      `,
+      [projectName]
+    );
+    
+    return (result.rows[0]?.count || 0) > 0;
+  } catch (error: any) {
+    console.error('Error checking project mapping:', error);
+    return false;
+  }
+}
+
 // List projects with their domains (optionally include Zoho projects)
 router.get('/', authenticate, async (req, res) => {
   try {
@@ -85,10 +111,17 @@ router.get('/', authenticate, async (req, res) => {
       queryParams
     );
 
-    const localProjects = result.rows.map((p: any) => ({
-      ...p,
-      source: 'local'
-    }));
+    // Check mapping status for local projects
+    const localProjects = await Promise.all(
+      result.rows.map(async (p: any) => {
+        const isMapped = await checkProjectMapping(p.name);
+        return {
+          ...p,
+          source: 'local',
+          is_mapped: isMapped
+        };
+      })
+    );
     
     console.log(`Found ${localProjects.length} local projects for user ${userId} (role: ${userRole})`);
 
@@ -117,31 +150,53 @@ router.get('/', authenticate, async (req, res) => {
             console.log(`Filtering Zoho projects for ${userRole} role: ${zohoProjects.length} projects available`);
           }
 
-          const formattedZohoProjects = filteredZohoProjects.map((zp: any) => ({
-            id: `zoho_${zp.id}`,
-            name: zp.name,
-            client: zp.owner_name || null,
-            technology_node: null,
-            start_date: zp.start_date || null,
-            target_date: zp.end_date || null,
-            plan: zp.description || null,
-            created_at: zp.created_time || null,
-            updated_at: zp.created_time || null,
-            domains: [],
-            source: 'zoho',
-            zoho_project_id: zp.id,
-            zoho_data: zp
-          }));
+          // Check mapping status for Zoho projects (show all, but indicate mapping status)
+          const formattedZohoProjects = await Promise.all(
+            filteredZohoProjects.map(async (zp: any) => {
+              const isMapped = await checkProjectMapping(zp.name);
+              return {
+                id: `zoho_${zp.id}`,
+                name: zp.name,
+                client: zp.owner_name || null,
+                technology_node: null,
+                start_date: zp.start_date || null,
+                target_date: zp.end_date || null,
+                plan: zp.description || null,
+                created_at: zp.created_time || null,
+                updated_at: zp.created_time || null,
+                domains: [],
+                source: 'zoho',
+                zoho_project_id: zp.id,
+                zoho_data: zp,
+                is_mapped: isMapped
+              };
+            })
+          );
 
-          // Combine local and Zoho projects
+          console.log(`Showing ${formattedZohoProjects.length} Zoho projects for ${userRole} (mapping status included)`);
+
+          // Filter out local projects that are already mapped to Zoho projects
+          // Only include unmapped local projects in the 'all' array to avoid duplicates
+          // When a Zoho project is mapped, show only the Zoho version (not the local one)
+          const unmappedLocalProjects = localProjects.filter((lp: any) => !lp.is_mapped);
+
+          // Combine unmapped local projects with all Zoho projects (mapped and unmapped)
+          // This shows Zoho projects when mapped, and local projects when not mapped
+          const allProjects = [
+            ...unmappedLocalProjects,
+            ...formattedZohoProjects
+          ];
+
+          console.log(`Total projects: ${allProjects.length} (${unmappedLocalProjects.length} unmapped local, ${localProjects.length - unmappedLocalProjects.length} mapped local excluded, ${formattedZohoProjects.length} Zoho projects)`);
+
           return res.json({
-            local: localProjects,
-            zoho: formattedZohoProjects,
-            all: [...localProjects, ...formattedZohoProjects],
+            local: localProjects, // Keep all local projects in separate array for reference
+            zoho: formattedZohoProjects, // Keep all Zoho projects in separate array for reference
+            all: allProjects, // Show unmapped local + all Zoho projects (mapped Zoho projects will show as green)
             counts: {
               local: localProjects.length,
               zoho: formattedZohoProjects.length,
-              total: localProjects.length + formattedZohoProjects.length
+              total: allProjects.length
             }
           });
         } else {

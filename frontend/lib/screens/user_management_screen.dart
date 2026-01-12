@@ -311,7 +311,7 @@ class _UserManagementScreenState extends ConsumerState<UserManagementScreen> {
                         },
                       ),
                     ),
-        ),
+          ),
       ],
     );
   }

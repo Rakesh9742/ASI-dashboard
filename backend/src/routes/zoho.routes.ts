@@ -701,6 +701,50 @@ router.get('/projects/:projectId', authenticate, async (req, res) => {
 });
 
 /**
+ * GET /api/zoho/projects/:projectId/tasks
+ * Get all tasks for a Zoho project (including subtasks)
+ */
+router.get('/projects/:projectId/tasks', authenticate, async (req, res) => {
+  try {
+    const userId = (req as any).user?.id;
+    const { projectId } = req.params;
+    const { portalId } = req.query;
+    
+    // Extract actual project ID if it's prefixed with "zoho_"
+    const actualProjectId = projectId.startsWith('zoho_') 
+      ? projectId.replace('zoho_', '') 
+      : projectId;
+    
+    const tasks = await zohoService.getTasks(
+      userId,
+      actualProjectId,
+      portalId as string | undefined
+    );
+    
+    // Log response structure for debugging
+    const tasksWithSubtasks = tasks.filter(t => t.subtasks && Array.isArray(t.subtasks) && t.subtasks.length > 0);
+    console.log(`📤 Sending ${tasks.length} tasks to frontend, ${tasksWithSubtasks.length} have subtasks`);
+    if (tasksWithSubtasks.length > 0) {
+      tasksWithSubtasks.forEach((task, idx) => {
+        console.log(`   Task ${idx + 1}: "${task.name || task.task_name}" has ${task.subtasks.length} subtasks`);
+      });
+    }
+    
+    res.json({
+      success: true,
+      count: tasks.length,
+      tasks: tasks
+    });
+  } catch (error: any) {
+    console.error('Error fetching Zoho tasks:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+/**
  * POST /api/zoho/disconnect
  * Revoke and remove Zoho tokens
  */

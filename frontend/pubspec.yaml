@@ -1,5 +1,5 @@
-name: asi_dashboard
-description: ASI Chip Design Dashboard - Flutter application for web, iOS, and Android
+name: semiconos
+description: SemiconOS - AI-Driven RTL-to-GDS Orchestration
 publish_to: 'none'
 version: 1.0.0+1
 

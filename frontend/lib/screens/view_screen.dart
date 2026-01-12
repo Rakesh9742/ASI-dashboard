@@ -1,11 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
+import '../providers/view_screen_provider.dart';
 import '../services/api_service.dart';
 import 'package:fl_chart/fl_chart.dart';
 
 class ViewScreen extends ConsumerStatefulWidget {
-  const ViewScreen({super.key});
+  final String? initialProject;
+  final String? initialDomain;
+  final String? initialViewType;
+  
+  const ViewScreen({
+    super.key,
+    this.initialProject,
+    this.initialDomain,
+    this.initialViewType,
+  });
 
   @override
   ConsumerState<ViewScreen> createState() => _ViewScreenState();
@@ -53,6 +63,34 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   @override
   void initState() {
     super.initState();
+    // Set initial values from parameters (widget params take priority)
+    if (widget.initialProject != null) {
+      _selectedProject = widget.initialProject;
+    } else {
+      // Check provider for params (when navigating from within app)
+      final params = ref.read(viewScreenParamsProvider);
+      if (params?.project != null) {
+        _selectedProject = params!.project;
+      }
+    }
+    
+    if (widget.initialDomain != null) {
+      _selectedDomain = widget.initialDomain;
+    } else {
+      final params = ref.read(viewScreenParamsProvider);
+      if (params?.domain != null) {
+        _selectedDomain = params!.domain;
+      }
+    }
+    
+    if (widget.initialViewType != null) {
+      _viewType = widget.initialViewType!;
+    } else {
+      final params = ref.read(viewScreenParamsProvider);
+      if (params?.viewType != null) {
+        _viewType = params!.viewType!;
+      }
+    }
     _loadProjectsAndDomains();
   }
 
@@ -71,14 +109,77 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     try {
       final authState = ref.read(authProvider);
       final token = authState.token;
+      final userRole = authState.user?['role'];
       
-      // Load projects
-      final projects = await _apiService.getProjects(token: token);
+      // Check Zoho status and load projects with Zoho support
+      bool isZohoConnected = false;
+      try {
+        final zohoStatus = await _apiService.getZohoStatus(token: token);
+        isZohoConnected = zohoStatus['connected'] ?? false;
+      } catch (e) {
+        // Zoho not connected, continue without it
+      }
+      
+      // Load projects with Zoho option if connected
+      Map<String, dynamic> projectsData;
+      if (isZohoConnected) {
+        projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
+      } else {
+        final projects = await _apiService.getProjects(token: token);
+        projectsData = {'all': projects, 'local': projects, 'zoho': []};
+      }
+      
+      // Set default view type based on user role
+      String defaultViewType = 'engineer';
+      if (userRole == 'admin' || userRole == 'project_manager') {
+        defaultViewType = 'manager';
+      } else if (userRole == 'lead') {
+        defaultViewType = 'lead';
+      }
       
       setState(() {
-        _projects = projects;
+        _projects = projectsData['all'] ?? projectsData['local'] ?? [];
+        // Only set default view type if not already set from parameters
+        if (widget.initialViewType == null) {
+          _viewType = defaultViewType;
+        }
         _isLoading = false;
       });
+      
+      // If project is pre-selected (from widget or provider), load domains for it
+      final params = ref.read(viewScreenParamsProvider);
+      final projectToLoad = widget.initialProject ?? params?.project ?? _selectedProject;
+      final domainToLoad = widget.initialDomain ?? params?.domain ?? _selectedDomain;
+      
+      if (projectToLoad != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _loadDomainsForProject(projectToLoad);
+          // If domain is also provided, load data after domains are loaded
+          if (domainToLoad != null) {
+            // Wait a bit for domains to load, then set domain and load data
+            Future.delayed(const Duration(milliseconds: 500), () {
+              if (mounted) {
+                setState(() {
+                  _selectedDomain = domainToLoad;
+                });
+                _loadInitialData();
+              }
+            });
+          }
+        });
+      } else if (_selectedProject != null && _selectedDomain != null) {
+        // If project and domain are already selected, load data automatically
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _loadInitialData();
+        });
+      }
+      
+      // Clear the provider params after reading them
+      if (params != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          ref.read(viewScreenParamsProvider.notifier).state = null;
+        });
+      }
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -602,6 +703,70 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _loadDomainsForProject(String projectName) async {
+    setState(() {
+      _selectedProject = projectName;
+      _isLoadingDomains = true;
+    });
+
+    // Get domains for this project
+    try {
+      final authState = ref.read(authProvider);
+      final token = authState.token;
+      
+      // Load EDA files to find domains for this project
+      final filesResponse = await _apiService.getEdaFiles(
+        token: token,
+        limit: 1000,
+      );
+      
+      final files = filesResponse['files'] ?? [];
+      final domainSet = <String>{};
+      
+      for (var file in files) {
+        final projectNameFromFile = file['project_name'] ?? 'Unknown';
+        final domainName = file['domain_name'] ?? '';
+        if (projectNameFromFile == projectName && domainName.isNotEmpty) {
+          domainSet.add(domainName);
+        }
+      }
+      
+      final availableDomains = domainSet.toList()..sort();
+      
+      setState(() {
+        _availableDomainsForProject = availableDomains;
+        _isLoadingDomains = false;
+        
+        // Auto-select domain if:
+        // 1. Only one domain available, OR
+        // 2. initialDomain is provided and exists in available domains
+        if (widget.initialDomain != null && availableDomains.contains(widget.initialDomain)) {
+          _selectedDomain = widget.initialDomain;
+          _loadInitialData();
+        } else if (availableDomains.length == 1) {
+          _selectedDomain = availableDomains.first;
+          _loadInitialData();
+        } else if (availableDomains.isNotEmpty && widget.initialDomain == null) {
+          // If multiple domains but no initial domain specified, select first one
+          _selectedDomain = availableDomains.first;
+          _loadInitialData();
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _isLoadingDomains = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading domains: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   void _updateProject(String? projectName) async {

@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
-import 'dashboard_screen.dart';
-import 'user_management_screen.dart';
+import '../providers/tab_provider.dart';
+import '../providers/theme_provider.dart';
+import 'projects_screen.dart';
 import 'project_management_screen.dart';
+import 'user_management_screen.dart';
 import 'engineer_projects_screen.dart';
-import 'view_screen.dart';
-import 'login_screen.dart';
+import 'semicon_dashboard_screen.dart';
+
+// Provider to track current navigation tab
+final currentNavTabProvider = StateProvider<String>((ref) => 'Projects');
 
 class MainNavigationScreen extends ConsumerStatefulWidget {
   const MainNavigationScreen({super.key});
@@ -16,421 +20,178 @@ class MainNavigationScreen extends ConsumerStatefulWidget {
 }
 
 class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
-  int _selectedIndex = 0;
-  bool _isSidebarOpen = true;
-
-  List<Widget> _getScreens(String? role) {
-    if (role == 'engineer') {
-      return [
-        const DashboardScreen(),
-        const EngineerProjectsScreen(),
-        const ViewScreen(),
-      ];
-    }
-    return [
-      const DashboardScreen(),
-      const ProjectManagementScreen(),
-      const ViewScreen(),
-      const UserManagementScreen(),
-    ];
-  }
-
   @override
   Widget build(BuildContext context) {
-    final authState = ref.watch(authProvider);
-    final user = authState.user;
-    final userRole = user?['role'];
-    final isAdmin = userRole == 'admin';
-    final isEngineer = userRole == 'engineer';
-    final screens = _getScreens(userRole);
+    final user = ref.watch(authProvider).user;
+    final isAdmin = user?['role'] == 'admin';
+    final isEngineer = user?['role'] == 'engineer';
+    final currentNav = ref.watch(currentNavTabProvider);
+    final tabState = ref.watch(tabProvider);
+    final activeTab = tabState.tabs.firstWhere(
+      (tab) => tab.id == tabState.activeTabId,
+      orElse: () => ProjectTab(id: '', name: '', project: {}),
+    );
+
+    // Determine which screen to show based on current navigation
+    Widget currentScreen;
+    if (tabState.activeTabId != null && activeTab.id.isNotEmpty && currentNav == 'project_tab') {
+      // Show active project tab
+      currentScreen = SemiconDashboardScreen(project: activeTab.project);
+    } else if (currentNav == 'Project Management') {
+      currentScreen = const ProjectManagementScreen();
+    } else if (currentNav == 'Users' && isAdmin) {
+      currentScreen = const UserManagementScreen();
+    } else {
+      // Default: Show Projects
+      currentScreen = isEngineer ? const EngineerProjectsScreen() : const ProjectsScreen();
+    }
 
     return Scaffold(
-      body: Row(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      body: SafeArea(
+        child: Column(
         children: [
-          // Professional Sidebar Navigation
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 250),
-            curve: Curves.easeOutCubic,
-            width: _isSidebarOpen ? 280 : 0,
-            child: _isSidebarOpen
-                ? Container(
-                    clipBehavior: Clip.hardEdge,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          Colors.grey.shade900,
-                          Colors.grey.shade800,
-                        ],
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.2),
-                          blurRadius: 10,
-                          offset: const Offset(2, 0),
+            // Unified Navigation Header
+            _buildNavigationHeader(isAdmin, isEngineer),
+            // Project Tabs Bar (below navigation)
+            _buildProjectTabsBar(),
+            // Current Screen Content
+            Expanded(
+              child: Material(
+                color: Theme.of(context).scaffoldBackgroundColor,
+                child: currentScreen,
+              ),
                         ),
                       ],
                     ),
-                    child: Column(
-              children: [
-                // Logo/Brand Section
-                Container(
-                  padding: const EdgeInsets.all(24),
+      ),
+    );
+  }
+
+  Widget _buildNavigationHeader(bool isAdmin, bool isEngineer) {
+    final currentNav = ref.watch(currentNavTabProvider);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        border: Border(
+          bottom: BorderSide(color: Theme.of(context).dividerColor, width: 1),
+        ),
+      ),
                   child: Row(
+        children: [
+          // Logo
+          Row(
                     children: [
                       Container(
-                        width: 48,
-                        height: 48,
+                width: 32,
+                height: 32,
                         decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              Colors.purple.shade400,
-                              Colors.purple.shade600,
-                            ],
-                          ),
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.purple.withOpacity(0.3),
-                              blurRadius: 8,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
+                  color: const Color(0xFF14B8A6),
+                  borderRadius: BorderRadius.circular(8),
                         ),
                         child: const Icon(
-                          Icons.dashboard,
+                  Icons.memory,
                           color: Colors.white,
-                          size: 28,
+                  size: 20,
                         ),
                       ),
                       const SizedBox(width: 12),
-                      Flexible(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              'ASI Dashboard',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 0.5,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
-                            ),
-                            Text(
-                              'Control Panel',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w300,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(
-                  color: Colors.white12,
-                  height: 1,
-                  thickness: 1,
-                ),
-                // Navigation Items
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    child: Column(
-                      children: [
-                        _buildNavItem(
-                          context: context,
-                          icon: Icons.dashboard_outlined,
-                          selectedIcon: Icons.dashboard,
-                          label: 'Dashboard',
-                          index: 0,
-                          isSelected: _selectedIndex == 0,
-                          isAdmin: isAdmin,
-                          isEngineer: isEngineer,
-                        ),
-                        const SizedBox(height: 8),
-                        _buildNavItem(
-                          context: context,
-                          icon: Icons.folder_outlined,
-                          selectedIcon: Icons.folder,
-                          label: isEngineer ? 'My Projects' : 'Projects',
-                          index: 1,
-                          isSelected: _selectedIndex == 1,
-                          isAdmin: isAdmin,
-                          isEngineer: isEngineer,
-                        ),
-                        const SizedBox(height: 8),
-                        _buildNavItem(
-                          context: context,
-                          icon: Icons.visibility_outlined,
-                          selectedIcon: Icons.visibility,
-                          label: 'View',
-                          index: isEngineer ? 2 : 2,
-                          isSelected: _selectedIndex == (isEngineer ? 2 : 2),
-                          isAdmin: isAdmin,
-                          isEngineer: isEngineer,
-                        ),
-                        if (isAdmin) ...[
-                          const SizedBox(height: 8),
-                          _buildNavItem(
-                            context: context,
-                            icon: Icons.people_outline,
-                            selectedIcon: Icons.people,
-                            label: 'Users',
-                            index: 3,
-                            isSelected: _selectedIndex == 3,
-                            isAdmin: isAdmin,
-                            isEngineer: isEngineer,
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-                // User Profile Section at Bottom
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.2),
-                    border: Border(
-                      top: BorderSide(
-                        color: Colors.white.withOpacity(0.1),
-                        width: 1,
-                      ),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        radius: 20,
-                        backgroundColor: Colors.purple.shade600,
-                        child: Text(
-                          user?['username']?.substring(0, 1).toUpperCase() ?? 'U',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              user?['full_name'] ?? user?['username'] ?? 'User',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
-                            ),
-                            Text(
-                              user?['role']?.toUpperCase() ?? 'USER',
-                              style: TextStyle(
-                                color: Colors.white.withOpacity(0.6),
-                                fontSize: 11,
-                                fontWeight: FontWeight.w500,
-                                letterSpacing: 0.5,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
-                            ),
-                            if (user?['domain_name'] != null) ...[
-                              const SizedBox(height: 4),
-                              Text(
-                                'Active Domain: ${user?['domain_name']}',
-                                style: TextStyle(
-                                  color: Colors.white.withOpacity(0.7),
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w400,
+                            RichText(
+                              text: TextSpan(
+                                style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
                                 ),
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
+                                children: [
+                    TextSpan(
+                      text: 'Semicon',
+                      style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+                    ),
+                                  TextSpan(
+                                    text: 'OS',
+                                    style: TextStyle(color: const Color(0xFF14B8A6)),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ],
+                            ),
+              const SizedBox(width: 8),
+                            Text(
+                              'AI-Driven RTL-to-GDS Orchestration',
+                              style: TextStyle(
+                                fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
                   ),
                 ),
               ],
             ),
-                  )
-                : const SizedBox.shrink(),
-          ),
-          // Main Content
-          Expanded(
-            child: screens[_selectedIndex],
-          ),
-        ],
-      ),
-      appBar: AppBar(
-        leading: IconButton(
-          icon: Icon(
-            _isSidebarOpen ? Icons.menu_open : Icons.menu,
-            color: Colors.grey.shade900,
-          ),
-          onPressed: () {
-            setState(() {
-              _isSidebarOpen = !_isSidebarOpen;
-            });
-          },
-          tooltip: _isSidebarOpen ? 'Close sidebar' : 'Open sidebar',
-        ),
-        title: Text(
-          _getAppBarTitle(_selectedIndex),
-          style: const TextStyle(
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.5,
-          ),
-        ),
-        elevation: 0,
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.grey.shade900,
-        actions: [
+          const Spacer(),
+          // Navigation Tabs (Main only)
           Container(
-            margin: const EdgeInsets.only(right: 8),
+            padding: const EdgeInsets.all(4),
             decoration: BoxDecoration(
-              color: Colors.grey.shade100,
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
               borderRadius: BorderRadius.circular(8),
             ),
-            child: IconButton(
-              icon: Icon(Icons.refresh, color: Colors.grey.shade700),
-              onPressed: () {
-                // Refresh current screen by refreshing the current screen's data
-                // This will be handled by individual screens if needed
-              },
-              tooltip: 'Refresh',
+            child: Row(
+              children: [
+                _buildNavTab('Projects', isSelected: currentNav == 'Projects'),
+                const SizedBox(width: 4),
+                _buildNavTab('Project Management', isSelected: currentNav == 'Project Management'),
+                if (isAdmin) ...[
+                  const SizedBox(width: 4),
+                  _buildNavTab('Users', isSelected: currentNav == 'Users'),
+                ],
+              ],
             ),
           ),
-          PopupMenuButton<dynamic>(
-            icon: Container(
-              margin: const EdgeInsets.only(right: 16),
+          const SizedBox(width: 16),
+          // Status and User Icons
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    Colors.purple.shade400,
-                    Colors.purple.shade600,
-                  ],
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(6),
                 ),
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.purple.withOpacity(0.3),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: CircleAvatar(
-                radius: 18,
-                backgroundColor: Colors.transparent,
-                child: Text(
-                  user?['username']?.substring(0, 1).toUpperCase() ?? 'U',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            elevation: 8,
-            itemBuilder: (BuildContext context) => <PopupMenuEntry<dynamic>>[
-              PopupMenuItem(
                 child: Row(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.purple.shade50,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(
-                        Icons.person,
-                        size: 20,
-                        color: Colors.purple.shade600,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Flexible(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
+                    Icon(Icons.access_time, size: 16, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
+                    const SizedBox(width: 6),
                           Text(
-                            user?['full_name'] ?? user?['username'] ?? 'User',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 15,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 1,
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            user?['role']?.toUpperCase() ?? 'USER',
+                      'IDLE',
                             style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.grey.shade600,
+                        fontSize: 12,
                               fontWeight: FontWeight.w500,
-                              letterSpacing: 0.5,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 1,
-                          ),
-                          if (user?['domain_name'] != null) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              'Active Domain: ${user?['domain_name']}',
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: Colors.grey.shade500,
-                                fontWeight: FontWeight.w400,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
-                            ),
-                          ],
-                        ],
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
                       ),
                     ),
                   ],
                 ),
               ),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                child: Row(
-                  children: [
-                    Icon(Icons.settings, size: 20, color: Colors.grey.shade700),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Settings',
-                      style: TextStyle(color: Colors.grey.shade800),
-                    ),
-                  ],
+              const SizedBox(width: 8),
+              IconButton(
+                icon: Icon(
+                  ref.watch(themeModeProvider) == ThemeMode.dark
+                      ? Icons.light_mode
+                      : Icons.dark_mode_outlined,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
                 ),
-                onTap: () {
-                  // TODO: Navigate to settings
+                onPressed: () {
+                  ref.read(themeModeProvider.notifier).toggleTheme();
                 },
+                tooltip: ref.watch(themeModeProvider) == ThemeMode.dark
+                    ? 'Switch to light mode'
+                    : 'Switch to dark mode',
               ),
+              PopupMenuButton<dynamic>(
+                icon: Icon(Icons.person_outline, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                itemBuilder: (BuildContext context) => <PopupMenuEntry<dynamic>>[
               PopupMenuItem(
                 child: Row(
                   children: [
@@ -447,12 +208,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                 ),
                 onTap: () async {
                   await ref.read(authProvider.notifier).logout();
-                  if (context.mounted) {
-                    Navigator.of(context).pushReplacement(
-                      MaterialPageRoute(builder: (_) => const LoginScreen()),
-                    );
-                  }
                 },
+                  ),
+                ],
               ),
             ],
           ),
@@ -461,163 +219,154 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     );
   }
 
-  Widget _buildNavItem({
-    required BuildContext context,
-    required IconData icon,
-    required IconData selectedIcon,
-    required String label,
-    required int index,
-    required bool isSelected,
-    required bool isAdmin,
-    required bool isEngineer,
-  }) {
+  Widget _buildProjectTabsBar() {
+    final tabState = ref.watch(tabProvider);
+    final currentNav = ref.watch(currentNavTabProvider);
+
+    if (tabState.tabs.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: () {
-            // Only allow admin to access user management (index 3)
-            if (index == 3 && !isAdmin) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Access denied. Admin role required.'),
-                  backgroundColor: Colors.red,
-                ),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        border: Border(
+          bottom: BorderSide(color: Theme.of(context).dividerColor, width: 1),
+        ),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            ...tabState.tabs.map((tab) {
+              final isSelected = currentNav == 'project_tab' && tab.id == tabState.activeTabId;
+              return Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: _buildProjectTab(tab, isSelected),
               );
-              return;
-            }
-            // Engineers can only access index 0 (Dashboard), 1 (Projects), and 2 (View)
-            if (isEngineer && index > 2) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Access denied. This section is not available for engineers.'),
-                  backgroundColor: Colors.red,
-                ),
-              );
-              return;
-            }
-            setState(() {
-              _selectedIndex = index;
-              _isSidebarOpen = false; // Close sidebar when item is selected
-            });
-          },
-          borderRadius: BorderRadius.circular(12),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            curve: Curves.easeOut,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? Colors.purple.shade600.withOpacity(0.2)
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(12),
-              border: isSelected
-                  ? Border.all(
-                      color: Colors.purple.shade400.withOpacity(0.3),
-                      width: 1,
-                    )
-                  : null,
-            ),
-            child: Row(
-              children: [
-                // Active Indicator
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 150),
-                  width: 4,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    gradient: isSelected
-                        ? LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.purple.shade400,
-                              Colors.purple.shade600,
-                            ],
-                          )
-                        : null,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                // Icon - simplified without AnimatedSwitcher
-                Icon(
-                  isSelected ? selectedIcon : icon,
-                  color: isSelected
-                      ? Colors.purple.shade300
-                      : Colors.white.withOpacity(0.7),
-                  size: 24,
-                ),
-                const SizedBox(width: 16),
-                // Label
-                Expanded(
-                  child: Text(
-                    label,
-                    style: TextStyle(
-                      color: isSelected
-                          ? Colors.white
-                          : Colors.white.withOpacity(0.8),
-                      fontSize: 15,
-                      fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                ),
-                // Selection Indicator
-                if (isSelected)
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: Colors.purple.shade400,
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.purple.withOpacity(0.5),
-                          blurRadius: 4,
-                          spreadRadius: 1,
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ),
+            }),
+          ],
         ),
       ),
     );
   }
 
-  String _getAppBarTitle(int index) {
-    final userRole = ref.read(authProvider).user?['role'];
-    final isEngineer = userRole == 'engineer';
-    
-    if (isEngineer) {
-      switch (index) {
-        case 0:
-          return 'Dashboard';
-        case 1:
-          return 'My Projects';
-        case 2:
-          return 'View';
-        default:
-          return 'ASI Dashboard';
-      }
+  Widget _buildNavTab(String label, {required bool isSelected}) {
+    IconData icon;
+    if (label == 'Projects') {
+      icon = Icons.folder_outlined;
+    } else if (label == 'Project Management') {
+      icon = Icons.settings_outlined;
+    } else {
+      icon = Icons.people_outline;
     }
-    
-    switch (index) {
-      case 0:
-        return 'Dashboard';
-      case 1:
-        return 'Project Management';
-      case 2:
-        return 'View';
-      case 3:
-        return 'User Management';
-      default:
-        return 'ASI Dashboard';
-    }
+
+    return InkWell(
+      onTap: () {
+        ref.read(currentNavTabProvider.notifier).state = label;
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF14B8A6).withOpacity(0.1) : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+              border: isSelected
+              ? Border(
+                  bottom: BorderSide(color: const Color(0xFF14B8A6), width: 2),
+                    )
+                  : null,
+            ),
+            child: Row(
+              children: [
+            Icon(
+              icon,
+              size: 16,
+              color: isSelected ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                color: isSelected ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProjectTab(ProjectTab tab, bool isSelected) {
+    return InkWell(
+      onTap: () {
+        ref.read(tabProvider.notifier).switchTab(tab.id);
+        ref.read(currentNavTabProvider.notifier).state = 'project_tab';
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+          color: isSelected ? Theme.of(context).colorScheme.surface : Colors.transparent,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(8),
+            topRight: Radius.circular(8),
+          ),
+          border: isSelected
+              ? Border.all(
+                  color: Theme.of(context).dividerColor,
+                  width: 1,
+                )
+              : null,
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 4,
+                    offset: const Offset(0, -1),
+                  ),
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.folder,
+              size: 14,
+              color: isSelected ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              tab.name,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                color: isSelected ? Theme.of(context).colorScheme.onSurface : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+              ),
+            ),
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: () {
+                ref.read(tabProvider.notifier).closeTab(tab.id);
+                // If closing the active tab, switch back to Projects
+                if (isSelected) {
+                  ref.read(currentNavTabProvider.notifier).state = 'Projects';
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.all(2),
+                child: Icon(
+                  Icons.close,
+                  size: 12,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                ),
+              ),
+            ),
+              ],
+        ),
+      ),
+    );
   }
 }
-
