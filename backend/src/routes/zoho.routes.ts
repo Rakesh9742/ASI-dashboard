@@ -459,12 +459,27 @@ router.get('/callback', async (req, res) => {
       }
 
       // Require refresh token for regular connect flow
+      console.log(`[ZOHO CALLBACK] Processing regular OAuth flow for user ${userId}`);
+      console.log(`[ZOHO CALLBACK] Token data check:`, {
+        has_access_token: !!tokenData.access_token,
+        has_refresh_token: !!tokenData.refresh_token,
+        refresh_token_length: tokenData.refresh_token?.length || 0
+      });
+      
       if (!tokenData.refresh_token || tokenData.refresh_token.trim() === '') {
+        console.error(`[ZOHO CALLBACK] ERROR: No refresh_token received for user ${userId}`);
         throw new Error('Zoho did not return a refresh_token. Please re-authorize with consent. (Scopes: AaaServer.profile.read, profile, email, ZohoProjects.projects.READ, ZohoProjects.portals.READ, ZohoPeople.people.ALL)');
       }
 
       // Save tokens to database
-      await zohoService.saveTokens(userId, tokenData);
+      console.log(`[ZOHO CALLBACK] Attempting to save tokens for user ${userId}`);
+      try {
+        await zohoService.saveTokens(userId, tokenData);
+        console.log(`[ZOHO CALLBACK] ✅ Successfully saved tokens for user ${userId}`);
+      } catch (saveError: any) {
+        console.error(`[ZOHO CALLBACK] ❌ Failed to save tokens for user ${userId}:`, saveError.message);
+        throw saveError;
+      }
 
       // Redirect to success page or return success response
       return res.send(`

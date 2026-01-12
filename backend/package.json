@@ -27,7 +27,8 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "node-pg-migrate": "^6.2.2",
-    "pg": "^8.11.3"
+    "pg": "^8.11.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
