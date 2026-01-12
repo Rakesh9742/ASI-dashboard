@@ -1435,12 +1435,24 @@ class ZohoService {
    * Save or update tokens for a user
    */
   async saveTokens(userId: number, tokenData: ZohoTokenResponse): Promise<void> {
+    console.log(`[SAVE_TOKENS] Starting save for user ${userId}`);
+    console.log(`[SAVE_TOKENS] Token data:`, {
+      has_access_token: !!tokenData.access_token,
+      access_token_length: tokenData.access_token?.length || 0,
+      has_refresh_token: !!tokenData.refresh_token,
+      refresh_token_length: tokenData.refresh_token?.length || 0,
+      expires_in: tokenData.expires_in,
+      token_type: tokenData.token_type
+    });
+    
     // Validate required fields
     if (!tokenData.access_token || tokenData.access_token.trim() === '') {
+      console.error(`[SAVE_TOKENS] ERROR: access_token is missing for user ${userId}`);
       throw new Error('Cannot save tokens: access_token is missing, null, or empty');
     }
 
     if (!tokenData.refresh_token || tokenData.refresh_token.trim() === '') {
+      console.error(`[SAVE_TOKENS] ERROR: refresh_token is missing for user ${userId}`);
       throw new Error('Cannot save tokens: refresh_token is missing, null, or empty');
     }
 
@@ -1460,7 +1472,7 @@ class ZohoService {
     
     console.log(`Saving tokens for user ${userId}, expires_in: ${expiresIn}, expires_at: ${expiresAt.toISOString()}`);
 
-    await pool.query(
+    const result = await pool.query(
       `INSERT INTO zoho_tokens 
        (user_id, access_token, refresh_token, token_type, expires_in, expires_at, scope)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1472,7 +1484,8 @@ class ZohoService {
          expires_in = EXCLUDED.expires_in,
          expires_at = EXCLUDED.expires_at,
          scope = EXCLUDED.scope,
-         updated_at = CURRENT_TIMESTAMP`,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING id, user_id, created_at, expires_at`,
       [
         userId,
         tokenData.access_token,
@@ -1483,6 +1496,31 @@ class ZohoService {
         tokenData.scope || '',
       ]
     );
+    
+    if (result.rows.length === 0) {
+      console.error(`[SAVE_TOKENS] ERROR: No rows returned after insert for user ${userId}`);
+      throw new Error('Failed to save tokens: No rows returned from database');
+    }
+    
+    console.log(`[SAVE_TOKENS] ✅ Successfully saved tokens for user ${userId}:`, {
+      token_id: result.rows[0].id,
+      user_id: result.rows[0].user_id,
+      created_at: result.rows[0].created_at,
+      expires_at: result.rows[0].expires_at
+    });
+    
+    // Verify the token was actually saved
+    const verifyResult = await pool.query(
+      'SELECT id, user_id, expires_at FROM zoho_tokens WHERE user_id = $1',
+      [userId]
+    );
+    
+    if (verifyResult.rows.length === 0) {
+      console.error(`[SAVE_TOKENS] ERROR: Verification failed - token not found after save for user ${userId}`);
+      throw new Error('Failed to verify token save: Token not found after insert');
+    }
+    
+    console.log(`[SAVE_TOKENS] ✅ Verified token saved for user ${userId}`);
   }
 
   /**

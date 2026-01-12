@@ -2,8 +2,14 @@ import 'dart:convert';
 import 'dart:html' as html;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
+import '../services/qms_service.dart';
+import '../widgets/qms_status_badge.dart';
+import 'qms_dashboard_screen.dart';
+import 'qms_checklist_detail_screen.dart';
 
 class SemiconDashboardScreen extends ConsumerStatefulWidget {
   final Map<String, dynamic> project;
@@ -29,9 +35,18 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   List<String> _availableExperiments = [];
   bool _isLoadingBlocks = false;
   
+  // Store block data with IDs for QMS navigation
+  Map<String, int> _blockNameToId = {};
+  
   // Metrics data
   Map<String, dynamic>? _metricsData;
   bool _isLoadingMetrics = false;
+  
+  // QMS data
+  final QmsService _qmsService = QmsService();
+  bool _isLoadingQms = false;
+  List<dynamic> _qmsChecklists = [];
+  Map<String, dynamic>? _qmsBlockStatus;
 
   @override
   void initState() {
@@ -90,6 +105,9 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         }
       }
 
+      // Load block IDs from API
+      _loadBlockIds(projectName, token);
+
       setState(() {
         _availableBlocks = blockSet.toList()..sort();
         _availableExperiments = experimentSet.toList()..sort();
@@ -110,16 +128,79 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     }
   }
 
+  Future<void> _loadBlockIds(String projectName, String token) async {
+    try {
+      // Get project ID first
+      final projects = await _apiService.getProjects(token: token);
+      Map<String, dynamic>? project;
+      try {
+        project = projects.firstWhere(
+          (p) => (p['name']?.toString().toLowerCase() ?? '') == projectName.toLowerCase(),
+        ) as Map<String, dynamic>?;
+      } catch (e) {
+        // Project not found
+        return;
+      }
+      
+      if (project == null || project['id'] == null) {
+        return;
+      }
+      
+      final projectId = project['id'] as int;
+      
+      // Get blocks for this project
+      final headers = <String, String>{
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      };
+      
+      final response = await http.get(
+        Uri.parse('${ApiService.baseUrl}/projects/$projectId/blocks'),
+        headers: headers,
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final blocks = data is Map && data['data'] != null ? data['data'] : (data is List ? data : []);
+        if (blocks is List) {
+          final blockMap = <String, int>{};
+          for (var block in blocks) {
+            final blockName = block['block_name']?.toString();
+            final blockId = block['id'];
+            if (blockName != null && blockId != null) {
+              blockMap[blockName] = blockId is int ? blockId : int.tryParse(blockId.toString()) ?? 0;
+            }
+          }
+          if (mounted) {
+            setState(() {
+              _blockNameToId = blockMap;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      // Silently fail - block IDs won't be available for QMS navigation
+      print('Failed to load block IDs: $e');
+    }
+  }
+
   void _onBlockChanged(String? value) {
     setState(() {
       _selectedBlock = value ?? 'Select a block';
       _selectedExperiment = 'Select an experiment'; // Reset experiment when block changes
       _metricsData = null; // Reset metrics when block changes
+      _qmsChecklists = [];
+      _qmsBlockStatus = null;
     });
     
     // Load experiments for the selected block
     if (_selectedBlock != 'Select a block') {
       _loadExperimentsForBlock(_selectedBlock);
+      
+      // Load QMS data if QMS tab is selected
+      if (_selectedTab == 'QMS') {
+        _loadQmsData();
+      }
     } else {
       setState(() {
         _availableExperiments = [];
@@ -788,14 +869,64 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             ],
           ),
           const SizedBox(height: 24),
-          // Key Metrics Cards
-          _buildMetricsCards(),
-          const SizedBox(height: 32),
-          // Run History
-          _buildRunHistory(),
+          // Content based on selected tab
+          if (_selectedTab == 'Dashboard') ...[
+            // Key Metrics Cards
+            _buildMetricsCards(),
+            const SizedBox(height: 32),
+            // Run History
+            _buildRunHistory(),
+          ] else if (_selectedTab == 'QMS') ...[
+            _buildQmsContent(),
+          ] else if (_selectedTab == '<> Dev') ...[
+            _buildDevContent(),
+          ],
         ],
       ),
     );
+  }
+
+  Future<void> _loadQmsData() async {
+    if (_selectedBlock == 'Select a block') {
+      return;
+    }
+    
+    final blockId = _blockNameToId[_selectedBlock];
+    if (blockId == null) {
+      return;
+    }
+    
+    setState(() {
+      _isLoadingQms = true;
+    });
+    
+    try {
+      final token = ref.read(authProvider).token;
+      if (token == null) {
+        throw Exception('No authentication token');
+      }
+      
+      final checklists = await _qmsService.getChecklistsForBlock(blockId, token: token);
+      final status = await _qmsService.getBlockStatus(blockId, token: token);
+      
+      setState(() {
+        _qmsChecklists = checklists;
+        _qmsBlockStatus = status;
+        _isLoadingQms = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoadingQms = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load QMS data: $e'),
+            backgroundColor: Colors.red.shade600,
+          ),
+        );
+      }
+    }
   }
 
   Widget _buildDashboardTab(String label, {required bool isSelected}) {
@@ -804,6 +935,11 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         setState(() {
           _selectedTab = label;
         });
+        
+        // Load QMS data when QMS tab is selected
+        if (label == 'QMS' && _selectedBlock != 'Select a block') {
+          _loadQmsData();
+        }
       },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1182,6 +1318,329 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         });
       }
     });
+  }
+
+  Widget _buildQmsContent() {
+    if (_selectedBlock == 'Select a block') {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+          child: Text(
+            'Please select a block to view QMS dashboard',
+            style: TextStyle(
+              fontSize: 14,
+              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (_isLoadingQms) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Header with View QMS Dashboard button
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'QMS Dashboard',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+            ElevatedButton.icon(
+              onPressed: () {
+                final blockId = _blockNameToId[_selectedBlock];
+                if (blockId != null) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => QmsDashboardScreen(blockId: blockId),
+                    ),
+                  );
+                }
+              },
+              icon: const Icon(Icons.dashboard, size: 18),
+              label: const Text('View QMS Dashboard'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF14B8A6),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 24),
+        
+        // Block Status Summary
+        if (_qmsBlockStatus != null) ...[
+          Container(
+            padding: const EdgeInsets.all(16.0),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Theme.of(context).dividerColor),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  _qmsBlockStatus!['all_checklists_approved'] == true
+                      ? Icons.check_circle
+                      : (_qmsBlockStatus!['all_checklists_submitted'] == true
+                          ? Icons.pending_actions
+                          : Icons.info_outline),
+                  color: _qmsBlockStatus!['all_checklists_approved'] == true
+                      ? Colors.green
+                      : (_qmsBlockStatus!['all_checklists_submitted'] == true
+                          ? const Color(0xFF14B8A6)
+                          : Colors.orange.shade700),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Block Status',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                      Text(
+                        _qmsBlockStatus!['all_checklists_approved'] == true
+                            ? 'Block Completed'
+                            : (_qmsBlockStatus!['all_checklists_submitted'] == true
+                                ? 'Block Submitted'
+                                : 'Some checklists pending'),
+                        style: TextStyle(
+                          color: _qmsBlockStatus!['all_checklists_approved'] == true
+                              ? Colors.green
+                              : (_qmsBlockStatus!['all_checklists_submitted'] == true
+                                  ? const Color(0xFF14B8A6)
+                                  : Colors.orange.shade700),
+                          fontWeight: FontWeight.w500,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+        ],
+        
+        // Checklists List
+        Row(
+          children: [
+            Icon(Icons.folder_open, color: const Color(0xFF14B8A6), size: 24),
+            const SizedBox(width: 8),
+            Text(
+              'Checklists',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF14B8A6).withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '${_qmsChecklists.length}',
+                style: TextStyle(
+                  color: const Color(0xFF14B8A6),
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        
+        if (_qmsChecklists.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Theme.of(context).dividerColor),
+            ),
+            child: Column(
+              children: [
+                Icon(
+                  Icons.folder_open_outlined,
+                  size: 64,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'No checklists found for this block',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          ..._qmsChecklists.asMap().entries.map((entry) {
+            final checklist = entry.value;
+            final status = checklist['status'] ?? 'draft';
+            final checklistName = checklist['name'] ?? 'Unnamed Checklist';
+            
+            // Get approved date - use updated_at when status is approved
+            String approvedDateText = 'N/A';
+            if (status == 'approved') {
+              final updatedAt = checklist['updated_at'];
+              if (updatedAt != null) {
+                try {
+                  final date = updatedAt is DateTime ? updatedAt : DateTime.parse(updatedAt.toString());
+                  approvedDateText = DateFormat('MMM dd, yyyy').format(date);
+                } catch (e) {
+                  approvedDateText = 'N/A';
+                }
+              }
+            }
+            
+            return Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Theme.of(context).cardColor,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Theme.of(context).dividerColor),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  // Checklist Name - Expanded for column alignment
+                  Expanded(
+                    flex: 3,
+                    child: Text(
+                      checklistName,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
+                  ),
+                  const SizedBox(width: 8), 
+                  // Status - Expanded column
+                  Expanded(
+                    flex: 2,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: QmsStatusBadge(status: status),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Approver Name - Expanded column
+                  Expanded(
+                    flex: 3,
+                    child: Text(
+                      checklist['approver_name'] ?? 'N/A',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: checklist['approver_name'] != null 
+                            ? Theme.of(context).colorScheme.onSurface.withOpacity(0.7)
+                            : Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
+                        fontStyle: checklist['approver_name'] != null ? FontStyle.normal : FontStyle.italic,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Approved Date - Expanded column
+                  Expanded(
+                    flex: 2,
+                    child: Text(
+                      approvedDateText,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  // View Action - Fixed size
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    icon: Icon(
+                      Icons.visibility,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                    ),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => QmsChecklistDetailScreen(
+                            checklistId: checklist['id'],
+                          ),
+                        ),
+                      );
+                    },
+                    tooltip: 'View Checklist',
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+      ],
+    );
+  }
+
+  Widget _buildDevContent() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32.0),
+        child: Text(
+          'Dev tools coming soon...',
+          style: TextStyle(
+            fontSize: 14,
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+          ),
+        ),
+      ),
+    );
   }
 }
 

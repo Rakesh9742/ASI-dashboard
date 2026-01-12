@@ -409,6 +409,42 @@ router.post(
   }
 );
 
+/**
+ * GET /api/projects/:projectId/blocks
+ * Get all blocks for a specific project
+ */
+router.get(
+  '/:projectId/blocks',
+  authenticate,
+  async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.projectId, 10);
+      
+      if (isNaN(projectId)) {
+        return res.status(400).json({ error: 'Invalid project ID' });
+      }
+
+      const result = await pool.query(
+        `
+          SELECT id, block_name, project_id, created_at
+          FROM blocks
+          WHERE project_id = $1
+          ORDER BY block_name
+        `,
+        [projectId]
+      );
+
+      res.json({
+        success: true,
+        data: result.rows,
+      });
+    } catch (error: any) {
+      console.error('Error fetching blocks:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
 export default router;
 
 
