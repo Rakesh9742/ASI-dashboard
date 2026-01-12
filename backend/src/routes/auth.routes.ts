@@ -9,7 +9,7 @@ const router = express.Router();
 // Register new user (admin only for creating users with domain)
 router.post('/register', authenticate, async (req, res) => {
   try {
-    const { username, email, password, full_name, role, domain_id } = req.body;
+    const { username, email, password, full_name, role, domain_id, ipaddress, port, ssh_user, sshpassword } = req.body;
     const currentUser = (req as any).user;
 
     // Only admins can create users
@@ -36,6 +36,14 @@ router.post('/register', authenticate, async (req, res) => {
       }
     }
 
+    // Validate port if provided
+    if (port !== undefined && port !== null) {
+      const portNum = parseInt(port);
+      if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+        return res.status(400).json({ error: 'Port must be a number between 1 and 65535' });
+      }
+    }
+
     // Check if user already exists
     const existingUser = await pool.query(
       'SELECT id FROM users WHERE username = $1 OR email = $2',
@@ -49,12 +57,29 @@ router.post('/register', authenticate, async (req, res) => {
     // Hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
+    // Hash SSH password if provided
+    let sshpasswordHash = null;
+    if (sshpassword) {
+      sshpasswordHash = await bcrypt.hash(sshpassword, 10);
+    }
+
     // Insert user
     const result = await pool.query(
-      `INSERT INTO users (username, email, password_hash, full_name, role, domain_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, username, email, full_name, role, domain_id, is_active, created_at`,
-      [username, email, passwordHash, full_name || null, role || 'engineer', domain_id || null]
+      `INSERT INTO users (username, email, password_hash, full_name, role, domain_id, ipaddress, port, ssh_user, sshpassword_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id, username, email, full_name, role, domain_id, is_active, created_at, ipaddress, port, ssh_user`,
+      [
+        username, 
+        email, 
+        passwordHash, 
+        full_name || null, 
+        role || 'engineer', 
+        domain_id || null,
+        ipaddress || null,
+        port ? parseInt(port) : null,
+        ssh_user || null,
+        sshpasswordHash
+      ]
     );
 
     res.status(201).json({
@@ -273,17 +298,137 @@ router.post('/change-password', authenticate, async (req, res) => {
 // Get all users (accessible by team members)
 router.get('/users', authenticate, authorize('admin', 'project_manager', 'lead', 'engineer'), async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.domain_id, 
-              u.created_at, u.last_login, d.name as domain_name, d.code as domain_code
-       FROM users u
-       LEFT JOIN domains d ON u.domain_id = d.id
-       ORDER BY u.created_at DESC`
-    );
+    const currentUser = (req as any).user;
+    const isAdmin = currentUser?.role === 'admin';
+
+    // Include SSH fields only for admin
+    const query = isAdmin
+      ? `SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.domain_id, 
+                u.created_at, u.last_login, d.name as domain_name, d.code as domain_code,
+                u.ipaddress, u.port, u.ssh_user
+         FROM users u
+         LEFT JOIN domains d ON u.domain_id = d.id
+         ORDER BY u.created_at DESC`
+      : `SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.domain_id, 
+                u.created_at, u.last_login, d.name as domain_name, d.code as domain_code
+         FROM users u
+         LEFT JOIN domains d ON u.domain_id = d.id
+         ORDER BY u.created_at DESC`;
+
+    const result = await pool.query(query);
 
     res.json(result.rows);
   } catch (error: any) {
     console.error('Error fetching users:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update user (admin only) - can update SSH credentials
+router.put('/users/:id', authenticate, async (req, res) => {
+  try {
+    const currentUser = (req as any).user;
+    const userId = parseInt(req.params.id);
+
+    // Only admins can update users
+    if (currentUser?.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can update users' });
+    }
+
+    const { ipaddress, port, ssh_user, sshpassword, full_name, role, domain_id, is_active } = req.body;
+
+    // Validate port if provided
+    if (port !== undefined && port !== null) {
+      const portNum = parseInt(port);
+      if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+        return res.status(400).json({ error: 'Port must be a number between 1 and 65535' });
+      }
+    }
+
+    // Validate role if provided
+    if (role) {
+      const validRoles = ['admin', 'project_manager', 'lead', 'engineer', 'customer'];
+      if (!validRoles.includes(role)) {
+        return res.status(400).json({ error: 'Invalid role' });
+      }
+    }
+
+    // Validate domain_id if provided
+    if (domain_id !== undefined && domain_id !== null) {
+      const domainCheck = await pool.query('SELECT id FROM domains WHERE id = $1 AND is_active = true', [domain_id]);
+      if (domainCheck.rows.length === 0) {
+        return res.status(400).json({ error: 'Invalid domain' });
+      }
+    }
+
+    // Check if user exists
+    const userCheck = await pool.query('SELECT id FROM users WHERE id = $1', [userId]);
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Build update query dynamically
+    const updates: string[] = [];
+    const values: any[] = [];
+    let paramCount = 1;
+
+    if (full_name !== undefined) {
+      updates.push(`full_name = $${paramCount++}`);
+      values.push(full_name);
+    }
+    if (role !== undefined) {
+      updates.push(`role = $${paramCount++}`);
+      values.push(role);
+    }
+    if (domain_id !== undefined) {
+      updates.push(`domain_id = $${paramCount++}`);
+      values.push(domain_id);
+    }
+    if (is_active !== undefined) {
+      updates.push(`is_active = $${paramCount++}`);
+      values.push(is_active);
+    }
+    if (ipaddress !== undefined) {
+      updates.push(`ipaddress = $${paramCount++}`);
+      values.push(ipaddress || null);
+    }
+    if (port !== undefined) {
+      updates.push(`port = $${paramCount++}`);
+      values.push(port ? parseInt(port) : null);
+    }
+    if (ssh_user !== undefined) {
+      updates.push(`ssh_user = $${paramCount++}`);
+      values.push(ssh_user || null);
+    }
+    if (sshpassword !== undefined) {
+      // Hash SSH password if provided
+      if (sshpassword) {
+        const sshpasswordHash = await bcrypt.hash(sshpassword, 10);
+        updates.push(`sshpassword_hash = $${paramCount++}`);
+        values.push(sshpasswordHash);
+      } else {
+        updates.push(`sshpassword_hash = $${paramCount++}`);
+        values.push(null);
+      }
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    values.push(userId);
+    const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount}
+                   RETURNING id, username, email, full_name, role, domain_id, is_active, 
+                             created_at, ipaddress, port, ssh_user`;
+
+    const result = await pool.query(query, values);
+
+    res.json({
+      message: 'User updated successfully',
+      user: result.rows[0]
+    });
+  } catch (error: any) {
+    console.error('Error updating user:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 import '../widgets/add_user_dialog.dart';
+import '../widgets/edit_user_dialog.dart';
 
 class UserManagementScreen extends ConsumerStatefulWidget {
   const UserManagementScreen({super.key});
@@ -82,8 +83,54 @@ class _UserManagementScreenState extends ConsumerState<UserManagementScreen> {
     }
   }
 
+  Future<void> _handleEditUser(Map<String, dynamic> user) async {
+    showDialog(
+      context: context,
+      builder: (context) => EditUserDialog(
+        user: user,
+        onUserUpdated: () {
+          _loadUsers();
+        },
+      ),
+    );
+  }
+
+  Future<void> _handleToggleActive(Map<String, dynamic> user) async {
+    try {
+      final token = ref.read(authProvider.notifier).getToken();
+      await _apiService.updateUser(
+        userId: user['id'],
+        isActive: !(user['is_active'] ?? true),
+        token: token,
+      );
+      _loadUsers();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(user['is_active'] == true 
+                ? 'User deactivated' 
+                : 'User activated'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error updating user: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final currentUser = ref.watch(authProvider).user;
+    final isAdmin = currentUser?['role'] == 'admin';
+    
     return Column(
       children: [
         // Search and Actions Bar
@@ -218,6 +265,57 @@ class _UserManagementScreenState extends ConsumerState<UserManagementScreen> {
                                       ),
                                     ),
                                   ],
+                                  // Show SSH info if admin
+                                  if (isAdmin && (user['ipaddress'] != null || user['ssh_user'] != null)) ...[
+                                    const SizedBox(height: 4),
+                                    Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.blue.shade50,
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(color: Colors.blue.shade200),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Icon(Icons.computer, size: 14, color: Colors.blue.shade700),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                'SSH Access',
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.blue.shade700,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          if (user['ipaddress'] != null) ...[
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              'IP: ${user['ipaddress']}${user['port'] != null ? ':${user['port']}' : ''}',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.blue.shade700,
+                                              ),
+                                            ),
+                                          ],
+                                          if (user['ssh_user'] != null) ...[
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              'User: ${user['ssh_user']}',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.blue.shade700,
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ),
+                                  ],
                                   const SizedBox(height: 4),
                                   Row(
                                     children: [
@@ -267,9 +365,25 @@ class _UserManagementScreenState extends ConsumerState<UserManagementScreen> {
                                   ),
                                 ],
                               ),
-                              trailing: PopupMenuButton<dynamic>(
+                              trailing: isAdmin ? PopupMenuButton<dynamic>(
+                                onSelected: (value) {
+                                  if (value == 'edit') {
+                                    _handleEditUser(user);
+                                  } else if (value == 'toggle_active') {
+                                    _handleToggleActive(user);
+                                  } else if (value == 'delete') {
+                                    // TODO: Implement delete functionality
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Delete functionality not yet implemented'),
+                                        backgroundColor: Colors.orange,
+                                      ),
+                                    );
+                                  }
+                                },
                                 itemBuilder: (BuildContext context) => <PopupMenuEntry<dynamic>>[
                                   const PopupMenuItem(
+                                    value: 'edit',
                                     child: Row(
                                       children: [
                                         Icon(Icons.edit, size: 20),
@@ -279,6 +393,7 @@ class _UserManagementScreenState extends ConsumerState<UserManagementScreen> {
                                     ),
                                   ),
                                   PopupMenuItem(
+                                    value: 'toggle_active',
                                     child: Row(
                                       children: [
                                         Icon(
@@ -296,6 +411,7 @@ class _UserManagementScreenState extends ConsumerState<UserManagementScreen> {
                                   ),
                                   const PopupMenuDivider(),
                                   const PopupMenuItem(
+                                    value: 'delete',
                                     child: Row(
                                       children: [
                                         Icon(Icons.delete, size: 20, color: Colors.red),
@@ -305,7 +421,7 @@ class _UserManagementScreenState extends ConsumerState<UserManagementScreen> {
                                     ),
                                   ),
                                 ],
-                              ),
+                              ) : null,
                             ),
                           );
                         },

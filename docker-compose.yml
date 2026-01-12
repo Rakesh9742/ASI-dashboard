@@ -63,7 +63,7 @@ services:
     environment:
       # BACKEND_URL is used by nginx to proxy /api requests
       - BACKEND_URL=${BACKEND_URL:-http://backend:3000}
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8080}
+      - FRONTEND_URL=${FRONTEND_URL:-http://13.204.252.101:8080}
     networks:
       - asi_network
 

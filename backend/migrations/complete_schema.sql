@@ -65,7 +65,11 @@ CREATE TABLE IF NOT EXISTS users (
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_login TIMESTAMP
+    last_login TIMESTAMP,
+    ipaddress VARCHAR(255),
+    port INTEGER,
+    ssh_user VARCHAR(255),
+    sshpassword_hash VARCHAR(255)
 );
 
 -- ============================================================================
@@ -183,6 +187,7 @@ CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
 CREATE INDEX IF NOT EXISTS idx_users_domain_id ON users(domain_id);
+CREATE INDEX IF NOT EXISTS idx_users_ipaddress ON users(ipaddress) WHERE ipaddress IS NOT NULL;
 
 -- Indexes for domains
 CREATE INDEX IF NOT EXISTS idx_domains_code ON domains(code);

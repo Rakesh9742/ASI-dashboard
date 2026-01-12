@@ -14,6 +14,7 @@ class StandaloneProjectScreen extends ConsumerStatefulWidget {
 
 class _StandaloneProjectScreenState extends ConsumerState<StandaloneProjectScreen> {
   Map<String, dynamic>? _project;
+  String? _initialTab;
   bool _isLoading = true;
 
   @override
@@ -58,6 +59,23 @@ class _StandaloneProjectScreenState extends ConsumerState<StandaloneProjectScree
                 'name': Uri.decodeComponent(projectName),
               };
             }
+          }
+        }
+      }
+
+      // Get initial tab from localStorage or URL
+      final storedTab = html.window.localStorage['standalone_tab'];
+      if (storedTab != null) {
+        _initialTab = storedTab;
+      } else {
+        // Try to get from URL
+        final url = html.window.location.href;
+        if (url.contains('#/project')) {
+          final hashPart = url.split('#/project')[1];
+          if (hashPart.contains('?')) {
+            final queryPart = hashPart.split('?')[1];
+            final params = Uri.splitQueryString(queryPart);
+            _initialTab = params['tab'];
           }
         }
       }
@@ -199,7 +217,10 @@ class _StandaloneProjectScreenState extends ConsumerState<StandaloneProjectScree
           ),
           // Project dashboard content
           Expanded(
-            child: SemiconDashboardScreen(project: _project!),
+            child: SemiconDashboardScreen(
+              project: _project!,
+              initialTab: _initialTab,
+            ),
           ),
         ],
       ),

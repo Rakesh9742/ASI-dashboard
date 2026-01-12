@@ -7,10 +7,12 @@ import '../providers/auth_provider.dart';
 
 class SemiconDashboardScreen extends ConsumerStatefulWidget {
   final Map<String, dynamic> project;
+  final String? initialTab;
 
   const SemiconDashboardScreen({
     super.key,
     required this.project,
+    this.initialTab,
   });
 
   @override
@@ -23,7 +25,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   String _selectedExperiment = 'Select an experiment';
   final TextEditingController _commandController = TextEditingController();
   final List<Map<String, dynamic>> _activityLog = [];
-  String _selectedTab = 'Dashboard';
+  late String _selectedTab;
   
   List<String> _availableBlocks = [];
   List<String> _availableExperiments = [];
@@ -32,10 +34,14 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   // Metrics data
   Map<String, dynamic>? _metricsData;
   bool _isLoadingMetrics = false;
+  
+  // Development Tools expansion state
+  bool _isDevelopmentToolsExpanded = false;
 
   @override
   void initState() {
     super.initState();
+    _selectedTab = widget.initialTab ?? 'Dashboard';
     _loadBlocksAndExperiments();
   }
 
@@ -330,6 +336,50 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     }
   }
   
+  Future<void> _openQMSInNewWindow() async {
+    try {
+      final projectName = widget.project['name'] ?? '';
+      if (projectName.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Project name not available'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      // Store project data in localStorage for the new window
+      html.window.localStorage['standalone_project'] = jsonEncode(widget.project);
+      html.window.localStorage['standalone_tab'] = 'QMS';
+      
+      // Get current URL and construct new window URL
+      final currentUrl = html.window.location.href;
+      final baseUrl = currentUrl.split('?')[0].split('#')[0];
+      final projectNameEncoded = Uri.encodeComponent(projectName);
+      
+      // Open new window with project route and QMS tab
+      String newWindowUrl = '$baseUrl#/project?projectName=$projectNameEncoded&tab=QMS';
+      
+      html.window.open(
+        newWindowUrl,
+        'qms_${projectName.replaceAll(' ', '_')}',
+        'width=1600,height=1000,scrollbars=yes,resizable=yes',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to open QMS window: $e'),
+            backgroundColor: Colors.red.shade600,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _openViewScreenInNewWindow() async {
     try {
       final projectName = widget.project['name'] ?? '';
@@ -763,19 +813,27 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             ),
           ),
           const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              onPressed: () {
-                _openViewScreenInNewWindow();
-              },
-              icon: const Icon(Icons.open_in_new, size: 16),
-              label: const Text('Pop Out'),
-              style: TextButton.styleFrom(
-                foregroundColor: const Color(0xFF14B8A6),
+          // Only show Pop Out for Dashboard and QMS tabs, not for Dev
+          if (_selectedTab != '<> Dev')
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () {
+                  if (_selectedTab == 'Dashboard') {
+                    // Dashboard opens the view screen
+                    _openViewScreenInNewWindow();
+                  } else if (_selectedTab == 'QMS') {
+                    // QMS opens the project screen with QMS tab
+                    _openQMSInNewWindow();
+                  }
+                },
+                icon: const Icon(Icons.open_in_new, size: 16),
+                label: const Text('Pop Out'),
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF14B8A6),
+                ),
               ),
             ),
-          ),
           const SizedBox(height: 24),
           // Dashboard Tabs
           Row(
@@ -788,11 +846,18 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             ],
           ),
           const SizedBox(height: 24),
-          // Key Metrics Cards
-          _buildMetricsCards(),
-          const SizedBox(height: 32),
-          // Run History
-          _buildRunHistory(),
+          // Tab Content
+          if (_selectedTab == 'Dashboard') ...[
+            // Key Metrics Cards
+            _buildMetricsCards(),
+            const SizedBox(height: 32),
+            // Run History
+            _buildRunHistory(),
+          ] else if (_selectedTab == 'QMS') ...[
+            _buildQMSContent(),
+          ] else if (_selectedTab == '<> Dev') ...[
+            _buildDevContent(),
+          ],
         ],
       ),
     );
@@ -1182,6 +1247,237 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         });
       }
     });
+  }
+
+  Widget _buildQMSContent() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32.0),
+        child: Text(
+          'QMS content coming soon',
+          style: TextStyle(
+            fontSize: 14,
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDevContent() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Header
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Development Environment',
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Project: ${widget.project['name'] ?? 'Unknown'}',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                  ),
+                ),
+              ],
+            ),
+            // No Pop Out button for Dev tab
+          ],
+        ),
+        const SizedBox(height: 32),
+        // Xterm and GUI Cards
+        Row(
+          children: [
+            Expanded(
+              child: _buildDevCard(
+                title: 'Xterm',
+                description: 'Open inline terminal for command execution',
+                icon: Icons.terminal,
+                iconColor: const Color(0xFF14B8A6),
+                buttonText: 'Click to open',
+                onPressed: () {
+                  // TODO: Open terminal
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Opening terminal...'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(width: 24),
+            Expanded(
+              child: _buildDevCard(
+                title: 'GUI',
+                description: 'Open graphical design viewer in new tab',
+                icon: Icons.desktop_windows,
+                iconColor: Colors.green,
+                buttonText: 'Opens in new tab',
+                onPressed: () {
+                  // TODO: Open GUI viewer
+                  _openViewScreenInNewWindow();
+                },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 32),
+        // Development Tools Section
+        _buildDevelopmentToolsSection(),
+      ],
+    );
+  }
+
+  Widget _buildDevCard({
+    required String title,
+    required String description,
+    required IconData icon,
+    required Color iconColor,
+    required String buttonText,
+    required VoidCallback onPressed,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(32),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Theme.of(context).dividerColor),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          // Icon
+          Container(
+            width: 120,
+            height: 120,
+            decoration: BoxDecoration(
+              color: iconColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Icon(
+              icon,
+              size: 64,
+              color: iconColor,
+            ),
+          ),
+          const SizedBox(height: 24),
+          // Title
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Description
+          Text(
+            description,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 14,
+              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+            ),
+          ),
+          const SizedBox(height: 24),
+          // Button
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: onPressed,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF87CEEB),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: Text(buttonText),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDevelopmentToolsSection() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Theme.of(context).dividerColor),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () {
+              setState(() {
+                _isDevelopmentToolsExpanded = !_isDevelopmentToolsExpanded;
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Row(
+                children: [
+                  AnimatedRotation(
+                    turns: _isDevelopmentToolsExpanded ? 0.25 : 0.0,
+                    duration: const Duration(milliseconds: 200),
+                    child: Icon(
+                      Icons.chevron_right,
+                      size: 20,
+                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Development Tools',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_isDevelopmentToolsExpanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(44, 0, 16, 16),
+              child: Text(
+                'Access command-line tools for RTL design and verification workflows. The terminal provides access to Yosys for synthesis and OpenROAD for place and route. The GUI viewer displays your design layout and hierarchy visualization.',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                  height: 1.5,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }
 

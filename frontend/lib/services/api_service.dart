@@ -363,6 +363,10 @@ class ApiService {
     String? fullName,
     String? role,
     int? domainId,
+    String? ipaddress,
+    int? port,
+    String? sshUser,
+    String? sshPassword,
     String? token,
   }) async {
     final response = await http.post(
@@ -375,6 +379,10 @@ class ApiService {
         if (fullName != null) 'full_name': fullName,
         if (role != null) 'role': role,
         if (domainId != null) 'domain_id': domainId,
+        if (ipaddress != null) 'ipaddress': ipaddress,
+        if (port != null) 'port': port,
+        if (sshUser != null) 'ssh_user': sshUser,
+        if (sshPassword != null) 'sshpassword': sshPassword,
       }),
     );
     
@@ -383,6 +391,42 @@ class ApiService {
     } else {
       final error = json.decode(response.body);
       throw Exception(error['error'] ?? 'Failed to create user');
+    }
+  }
+
+  // Update user (admin only)
+  Future<Map<String, dynamic>> updateUser({
+    required int userId,
+    String? fullName,
+    String? role,
+    int? domainId,
+    bool? isActive,
+    String? ipaddress,
+    int? port,
+    String? sshUser,
+    String? sshPassword,
+    String? token,
+  }) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/auth/users/$userId'),
+      headers: _getHeaders(token: token),
+      body: json.encode({
+        if (fullName != null) 'full_name': fullName,
+        if (role != null) 'role': role,
+        if (domainId != null) 'domain_id': domainId,
+        if (isActive != null) 'is_active': isActive,
+        if (ipaddress != null) 'ipaddress': ipaddress,
+        if (port != null) 'port': port,
+        if (sshUser != null) 'ssh_user': sshUser,
+        if (sshPassword != null) 'sshpassword': sshPassword,
+      }),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to update user');
     }
   }
 
