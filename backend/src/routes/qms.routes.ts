@@ -66,10 +66,10 @@ const csvUpload = multer({
   },
   fileFilter: (req: express.Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (ext === '.csv') {
+    if (ext === '.csv' || ext === '.json') {
       cb(null, true);
     } else {
-      cb(new Error('Only CSV files are allowed'));
+      cb(new Error('Only CSV and JSON files are allowed'));
     }
   }
 });
@@ -641,7 +641,7 @@ router.post(
   async (req, res) => {
     try {
       const checklistId = parseInt(req.params.checklistId, 10);
-      const { check_id, report_path } = req.body;
+      const { check_id, report_path, signoff, result_value, comments } = req.body;
       const file = (req as any).file as Express.Multer.File;
       
       if (isNaN(checklistId)) {
@@ -688,11 +688,20 @@ router.post(
         });
       }
 
-      // Execute fill action (processes CSV and updates check item)
+      // Execute fill action (processes CSV/JSON and updates check item)
       // Note: We need a system user ID for audit logging. Use 1 (admin) or create a system user
       const systemUserId = 1; // Default to admin user for external API calls
       
-      const csvData = await qmsService.executeFillAction(checkItemId, finalReportPath, systemUserId);
+      const reportData = await qmsService.executeFillAction(
+        checkItemId, 
+        finalReportPath, 
+        systemUserId,
+        {
+          signoff_status: signoff,
+          result_value: result_value,
+          engineer_comments: comments
+        }
+      );
 
       // Clean up uploaded file if it was uploaded (not using existing path)
       if (file && fs.existsSync(file.path)) {
@@ -710,7 +719,7 @@ router.post(
           check_item_id: checkItemId,
           check_id: check_id,
           report_path: finalReportPath,
-          rows_count: csvData.length,
+          rows_count: Array.isArray(reportData) ? reportData.length : 1,
           processed_at: new Date().toISOString()
         }
       });
@@ -731,6 +740,51 @@ router.post(
     }
   }
 );
+
+/**
+ * GET /api/qms/checklists/:checklistId/history
+ * Get version history of a checklist
+ */
+router.get('/checklists/:checklistId/history', authenticate, async (req, res) => {
+  try {
+    const checklistId = parseInt(req.params.checklistId, 10);
+    
+    if (isNaN(checklistId)) {
+      return res.status(400).json({ error: 'Invalid checklist ID' });
+    }
+
+    const history = await qmsService.getChecklistHistory(checklistId);
+    res.json(history);
+  } catch (error: any) {
+    console.error('Error getting checklist history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/qms/versions/:versionId
+ * Get a specific checklist version snapshot
+ */
+router.get('/versions/:versionId', authenticate, async (req, res) => {
+  try {
+    const versionId = parseInt(req.params.versionId, 10);
+    
+    if (isNaN(versionId)) {
+      return res.status(400).json({ error: 'Invalid version ID' });
+    }
+
+    const version = await qmsService.getChecklistVersion(versionId);
+    
+    if (!version) {
+      return res.status(404).json({ error: 'Version not found' });
+    }
+
+    res.json(version);
+  } catch (error: any) {
+    console.error('Error getting checklist version:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 export default router;
 
