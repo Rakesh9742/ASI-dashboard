@@ -104,7 +104,7 @@ router.get('/', authenticate, async (req, res) => {
     if (userRole === 'engineer' || userRole === 'customer') {
       try {
         // Get user email from database
-        const userResult = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+        const userResult = await pool.query('SELECT email FROM public.users WHERE id = $1', [userId]);
         if (userResult.rows.length > 0) {
           userEmail = userResult.rows[0].email;
           extractedUsername = extractUsernameFromEmail(userEmail);
@@ -191,17 +191,17 @@ router.get('/', authenticate, async (req, res) => {
         -- AI Summary
         ai.summary_text as ai_summary,
         s.id as stage_id
-      FROM stages s
-      INNER JOIN runs r ON s.run_id = r.id
-      INNER JOIN blocks b ON r.block_id = b.id
-      INNER JOIN projects p ON b.project_id = p.id
-      LEFT JOIN project_domains pd ON p.id = pd.project_id
-      LEFT JOIN domains d ON pd.domain_id = d.id
-      LEFT JOIN stage_timing_metrics stm ON s.id = stm.stage_id
-      LEFT JOIN stage_constraint_metrics scm ON s.id = scm.stage_id
-      LEFT JOIN power_ir_em_checks pirem ON s.id = pirem.stage_id
-      LEFT JOIN physical_verification pv ON s.id = pv.stage_id
-      LEFT JOIN ai_summaries ai ON s.id = ai.stage_id
+      FROM public.stages s
+      INNER JOIN public.runs r ON s.run_id = r.id
+      INNER JOIN public.blocks b ON r.block_id = b.id
+      INNER JOIN public.projects p ON b.project_id = p.id
+      LEFT JOIN public.project_domains pd ON p.id = pd.project_id
+      LEFT JOIN public.domains d ON pd.domain_id = d.id
+      LEFT JOIN public.stage_timing_metrics stm ON s.id = stm.stage_id
+      LEFT JOIN public.stage_constraint_metrics scm ON s.id = scm.stage_id
+      LEFT JOIN public.power_ir_em_checks pirem ON s.id = pirem.stage_id
+      LEFT JOIN public.physical_verification pv ON s.id = pv.stage_id
+      LEFT JOIN public.ai_summaries ai ON s.id = ai.stage_id
       WHERE 1=1
     `;
 
@@ -213,7 +213,7 @@ router.get('/', authenticate, async (req, res) => {
     if (userRole === 'customer') {
       // For customers, show all EDA files for projects assigned to them via user_projects table
       query += ` AND EXISTS (
-        SELECT 1 FROM user_projects up 
+        SELECT 1 FROM public.user_projects up 
         WHERE up.user_id = $${++paramCount} AND up.project_id = p.id
       )`;
       params.push(userId);
@@ -292,17 +292,28 @@ router.get('/', authenticate, async (req, res) => {
     query += ` ORDER BY s.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     params.push(parseInt(limit as string), parseInt(offset as string));
 
+    // DEBUG: Verify search_path and table existence
+    try {
+      const debugSearchPath = await pool.query('SHOW search_path');
+      console.log('🔍 [DEBUG] DB search_path:', debugSearchPath.rows[0]?.search_path);
+      
+      const debugTableCheck = await pool.query("SELECT to_regclass('public.stages')");
+      console.log('🔍 [DEBUG] Table check (public.stages):', debugTableCheck.rows[0]?.to_regclass);
+    } catch (debugError: any) {
+      console.error('⚠️ [DEBUG] Debug query failed:', debugError.message);
+    }
+
     const result = await pool.query(query, params);
 
     // Get total count for pagination
     let countQuery = `
       SELECT COUNT(DISTINCT s.id)
-      FROM stages s
-      INNER JOIN runs r ON s.run_id = r.id
-      INNER JOIN blocks b ON r.block_id = b.id
-      INNER JOIN projects p ON b.project_id = p.id
-      LEFT JOIN project_domains pd ON p.id = pd.project_id
-      LEFT JOIN domains d ON pd.domain_id = d.id
+      FROM public.stages s
+      INNER JOIN public.runs r ON s.run_id = r.id
+      INNER JOIN public.blocks b ON r.block_id = b.id
+      INNER JOIN public.projects p ON b.project_id = p.id
+      LEFT JOIN public.project_domains pd ON p.id = pd.project_id
+      LEFT JOIN public.domains d ON pd.domain_id = d.id
       WHERE 1=1
     `;
     const countParams: any[] = [];
@@ -799,7 +810,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
 
     // 1. Find project
     const projectResult = await client.query(
-      'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
+      'SELECT id FROM public.projects WHERE LOWER(name) = LOWER($1)',
       [projectName]
     );
 
@@ -815,7 +826,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
 
     // 2. Find block
     const blockResult = await client.query(
-      'SELECT id FROM blocks WHERE project_id = $1 AND LOWER(block_name) = LOWER($2)',
+      'SELECT id FROM public.blocks WHERE project_id = $1 AND LOWER(block_name) = LOWER($2)',
       [projectId, blockName]
     );
 
@@ -831,7 +842,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
 
     // 3. Find run
     const runResult = await client.query(
-      'SELECT id FROM runs WHERE block_id = $1 AND experiment = $2 AND rtl_tag = $3',
+      'SELECT id FROM public.runs WHERE block_id = $1 AND experiment = $2 AND rtl_tag = $3',
       [blockId, experiment, rtlTag]
     );
 
@@ -847,7 +858,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
 
     // 4. Find and delete existing stage (CASCADE will delete related records)
     const existingStageResult = await client.query(
-      'SELECT id FROM stages WHERE run_id = $1 AND stage_name = $2',
+      'SELECT id FROM public.stages WHERE run_id = $1 AND stage_name = $2',
       [runId, stageName]
     );
 
@@ -863,7 +874,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
 
     // Delete the stage (CASCADE will handle related tables)
     await client.query(
-      'DELETE FROM stages WHERE id = $1',
+      'DELETE FROM public.stages WHERE id = $1',
       [oldStageId]
     );
 
@@ -883,7 +894,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
 
     // 6. Insert new stage
     const stageResult = await client.query(
-      `INSERT INTO stages (
+      `INSERT INTO public.stages (
         run_id, stage_name, timestamp, stage_directory, run_status, runtime, memory_usage,
         log_errors, log_warnings, log_critical, area, inst_count, utilization,
         metal_density_max, min_pulse_width, min_period, double_switching
@@ -918,7 +929,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
         stageData.interface_timing_i2r_wns !== undefined ||
         stageData.hold_wns !== undefined) {
       await client.query(
-        `INSERT INTO stage_timing_metrics (
+        `INSERT INTO public.stage_timing_metrics (
           stage_id, internal_r2r_wns, internal_r2r_tns, internal_r2r_nvp,
           interface_i2r_wns, interface_i2r_tns, interface_i2r_nvp,
           interface_r2o_wns, interface_r2o_tns, interface_r2o_nvp,
@@ -965,7 +976,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
     // 8. Save constraint metrics if provided
     if (stageData.max_tran_wns !== undefined || stageData.drc_violations !== undefined) {
       await client.query(
-        `INSERT INTO stage_constraint_metrics (
+        `INSERT INTO public.stage_constraint_metrics (
           stage_id, max_tran_wns, max_tran_nvp, max_cap_wns, max_cap_nvp,
           max_fanout_wns, max_fanout_nvp, drc_violations, congestion_hotspot, noise_violations
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -997,7 +1008,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
     // 9. Save power/IR/EM checks if provided
     if (stageData.ir_static !== undefined || stageData.em_power !== undefined) {
       await client.query(
-        `INSERT INTO power_ir_em_checks (
+        `INSERT INTO public.power_ir_em_checks (
           stage_id, ir_static, ir_dynamic, em_power, em_signal
         ) VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (stage_id) DO UPDATE SET
@@ -1018,7 +1029,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
     // 10. Save physical verification if provided
     if (stageData.pv_drc_base !== undefined || stageData.lvs !== undefined) {
       await client.query(
-        `INSERT INTO physical_verification (
+        `INSERT INTO public.physical_verification (
           stage_id, pv_drc_base, pv_drc_metal, pv_drc_antenna, lvs, erc, r2g_lec, g2g_lec
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (stage_id) DO UPDATE SET
@@ -1049,7 +1060,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
         for (const [groupName, groupData] of Object.entries(stageData.setup_path_groups)) {
           const group = groupData as any;
           await client.query(
-            `INSERT INTO path_groups (stage_id, group_type, group_name, wns, tns, nvp)
+            `INSERT INTO public.path_groups (stage_id, group_type, group_name, wns, tns, nvp)
              VALUES ($1, 'setup', $2, $3, $4, $5)
              ON CONFLICT (stage_id, group_type, group_name) DO UPDATE SET
                wns = EXCLUDED.wns, tns = EXCLUDED.tns, nvp = EXCLUDED.nvp`,
@@ -1069,7 +1080,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
         for (const [groupName, groupData] of Object.entries(stageData.hold_path_groups)) {
           const group = groupData as any;
           await client.query(
-            `INSERT INTO path_groups (stage_id, group_type, group_name, wns, tns, nvp)
+            `INSERT INTO public.path_groups (stage_id, group_type, group_name, wns, tns, nvp)
              VALUES ($1, 'hold', $2, $3, $4, $5)
              ON CONFLICT (stage_id, group_type, group_name) DO UPDATE SET
                wns = EXCLUDED.wns, tns = EXCLUDED.tns, nvp = EXCLUDED.nvp`,
@@ -1090,7 +1101,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
       for (const [violationType, violationData] of Object.entries(stageData.drv_violations)) {
         const violation = violationData as any;
         await client.query(
-          `INSERT INTO drv_violations (stage_id, violation_type, wns, tns, nvp)
+          `INSERT INTO public.drv_violations (stage_id, violation_type, wns, tns, nvp)
            VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (stage_id, violation_type) DO UPDATE SET
              wns = EXCLUDED.wns, tns = EXCLUDED.tns, nvp = EXCLUDED.nvp`,
@@ -1108,7 +1119,7 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
     // 13. Save AI summary if provided
     if (stageData.ai_summary || stageData.ai_based_overall_summary) {
       await client.query(
-        `INSERT INTO ai_summaries (stage_id, summary_text)
+        `INSERT INTO public.ai_summaries (stage_id, summary_text)
          VALUES ($1, $2)
          ON CONFLICT (stage_id) DO UPDATE SET summary_text = EXCLUDED.summary_text`,
         [newStageId, stageData.ai_summary || stageData.ai_based_overall_summary]

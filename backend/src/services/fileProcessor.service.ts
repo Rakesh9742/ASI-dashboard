@@ -860,8 +860,6 @@ class FileProcessorService {
     const client = await pool.connect();
     
     try {
-      // Set search path to public schema to ensure tables are found
-      await client.query('SET search_path TO public');
       await client.query('BEGIN');
 
       if (processedData.length === 0) {
@@ -892,7 +890,7 @@ class FileProcessorService {
         if (!domainId) {
           // Check if a similar domain exists (normalized match) to avoid duplicates
           const similarDomainCheck = await client.query(
-            'SELECT id, name FROM public.domains WHERE LOWER(TRIM(name)) = $1 AND is_active = true',
+            'SELECT id, name FROM domains WHERE LOWER(TRIM(name)) = $1 AND is_active = true',
             [normalizedForMatching]
           );
           
@@ -911,7 +909,7 @@ class FileProcessorService {
             const domainCode = normalizedDomainName.toUpperCase().replace(/\s+/g, '_').substring(0, 50);
             try {
               const domainResult = await client.query(
-                'INSERT INTO public.domains (name, code, description, is_active) VALUES ($1, $2, $3, $4) RETURNING id',
+                'INSERT INTO domains (name, code, description, is_active) VALUES ($1, $2, $3, $4) RETURNING id',
                 [normalizedDomainName, domainCode, `Domain: ${normalizedDomainName}`, true]
               );
               domainId = domainResult.rows[0].id;
@@ -951,7 +949,7 @@ class FileProcessorService {
       if (!projectId && projectName) {
         // Create project if it doesn't exist
         const projectResult = await client.query(
-          'INSERT INTO public.projects (name, created_by) VALUES ($1, $2) RETURNING id',
+          'INSERT INTO projects (name, created_by) VALUES ($1, $2) RETURNING id',
           [projectName, uploadedBy || null]
         );
         projectId = projectResult.rows[0].id;
@@ -967,14 +965,14 @@ class FileProcessorService {
         try {
           // Check if link already exists (project_domains uses composite primary key, no id column)
           const linkCheck = await client.query(
-            'SELECT project_id, domain_id FROM public.project_domains WHERE project_id = $1 AND domain_id = $2',
+            'SELECT project_id, domain_id FROM project_domains WHERE project_id = $1 AND domain_id = $2',
             [projectId, domainId]
           );
           
           if (linkCheck.rows.length === 0) {
             // Create link between project and domain (composite primary key handles conflicts)
             await client.query(
-              'INSERT INTO public.project_domains (project_id, domain_id) VALUES ($1, $2) ON CONFLICT (project_id, domain_id) DO NOTHING',
+              'INSERT INTO project_domains (project_id, domain_id) VALUES ($1, $2) ON CONFLICT (project_id, domain_id) DO NOTHING',
               [projectId, domainId]
             );
             console.log(`\n${'='.repeat(60)}`);
@@ -1003,7 +1001,7 @@ class FileProcessorService {
 
       // 4. Find or create block
       let blockResult = await client.query(
-        'SELECT id FROM public.blocks WHERE project_id = $1 AND block_name = $2',
+        'SELECT id FROM blocks WHERE project_id = $1 AND block_name = $2',
         [projectId, blockName]
       );
 
@@ -1013,7 +1011,7 @@ class FileProcessorService {
         console.log(`📄 [NEW SCHEMA] Found existing block: ${blockName} (ID: ${blockId})`);
       } else {
         const insertBlockResult = await client.query(
-          'INSERT INTO public.blocks (project_id, block_name) VALUES ($1, $2) RETURNING id',
+          'INSERT INTO blocks (project_id, block_name) VALUES ($1, $2) RETURNING id',
           [projectId, blockName]
         );
         blockId = insertBlockResult.rows[0].id;
@@ -1033,7 +1031,7 @@ class FileProcessorService {
 
       // 6. Find or create run
       let runResult = await client.query(
-        'SELECT id FROM public.runs WHERE block_id = $1 AND experiment = $2 AND rtl_tag = $3',
+        'SELECT id FROM runs WHERE block_id = $1 AND experiment = $2 AND rtl_tag = $3',
         [blockId, experiment, rtlTag]
       );
 
@@ -1042,13 +1040,13 @@ class FileProcessorService {
         runId = runResult.rows[0].id;
         // Update run info
         await client.query(
-          'UPDATE public.runs SET user_name = $1, run_directory = $2, last_updated = $3 WHERE id = $4',
+          'UPDATE runs SET user_name = $1, run_directory = $2, last_updated = $3 WHERE id = $4',
           [userName, runDirectory, lastUpdated, runId]
         );
         console.log(`📄 [NEW SCHEMA] Found existing run: ${experiment}/${rtlTag} (ID: ${runId})`);
       } else {
         const insertRunResult = await client.query(
-          'INSERT INTO public.runs (block_id, experiment, rtl_tag, user_name, run_directory, last_updated) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+          'INSERT INTO runs (block_id, experiment, rtl_tag, user_name, run_directory, last_updated) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
           [blockId, experiment, rtlTag, userName, runDirectory, lastUpdated]
         );
         runId = insertRunResult.rows[0].id;
@@ -1071,7 +1069,7 @@ class FileProcessorService {
 
         // Create stage record
         const stageResult = await client.query(
-          `INSERT INTO public.stages (
+          `INSERT INTO stages (
             run_id, stage_name, timestamp, stage_directory, run_status, runtime, memory_usage,
             log_errors, log_warnings, log_critical, area, inst_count, utilization,
             metal_density_max, min_pulse_width, min_period, double_switching
@@ -1210,7 +1208,7 @@ class FileProcessorService {
     };
 
     await client.query(
-      `INSERT INTO public.stage_timing_metrics (
+      `INSERT INTO stage_timing_metrics (
         stage_id, internal_r2r_wns, internal_r2r_tns, internal_r2r_nvp,
         interface_i2r_wns, interface_i2r_tns, interface_i2r_nvp,
         interface_r2o_wns, interface_r2o_tns, interface_r2o_nvp,
@@ -1270,7 +1268,7 @@ class FileProcessorService {
     };
 
     await client.query(
-      `INSERT INTO public.stage_constraint_metrics (
+      `INSERT INTO stage_constraint_metrics (
         stage_id, max_tran_wns, max_tran_nvp, max_cap_wns, max_cap_nvp,
         max_fanout_wns, max_fanout_nvp, drc_violations, congestion_hotspot, noise_violations
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -1317,7 +1315,7 @@ class FileProcessorService {
         };
         
         await client.query(
-          `INSERT INTO public.path_groups (stage_id, group_type, group_name, wns, tns, nvp)
+          `INSERT INTO path_groups (stage_id, group_type, group_name, wns, tns, nvp)
            VALUES ($1, 'setup', $2, $3, $4, $5)
            ON CONFLICT (stage_id, group_type, group_name) DO UPDATE SET
              wns = EXCLUDED.wns, tns = EXCLUDED.tns, nvp = EXCLUDED.nvp`,
@@ -1347,7 +1345,7 @@ class FileProcessorService {
         };
         
         await client.query(
-          `INSERT INTO public.path_groups (stage_id, group_type, group_name, wns, tns, nvp)
+          `INSERT INTO path_groups (stage_id, group_type, group_name, wns, tns, nvp)
            VALUES ($1, 'hold', $2, $3, $4, $5)
            ON CONFLICT (stage_id, group_type, group_name) DO UPDATE SET
              wns = EXCLUDED.wns, tns = EXCLUDED.tns, nvp = EXCLUDED.nvp`,
@@ -1383,7 +1381,7 @@ class FileProcessorService {
         };
         
         await client.query(
-          `INSERT INTO public.drv_violations (stage_id, violation_type, wns, tns, nvp)
+          `INSERT INTO drv_violations (stage_id, violation_type, wns, tns, nvp)
            VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (stage_id, violation_type) DO UPDATE SET
              wns = EXCLUDED.wns, tns = EXCLUDED.tns, nvp = EXCLUDED.nvp`,
@@ -1414,7 +1412,7 @@ class FileProcessorService {
     };
 
     await client.query(
-      `INSERT INTO public.power_ir_em_checks (stage_id, ir_static, ir_dynamic, em_power, em_signal)
+      `INSERT INTO power_ir_em_checks (stage_id, ir_static, ir_dynamic, em_power, em_signal)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (stage_id) DO UPDATE SET
          ir_static = EXCLUDED.ir_static,
@@ -1445,7 +1443,7 @@ class FileProcessorService {
     };
 
     await client.query(
-      `INSERT INTO public.physical_verification (
+      `INSERT INTO physical_verification (
         stage_id, pv_drc_base, pv_drc_metal, pv_drc_antenna, lvs, erc, r2g_lec, g2g_lec
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (stage_id) DO UPDATE SET
@@ -1475,9 +1473,9 @@ class FileProcessorService {
     if (!summaryText || summaryText.trim() === '') return;
     
     // Delete existing summary for this stage and insert new one
-    await client.query('DELETE FROM public.ai_summaries WHERE stage_id = $1', [stageId]);
+    await client.query('DELETE FROM ai_summaries WHERE stage_id = $1', [stageId]);
     await client.query(
-      `INSERT INTO public.ai_summaries (stage_id, summary_text)
+      `INSERT INTO ai_summaries (stage_id, summary_text)
        VALUES ($1, $2)`,
       [stageId, summaryText]
     );
@@ -1501,8 +1499,6 @@ class FileProcessorService {
     const client = await pool.connect();
     
     try {
-      // Set search path to public schema to ensure tables are found
-      await client.query('SET search_path TO public');
       await client.query('BEGIN');
 
       // Get the first row's project and domain info (assuming all rows have same project/domain)
