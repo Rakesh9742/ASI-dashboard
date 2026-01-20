@@ -860,6 +860,8 @@ class FileProcessorService {
     const client = await pool.connect();
     
     try {
+      // Set search path to public schema to ensure tables are found
+      await client.query('SET search_path TO public');
       await client.query('BEGIN');
 
       if (processedData.length === 0) {
@@ -1499,6 +1501,8 @@ class FileProcessorService {
     const client = await pool.connect();
     
     try {
+      // Set search path to public schema to ensure tables are found
+      await client.query('SET search_path TO public');
       await client.query('BEGIN');
 
       // Get the first row's project and domain info (assuming all rows have same project/domain)

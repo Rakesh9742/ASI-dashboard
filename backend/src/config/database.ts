@@ -8,8 +8,14 @@ export const pool = new Pool({
   ssl: false, // Disable SSL for local Docker connections
 });
 
-pool.on('connect', () => {
-  console.log('✅ Connected to PostgreSQL database');
+pool.on('connect', async (client) => {
+  try {
+    // Set search path to public schema to ensure tables are found
+    await client.query('SET search_path TO public');
+    console.log('✅ Connected to PostgreSQL database');
+  } catch (error) {
+    console.error('❌ Error setting search_path:', error);
+  }
 });
 
 pool.on('error', (err) => {
