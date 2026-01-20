@@ -35,6 +35,17 @@ const parseDatabaseUrl = () => {
 
 const dbConfig = parseDatabaseUrl();
 
+// Print database connection details
+console.log('\n' + '='.repeat(60));
+console.log('📊 DATABASE CONNECTION CONFIG:');
+console.log('='.repeat(60));
+console.log(`   Host: ${dbConfig.host}`);
+console.log(`   Port: ${dbConfig.port}`);
+console.log(`   User: ${dbConfig.user}`);
+console.log(`   Database: ${dbConfig.database}`);
+console.log(`   Search Path: public`);
+console.log('='.repeat(60) + '\n');
+
 export const pool = new Pool({
   host: dbConfig.host,
   port: dbConfig.port,
@@ -47,7 +58,7 @@ export const pool = new Pool({
 });
 
 pool.on('connect', () => {
-  console.log('✅ Connected to PostgreSQL database');
+  console.log(`✅ Connected to PostgreSQL database: ${dbConfig.database}`);
 });
 
 pool.on('error', (err) => {
@@ -56,11 +67,15 @@ pool.on('error', (err) => {
 });
 
 // Test connection
-pool.query('SELECT NOW()', (err, res) => {
+pool.query('SELECT NOW(), current_database()', (err, res) => {
   if (err) {
     console.error('❌ Database connection error:', err);
   } else {
-    console.log('✅ Database connection successful:', res.rows[0].now);
+    const dbName = res.rows[0].current_database;
+    const currentTime = res.rows[0].now;
+    console.log(`✅ Database connection successful!`);
+    console.log(`   Database Name: ${dbName}`);
+    console.log(`   Current Time: ${currentTime}`);
   }
 });
 
