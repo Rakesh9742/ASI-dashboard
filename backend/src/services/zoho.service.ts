@@ -282,7 +282,7 @@ class ZohoService {
    */
   async getValidAccessToken(userId: number): Promise<string> {
     const result = await pool.query(
-      'SELECT access_token, refresh_token, expires_at FROM zoho_tokens WHERE user_id = $1',
+      'SELECT access_token, refresh_token, expires_at FROM public.zoho_tokens WHERE user_id = $1',
       [userId]
     );
 
@@ -319,7 +319,7 @@ class ZohoService {
       }
 
       await pool.query(
-        `UPDATE zoho_tokens 
+        `UPDATE public.zoho_tokens 
          SET access_token = $1, 
              refresh_token = $2,
              expires_at = $3,
@@ -1445,6 +1445,19 @@ class ZohoService {
       token_type: tokenData.token_type
     });
     
+    // Verify user exists before saving tokens
+    const userCheck = await pool.query(
+      'SELECT id, username, email FROM public.users WHERE id = $1',
+      [userId]
+    );
+    
+    if (userCheck.rows.length === 0) {
+      console.error(`[SAVE_TOKENS] ERROR: User ${userId} does not exist in users table`);
+      throw new Error(`Cannot save tokens: User with ID ${userId} does not exist. Please ensure the user is created first.`);
+    }
+    
+    console.log(`[SAVE_TOKENS] Verified user exists: ${userCheck.rows[0].username} (${userCheck.rows[0].email})`);
+    
     // Validate required fields
     if (!tokenData.access_token || tokenData.access_token.trim() === '') {
       console.error(`[SAVE_TOKENS] ERROR: access_token is missing for user ${userId}`);
@@ -1473,7 +1486,7 @@ class ZohoService {
     console.log(`Saving tokens for user ${userId}, expires_in: ${expiresIn}, expires_at: ${expiresAt.toISOString()}`);
 
     const result = await pool.query(
-      `INSERT INTO zoho_tokens 
+      `INSERT INTO public.zoho_tokens 
        (user_id, access_token, refresh_token, token_type, expires_in, expires_at, scope)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (user_id) 
@@ -1511,7 +1524,7 @@ class ZohoService {
     
     // Verify the token was actually saved
     const verifyResult = await pool.query(
-      'SELECT id, user_id, expires_at FROM zoho_tokens WHERE user_id = $1',
+      'SELECT id, user_id, expires_at FROM public.zoho_tokens WHERE user_id = $1',
       [userId]
     );
     
@@ -1529,7 +1542,7 @@ class ZohoService {
   async hasValidToken(userId: number): Promise<boolean> {
     try {
       const result = await pool.query(
-        'SELECT expires_at FROM zoho_tokens WHERE user_id = $1',
+        'SELECT expires_at FROM public.zoho_tokens WHERE user_id = $1',
         [userId]
       );
 
@@ -1548,7 +1561,7 @@ class ZohoService {
    * Delete tokens for a user
    */
   async revokeTokens(userId: number): Promise<void> {
-    await pool.query('DELETE FROM zoho_tokens WHERE user_id = $1', [userId]);
+    await pool.query('DELETE FROM public.zoho_tokens WHERE user_id = $1', [userId]);
   }
 }
 
