@@ -6,8 +6,8 @@ import '../providers/theme_provider.dart';
 import 'projects_screen.dart';
 import 'project_management_screen.dart';
 import 'user_management_screen.dart';
-import 'engineer_projects_screen.dart';
 import 'semicon_dashboard_screen.dart';
+import 'view_screen.dart';
 
 // Provider to track current navigation tab
 final currentNavTabProvider = StateProvider<String>((ref) => 'Projects');
@@ -23,8 +23,10 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
   @override
   Widget build(BuildContext context) {
     final user = ref.watch(authProvider).user;
-    final isAdmin = user?['role'] == 'admin';
-    final isEngineer = user?['role'] == 'engineer';
+    final userRole = user?['role'];
+    final isAdmin = userRole == 'admin';
+    final isEngineer = userRole == 'engineer';
+    final isCustomer = userRole == 'customer';
     final currentNav = ref.watch(currentNavTabProvider);
     final tabState = ref.watch(tabProvider);
     final activeTab = tabState.tabs.firstWhere(
@@ -35,15 +37,29 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     // Determine which screen to show based on current navigation
     Widget currentScreen;
     if (tabState.activeTabId != null && activeTab.id.isNotEmpty && currentNav == 'project_tab') {
-      // Show active project tab
-      currentScreen = SemiconDashboardScreen(project: activeTab.project);
-    } else if (currentNav == 'Project Management') {
+      // For customers, show ViewScreen with customer view instead of SemiconDashboardScreen
+      if (isCustomer) {
+        final projectName = activeTab.project['name']?.toString();
+        if (projectName != null) {
+          // Import ViewScreen at top if not already imported
+          currentScreen = ViewScreen(
+            initialProject: projectName,
+            initialViewType: 'customer',
+          );
+        } else {
+          currentScreen = SemiconDashboardScreen(project: activeTab.project);
+        }
+      } else {
+        // Show active project tab (SemiconDashboardScreen) for non-customers
+        currentScreen = SemiconDashboardScreen(project: activeTab.project);
+      }
+    } else if (currentNav == 'Project Management' && !isCustomer) {
       currentScreen = const ProjectManagementScreen();
     } else if (currentNav == 'Users' && isAdmin) {
       currentScreen = const UserManagementScreen();
     } else {
-      // Default: Show Projects
-      currentScreen = isEngineer ? const EngineerProjectsScreen() : const ProjectsScreen();
+      // Default: Show Projects - Use new UI for all roles including engineers
+      currentScreen = const ProjectsScreen();
     }
 
     return Scaffold(
@@ -52,7 +68,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
         child: Column(
         children: [
             // Unified Navigation Header
-            _buildNavigationHeader(isAdmin, isEngineer),
+            _buildNavigationHeader(isAdmin, isEngineer, isCustomer),
             // Project Tabs Bar (below navigation)
             _buildProjectTabsBar(),
             // Current Screen Content
@@ -68,7 +84,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     );
   }
 
-  Widget _buildNavigationHeader(bool isAdmin, bool isEngineer) {
+  Widget _buildNavigationHeader(bool isAdmin, bool isEngineer, bool isCustomer) {
     final currentNav = ref.watch(currentNavTabProvider);
 
     return Container(
@@ -127,25 +143,40 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
               ],
             ),
           const Spacer(),
-          // Navigation Tabs (Main only)
-          Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              children: [
-                _buildNavTab('Projects', isSelected: currentNav == 'Projects'),
-                const SizedBox(width: 4),
-                _buildNavTab('Project Management', isSelected: currentNav == 'Project Management'),
-                if (isAdmin) ...[
+          // Navigation Tabs (Main only) - Hide Project Management for customers
+          if (!isCustomer)
+            Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  _buildNavTab('Projects', isSelected: currentNav == 'Projects'),
                   const SizedBox(width: 4),
-                  _buildNavTab('Users', isSelected: currentNav == 'Users'),
+                  _buildNavTab('Project Management', isSelected: currentNav == 'Project Management'),
+                  if (isAdmin) ...[
+                    const SizedBox(width: 4),
+                    _buildNavTab('Users', isSelected: currentNav == 'Users'),
+                  ],
                 ],
-              ],
+              ),
+            )
+          else
+            // For customers, only show Projects tab
+            Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  _buildNavTab('Projects', isSelected: currentNav == 'Projects'),
+                ],
+              ),
             ),
-          ),
           const SizedBox(width: 16),
           // Status and User Icons
           Row(

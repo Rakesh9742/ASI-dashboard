@@ -112,3 +112,6 @@ docker exec -it asi_postgres psql -U postgres -d ASI
 
 
 
+
+
+

@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASI Job Lifecycle Visualizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); opacity: 0.5; }
+            50% { transform: scale(1.05); opacity: 0.3; }
+            100% { transform: scale(0.95); opacity: 0.5; }
+        }
+        .active-ring {
+            animation: pulse-ring 2s infinite;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 font-sans min-h-screen p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
+        <div>
+            <h1 class="text-2xl font-bold flex items-center gap-2">
+                <i data-lucide="activity" class="text-blue-600"></i>
+                ASI Job Lifecycle Visualizer
+            </h1>
+            <p class="text-slate-500 text-sm">Real-time execution flow: User UI → ASI → Chipex Agent → Result</p>
+        </div>
+        
+        <div class="flex gap-2">
+            <button onclick="resetFlow()" class="px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50">
+                Reset
+            </button>
+            <button id="runBtn" onclick="startSimulation()" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 flex items-center gap-2 transition-all">
+                <i data-lucide="play" class="w-4 h-4"></i>
+                Run Synthesize Flow
+            </button>
+        </div>
+    </div>
+
+    <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <!-- Main Flow Canvas -->
+        <div class="lg:col-span-3 space-y-6">
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 overflow-x-auto relative">
+                <div id="flow-container" class="min-w-[900px] flex justify-between items-start relative z-10">
+                    <!-- Nodes will be injected here -->
+                </div>
+            </div>
+
+            <!-- Console / Terminal -->
+            <div class="bg-slate-900 rounded-xl shadow-2xl overflow-hidden font-mono text-xs">
+                <div class="bg-slate-800 px-4 py-2 flex items-center justify-between border-b border-slate-700">
+                    <div class="flex gap-1.5">
+                        <div class="w-2.5 h-2.5 rounded-full bg-red-500"></div>
+                        <div class="w-2.5 h-2.5 rounded-full bg-yellow-500"></div>
+                        <div class="w-2.5 h-2.5 rounded-full bg-green-500"></div>
+                    </div>
+                    <span class="text-slate-400 text-[10px]">system_logs --agent-mode</span>
+                </div>
+                <div id="console-logs" class="p-4 h-48 overflow-y-auto text-emerald-400 space-y-1 custom-scrollbar">
+                    <div class="flex gap-2"><span class="text-slate-600 shrink-0">></span><span>[SYSTEM] Ready to initiate flow...</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Inspector Panel -->
+        <div class="lg:col-span-1 space-y-6">
+            <div id="inspector-card" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 h-full min-h-[400px]">
+                <h3 class="text-sm font-bold text-slate-900 mb-4 flex items-center gap-2">
+                    <i data-lucide="info" class="w-4 h-4 text-blue-500"></i>
+                    Step Inspector
+                </h3>
+                <div id="inspector-content">
+                    <div class="h-64 flex flex-col items-center justify-center text-center p-4">
+                        <div class="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-3">
+                            <i data-lucide="arrow-down" class="w-5 h-5 text-slate-400 animate-bounce"></i>
+                        </div>
+                        <p class="text-xs text-slate-400 italic">Click "Run Synthesize" to begin the execution sequence.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Logic Breakdown Grid -->
+    <div class="max-w-7xl mx-auto mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="bg-blue-50 border border-blue-100 p-4 rounded-xl">
+            <h4 class="text-blue-700 text-xs font-bold uppercase mb-2">1. Control Plane (ASI)</h4>
+            <p class="text-xs text-blue-600 leading-relaxed">Handles UI requests, manages the DB queue, and serves job configurations.</p>
+        </div>
+        <div class="bg-amber-50 border border-amber-100 p-4 rounded-xl">
+            <h4 class="text-amber-700 text-xs font-bold uppercase mb-2">2. Communication Layer</h4>
+            <p class="text-xs text-amber-600 leading-relaxed">HTTPS polling pattern ensures agents behind firewalls can securely retrieve jobs.</p>
+        </div>
+        <div class="bg-emerald-50 border border-emerald-100 p-4 rounded-xl">
+            <h4 class="text-emerald-700 text-xs font-bold uppercase mb-2">3. Execution Plane</h4>
+            <p class="text-xs text-emerald-600 leading-relaxed">Isolated workspaces, automated script execution, and cloud storage syncing.</p>
+        </div>
+    </div>
+
+    <script>
+        const FLOW_STEPS = [
+            { id: 1, title: "User Trigger", actor: "USER UI", icon: "cpu", description: "User clicks 'Run Synthesize' on the dashboard.", details: { command: "run_synthesize.sh", user: "user123" } },
+            { id: 2, title: "Job Creation", actor: "ASI APP", icon: "activity", description: "ASI App creates job record for target 'chipex-01'.", details: { url: "https://ap.com", job_id: "JOB_101", target: "chipex-01" } },
+            { id: 3, title: "Queueing", actor: "ASI QUEUE", icon: "database", description: "Job placed in DB queue awaiting agent polling.", details: { status: "QUEUED", priority: "HIGH" } },
+            { id: 4, title: "Agent Poll", actor: "CHIPEX AGENT", icon: "server", description: "Agent service on chipex-01 polls queue via HTTPS.", details: { service: "agent.service", auth: "Bearer-Token-XYZ" } },
+            { id: 5, title: "Handshake", actor: "ASI APP", icon: "chevron-right", description: "ASI sends full job details and signed URLs.", details: { payload: ["job_id", "cmd_whitelist", "s3_signed_urls"] } },
+            { id: 6, title: "Workspace", actor: "AGENT", icon: "folder-open", description: "Agent creates local folder and downloads inputs.", details: { path: "/home/agent/users/user123/job_101" } },
+            { id: 7, title: "Execute", actor: "AGENT", icon: "terminal", description: "Agent executes bash script in isolated environment.", details: { execution: "./run_synthesize.sh" } },
+            { id: 8, title: "Upload", actor: "CLOUD STORAGE", icon: "cloud-upload", description: "Output artifacts uploaded back to S3.", details: { artifacts: ["logs.txt", "netlist.v"] } },
+            { id: 9, title: "Complete", actor: "USER UI", icon: "check-circle", description: "Final status updated to SUCCESS.", details: { status: "COMPLETED", time: "14.2s" } }
+        ];
+
+        let currentStep = 0;
+        let isAutoPlaying = false;
+
+        function renderNodes() {
+            const container = document.getElementById('flow-container');
+            container.innerHTML = FLOW_STEPS.map((step, idx) => {
+                const status = currentStep === step.id ? 'active' : (currentStep > step.id ? 'completed' : 'pending');
+                
+                let ringClass = status === 'active' ? 'border-blue-500 scale-110 ring-4 ring-blue-100 active-ring' : 
+                                status === 'completed' ? 'border-green-500 bg-green-50' : 'border-slate-200 text-slate-400';
+                
+                let iconColor = status === 'active' ? 'text-blue-600' : 
+                                status === 'completed' ? 'text-green-600' : 'text-slate-300';
+
+                let connectorColor = status === 'completed' ? 'bg-green-400' : 'bg-slate-100';
+
+                return `
+                    <div class="relative flex flex-col items-center flex-1 transition-all duration-500">
+                        <div class="w-14 h-14 rounded-2xl flex items-center justify-center border-2 z-10 bg-white shadow-sm transition-all duration-500 ${ringClass}">
+                            <i data-lucide="${step.icon}" class="w-6 h-6 ${iconColor}"></i>
+                        </div>
+                        <div class="mt-3 text-center">
+                            <p class="text-[9px] font-bold uppercase tracking-wider ${status === 'active' ? 'text-blue-600' : 'text-slate-400'}">${step.actor}</p>
+                            <p class="text-[10px] font-semibold text-slate-800 leading-tight mt-0.5">${step.title}</p>
+                        </div>
+                        ${idx < FLOW_STEPS.length - 1 ? `
+                            <div class="absolute top-7 left-1/2 w-full h-[2px] -z-0">
+                                <div class="h-full w-full ${connectorColor} transition-colors duration-1000"></div>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+            lucide.createIcons();
+        }
+
+        function addLog(msg) {
+            const consoleBox = document.getElementById('console-logs');
+            const time = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = 'flex gap-2 animate-in fade-in slide-in-from-left-2 duration-300';
+            logEntry.innerHTML = `<span class="text-slate-600 shrink-0">[${time}] ></span><span>${msg}</span>`;
+            consoleBox.appendChild(logEntry);
+            consoleBox.scrollTop = consoleBox.scrollHeight;
+        }
+
+        function updateInspector() {
+            const content = document.getElementById('inspector-content');
+            if (currentStep === 0) {
+                content.innerHTML = `<div class="h-64 flex flex-col items-center justify-center text-center p-4">
+                    <div class="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-3">
+                        <i data-lucide="arrow-down" class="w-5 h-5 text-slate-400 animate-bounce"></i>
+                    </div>
+                    <p class="text-xs text-slate-400 italic">Click "Run Synthesize" to begin.</p>
+                </div>`;
+                lucide.createIcons();
+                return;
+            }
+
+            const step = FLOW_STEPS[currentStep - 1];
+            content.innerHTML = `
+                <div class="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Active Actor</label>
+                        <p class="text-blue-600 font-bold text-sm">${step.actor}</p>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Logic Step</label>
+                        <p class="text-slate-800 font-semibold text-sm">${step.title}</p>
+                        <p class="text-xs text-slate-500 mt-1">${step.description}</p>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Trace Data</label>
+                        <div class="mt-2 bg-slate-900 rounded-lg p-3 border border-slate-700">
+                            <pre class="text-[10px] text-emerald-400 whitespace-pre-wrap">${JSON.stringify(step.details, null, 2)}</pre>
+                        </div>
+                    </div>
+                    <div class="pt-4 border-t border-slate-100">
+                        <button onclick="handleNext()" 
+                                ${currentStep >= FLOW_STEPS.length || isAutoPlaying ? 'disabled' : ''}
+                                class="w-full py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-colors flex items-center justify-center gap-2 disabled:opacity-20">
+                            Next Flow Segment <i data-lucide="chevron-right" class="w-3 h-3"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+            lucide.createIcons();
+        }
+
+        function handleNext() {
+            if (currentStep < FLOW_STEPS.length) {
+                currentStep++;
+                addLog(`Transition to Step ${currentStep}: ${FLOW_STEPS[currentStep - 1].title}`);
+                renderNodes();
+                updateInspector();
+            }
+        }
+
+        async function startSimulation() {
+            resetFlow();
+            isAutoPlaying = true;
+            document.getElementById('runBtn').disabled = true;
+            document.getElementById('runBtn').innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Processing...`;
+            lucide.createIcons();
+
+            for (let i = 1; i <= FLOW_STEPS.length; i++) {
+                currentStep = i;
+                addLog(`Action: ${FLOW_STEPS[i - 1].actor} triggered ${FLOW_STEPS[i - 1].title}`);
+                renderNodes();
+                updateInspector();
+                await new Promise(r => setTimeout(r, 1200));
+            }
+
+            isAutoPlaying = false;
+            document.getElementById('runBtn').disabled = false;
+            document.getElementById('runBtn').innerHTML = `<i data-lucide="play" class="w-4 h-4"></i> Run Synthesize Flow`;
+            addLog("Simulation completed successfully.");
+            lucide.createIcons();
+        }
+
+        function resetFlow() {
+            currentStep = 0;
+            isAutoPlaying = false;
+            document.getElementById('console-logs').innerHTML = `<div class="flex gap-2"><span class="text-slate-600 shrink-0">></span><span>[SYSTEM] Flow reset. Ready.</span></div>`;
+            renderNodes();
+            updateInspector();
+        }
+
+        // Init
+        window.onload = () => {
+            renderNodes();
+            updateInspector();
+            lucide.createIcons();
+        };
+    </script>
+</body>
+</html>

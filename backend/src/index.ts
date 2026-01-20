@@ -10,7 +10,6 @@ import authRoutes from './routes/auth.routes';
 import domainRoutes from './routes/domain.routes';
 import zohoRoutes from './routes/zoho.routes';
 import edaFilesRoutes from './routes/edaFiles.routes';
-import qmsRoutes from './routes/qms.routes';
 import fileWatcherService from './services/fileWatcher.service';
 import { authenticate } from './middleware/auth.middleware';
 
@@ -22,10 +21,10 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 // Configure CORS to allow frontend URL from environment
 const isDevelopment = process.env.NODE_ENV !== 'production';
-const frontendUrl = process.env.FRONTEND_URL;
+const corsOrigin = process.env.CORS_ORIGIN || process.env.FRONTEND_URL;
 
-if (!frontendUrl) {
-  console.warn('⚠️  FRONTEND_URL is not set in .env file. CORS may not work correctly.');
+if (!corsOrigin) {
+  console.warn('⚠️  CORS_ORIGIN or FRONTEND_URL is not set in .env file. CORS may not work correctly.');
 }
 
 app.use(cors({
@@ -50,12 +49,12 @@ app.use(cors({
     }
     
     // Check against allowed origin from environment variable (works for both dev and production)
-    if (frontendUrl) {
+    if (corsOrigin) {
       const normalizedOrigin = normalizeUrl(origin);
-      const normalizedFrontendUrl = normalizeUrl(frontendUrl);
+      const normalizedCorsOrigin = normalizeUrl(corsOrigin);
       
       // Exact match after normalization (protocol-agnostic)
-      if (normalizedOrigin === normalizedFrontendUrl) {
+      if (normalizedOrigin === normalizedCorsOrigin) {
         console.log(`✅ CORS allowed origin: ${origin} (matched normalized: ${normalizedOrigin})`);
         return callback(null, true);
       }
@@ -63,7 +62,7 @@ app.use(cors({
       // Also check if origin matches by hostname and port (protocol-agnostic)
       try {
         const originUrl = new URL(origin);
-        const frontendUrlObj = new URL(frontendUrl);
+        const corsOriginObj = new URL(corsOrigin);
         
         // Get ports (handle default ports)
         const getPort = (url: URL) => {
@@ -72,10 +71,10 @@ app.use(cors({
         };
         
         const originPort = getPort(originUrl);
-        const frontendPort = getPort(frontendUrlObj);
+        const corsPort = getPort(corsOriginObj);
         
         // Match by hostname and port (allows http/https flexibility)
-        if (originUrl.hostname === frontendUrlObj.hostname && originPort === frontendPort) {
+        if (originUrl.hostname === corsOriginObj.hostname && originPort === corsPort) {
           console.log(`✅ CORS allowed origin: ${origin} (matched hostname: ${originUrl.hostname}, port: ${originPort})`);
           return callback(null, true);
         }
@@ -86,7 +85,7 @@ app.use(cors({
     }
     
     // Log rejected origin for debugging
-    console.warn(`🚫 CORS blocked origin: ${origin} (expected: ${frontendUrl || 'not set'}, NODE_ENV: ${process.env.NODE_ENV || 'not set'})`);
+    console.warn(`🚫 CORS blocked origin: ${origin} (expected: ${corsOrigin || 'not set'}, NODE_ENV: ${process.env.NODE_ENV || 'not set'})`);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true
@@ -108,7 +107,6 @@ app.get('/', (req, res) => {
       domains: '/api/domains',
       dashboard: '/api/dashboard',
       edaFiles: '/api/eda-files',
-      qms: '/api/qms',
     },
     documentation: 'See API documentation for details'
   });
@@ -140,7 +138,6 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/domains', domainRoutes);
 app.use('/api/zoho', zohoRoutes);
 app.use('/api/eda-files', edaFilesRoutes);
-app.use('/api/qms', qmsRoutes);
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

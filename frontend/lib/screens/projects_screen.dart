@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 import '../providers/tab_provider.dart';
+import '../providers/view_screen_provider.dart';
 import 'main_navigation_screen.dart';
+import 'view_screen.dart';
 
 class ProjectsScreen extends ConsumerStatefulWidget {
   const ProjectsScreen({super.key});
@@ -31,18 +33,64 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       });
 
       final token = ref.read(authProvider).token;
+      final userRole = ref.read(authProvider).user?['role'];
       if (token == null) {
         throw Exception('No authentication token');
       }
 
-      // Fetch projects from Zoho
-      final response = await _apiService.getZohoProjects(token: token);
-      if (mounted) {
-        setState(() {
-          _projects = List<Map<String, dynamic>>.from(response['projects'] ?? []);
-          // If no projects, show empty list (will display "No projects found")
-          _isLoading = false;
-        });
+      // For customers, use regular getProjects API which filters by user_projects
+      // For others, try Zoho first, fallback to regular projects
+      if (userRole == 'customer') {
+        // Customers should use the regular projects API (filters by user_projects)
+        final projectsResponse = await _apiService.getProjects(token: token);
+        if (mounted) {
+          setState(() {
+            // Handle both array and object response formats
+            if (projectsResponse is List) {
+              _projects = List<Map<String, dynamic>>.from(projectsResponse);
+            } else {
+              // Try to get from map structure
+              final projectsMap = projectsResponse as dynamic;
+              final allProjects = projectsMap['all'] ?? projectsMap['local'] ?? [];
+              if (allProjects is List) {
+                _projects = List<Map<String, dynamic>>.from(allProjects);
+              } else {
+                _projects = [];
+              }
+            }
+            _isLoading = false;
+          });
+        }
+      } else {
+        // For non-customers, try Zoho first
+        try {
+          final response = await _apiService.getZohoProjects(token: token);
+          if (mounted) {
+            setState(() {
+              _projects = List<Map<String, dynamic>>.from(response['projects'] ?? []);
+              _isLoading = false;
+            });
+          }
+        } catch (zohoError) {
+          // Fallback to regular projects API if Zoho fails
+          final projectsResponse = await _apiService.getProjects(token: token);
+          if (mounted) {
+            setState(() {
+              if (projectsResponse is List) {
+                _projects = List<Map<String, dynamic>>.from(projectsResponse);
+              } else {
+                final projectsMap = projectsResponse as dynamic;
+                final allProjects = projectsMap['all'] ?? projectsMap['local'] ?? [];
+                if (allProjects is List) {
+                  _projects = List<Map<String, dynamic>>.from(allProjects);
+                } else {
+                  _projects = [];
+                }
+              }
+              _isLoading = false;
+            });
+          }
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -102,66 +150,105 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     final filteredProjects = _filteredProjects;
 
     // Show Projects content (header is now in MainNavigationScreen)
-    return _isLoading
+    return Material(
+      color: Colors.transparent,
+      child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
                   : SingleChildScrollView(
                       padding: const EdgeInsets.all(24.0),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Title
-                          Text(
-                            'Projects',
-                            style: TextStyle(
-                              fontSize: 32,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.grey.shade900,
-                            ),
+                          // Header
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'RTL2GDS Projects',
+                                style: TextStyle(
+                                  fontSize: 30,
+                                  fontWeight: FontWeight.bold,
+                                  color: Theme.of(context).colorScheme.onSurface,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Manage and monitor your chip design projects',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Select a project to open',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Colors.grey.shade600,
-                            ),
-                          ),
-                          const SizedBox(height: 24),
+                          const SizedBox(height: 32),
 
                           // Summary Cards
                           _buildSummaryCards(stats),
-                          const SizedBox(height: 24),
+                          const SizedBox(height: 32),
 
                           // Search Bar
-                          _buildSearchBar(),
-                          const SizedBox(height: 24),
+                          SizedBox(
+                            width: double.infinity,
+                            child: _buildSearchBar(),
+                          ),
+                          const SizedBox(height: 32),
 
                           // Projects Grid
                           _buildProjectsGrid(filteredProjects),
                         ],
-      ),
+                      ),
+                    ),
     );
   }
 
   Widget _buildSummaryCards(Map<String, int> stats) {
-    return Row(
-      children: [
-        Expanded(
-          child: _buildStatCard('Total Projects', stats['total']!.toString(), Colors.grey.shade900),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _buildStatCard('Running', stats['running']!.toString(), const Color(0xFF14B8A6)),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981)),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _buildStatCard('Failed', stats['failed']!.toString(), const Color(0xFFEF4444)),
-        ),
-      ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 600;
+        
+        if (isMobile) {
+          return Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(child: _buildStatCard('Total Projects', stats['total']!.toString(), Theme.of(context).colorScheme.onSurface)),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildStatCard('Running', stats['running']!.toString(), Theme.of(context).colorScheme.secondary)),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981))),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildStatCard('Failed', stats['failed']!.toString(), const Color(0xFFEF4444))),
+                ],
+              ),
+            ],
+          );
+        }
+        
+        return Row(
+          children: [
+            Expanded(
+              child: _buildStatCard('Total Projects', stats['total']!.toString(), Theme.of(context).colorScheme.onSurface),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildStatCard('Running', stats['running']!.toString(), Theme.of(context).colorScheme.secondary),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981)),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildStatCard('Failed', stats['failed']!.toString(), const Color(0xFFEF4444)),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -172,13 +259,6 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Theme.of(context).dividerColor),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -190,7 +270,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
               color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 8),
           Text(
             value,
             style: TextStyle(
@@ -205,27 +285,39 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
   }
 
   Widget _buildSearchBar() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Theme.of(context).dividerColor),
-      ),
-      child: TextField(
-        onChanged: (value) {
-          setState(() {
-            _searchQuery = value;
-          });
-        },
-        style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
-        decoration: InputDecoration(
-          hintText: 'Search projects...',
-          hintStyle: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
-          prefixIcon: Icon(Icons.search, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)),
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        ),
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.maxWidth;
+        final searchWidth = maxWidth > 600 ? 384.0 : double.infinity;
+        
+        return Container(
+          width: searchWidth,
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Theme.of(context).dividerColor),
+          ),
+          child: TextField(
+            onChanged: (value) {
+              setState(() {
+                _searchQuery = value;
+              });
+            },
+            style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+            decoration: InputDecoration(
+              hintText: 'Search projects...',
+              hintStyle: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
+              prefixIcon: Icon(
+                Icons.search, 
+                size: 16,
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+              ),
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -235,25 +327,36 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         child: Padding(
           padding: const EdgeInsets.all(48.0),
           child: Text(
-            _searchQuery.isEmpty ? 'No projects found' : 'No projects match your search',
+            _searchQuery.isEmpty ? 'No projects found' : 'No projects found matching your search.',
             style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)),
           ),
         ),
       );
     }
 
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 20,
-        mainAxisSpacing: 20,
-        childAspectRatio: 1.35,
-      ),
-      itemCount: projects.length,
-      itemBuilder: (context, index) {
-        return _buildProjectCard(projects[index]);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        int crossAxisCount = 3;
+        if (constraints.maxWidth < 600) {
+          crossAxisCount = 1;
+        } else if (constraints.maxWidth < 1024) {
+          crossAxisCount = 2;
+        }
+        
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            crossAxisSpacing: 16,
+            mainAxisSpacing: 16,
+            childAspectRatio: 1.35,
+          ),
+          itemCount: projects.length,
+          itemBuilder: (context, index) {
+            return _buildProjectCard(projects[index]);
+          },
+        );
       },
     );
   }
@@ -262,33 +365,14 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     final status = (project['status'] ?? '').toString().toUpperCase();
     if (status == 'RUNNING' || status == 'IN_PROGRESS') {
       return 'RUNNING';
+    } else if (status == 'COMPLETED' || status == 'COMPLETE') {
+      return 'COMPLETED';
     } else if (status == 'FAILED' || status == 'ERROR') {
       return 'FAILED';
     }
     return 'IDLE';
   }
 
-  Color _getStatusColor(String status) {
-    switch (status) {
-      case 'RUNNING':
-        return Colors.blue.shade600;
-      case 'FAILED':
-        return Colors.red.shade600;
-      default:
-        return Colors.grey.shade600;
-    }
-  }
-
-  IconData _getStatusIcon(String status) {
-    switch (status) {
-      case 'RUNNING':
-        return Icons.play_circle_filled;
-      case 'FAILED':
-        return Icons.error;
-      default:
-        return Icons.access_time;
-    }
-  }
 
   String _formatTimeAgo(String? dateString) {
     if (dateString == null || dateString.isEmpty) return 'N/A';
@@ -297,14 +381,20 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       final now = DateTime.now();
       final difference = now.difference(date);
 
-      if (difference.inMinutes < 60) {
-        return '${difference.inMinutes} minutes ago';
+      if (difference.inMinutes < 1) {
+        return 'just now';
+      } else if (difference.inMinutes < 60) {
+        return '${difference.inMinutes} minute${difference.inMinutes > 1 ? 's' : ''} ago';
       } else if (difference.inHours < 24) {
         return '${difference.inHours} hour${difference.inHours > 1 ? 's' : ''} ago';
       } else if (difference.inDays < 7) {
         return '${difference.inDays} day${difference.inDays > 1 ? 's' : ''} ago';
-      } else {
+      } else if (difference.inDays < 30) {
         return 'about ${(difference.inDays / 7).floor()} week${(difference.inDays / 7).floor() > 1 ? 's' : ''} ago';
+      } else if (difference.inDays < 365) {
+        return 'about ${(difference.inDays / 30).floor()} month${(difference.inDays / 30).floor() > 1 ? 's' : ''} ago';
+      } else {
+        return 'about ${(difference.inDays / 365).floor()} year${(difference.inDays / 365).floor() > 1 ? 's' : ''} ago';
       }
     } catch (e) {
       return dateString;
@@ -326,8 +416,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
 
   Widget _buildProjectCard(Map<String, dynamic> project) {
     final status = _getProjectStatus(project);
-    final statusColor = _getStatusColor(status);
-    final statusIcon = _getStatusIcon(status);
+    final statusConfig = _getStatusConfig(status);
     final projectName = project['name'] ?? 'Unnamed Project';
     final rawDescription = project['description'] ?? project['client'] ?? 'Hardware design project';
     final description = _stripHtmlTags(rawDescription.toString());
@@ -337,249 +426,368 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     final progressValue = project['progress'];
     final progress = progressValue != null 
         ? (progressValue is num ? progressValue.toDouble() : double.tryParse(progressValue.toString()) ?? 0.0)
-        : (status == 'RUNNING' ? 65.0 : 0.0); // Default to 65% for running projects if no progress data
+        : (status == 'RUNNING' ? 65.0 : 0.0);
     final isRunning = status == 'RUNNING';
 
-    return InkWell(
-      onTap: () {
-        // Open project in a tab
+    void handleProjectClick() {
+      final userRole = ref.read(authProvider).user?['role'];
+      final projectName = project['name']?.toString();
+      
+      // For customers, navigate directly to ViewScreen with customer view
+      if (userRole == 'customer' && projectName != null) {
+        // Set view screen parameters
+        ref.read(viewScreenParamsProvider.notifier).state = ViewScreenParams(
+          project: projectName,
+          viewType: 'customer',
+        );
+        
+        // Navigate to ViewScreen
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => const ViewScreen(),
+          ),
+        );
+      } else {
+        // For other roles, open project in a tab (SemiconDashboardScreen)
         ref.read(tabProvider.notifier).openProject(project);
         // Switch to show the project tab
         ref.read(currentNavTabProvider.notifier).state = 'project_tab';
-      },
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardColor,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Theme.of(context).dividerColor, width: 1),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, 1),
+      }
+    }
+
+    return _ProjectCardWidget(
+      project: project,
+      status: status,
+      statusConfig: statusConfig,
+      projectName: projectName,
+      description: description.isEmpty ? 'Hardware design project' : description,
+      gateCount: gateCount.toString(),
+      technology: technology,
+      lastRun: lastRun,
+      progress: progress,
+      isRunning: isRunning,
+      onTap: handleProjectClick,
+    );
+  }
+
+  Map<String, dynamic> _getStatusConfig(String status) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    switch (status) {
+      case 'IDLE':
+        return {
+          'color': isDark ? Colors.grey.shade700 : Colors.grey.shade300,
+          'icon': Icons.access_time,
+          'textColor': Colors.white,
+        };
+      case 'RUNNING':
+        return {
+          'color': Theme.of(context).colorScheme.secondary, // info color
+          'icon': Icons.play_circle,
+          'textColor': Colors.white,
+        };
+      case 'COMPLETED':
+        return {
+          'color': const Color(0xFF10B981), // success green
+          'icon': Icons.check_circle,
+          'textColor': Colors.white,
+        };
+      case 'FAILED':
+        return {
+          'color': const Color(0xFFEF4444), // danger red
+          'icon': Icons.cancel,
+          'textColor': Colors.white,
+        };
+      default:
+        return {
+          'color': isDark ? Colors.grey.shade700 : Colors.grey.shade300,
+          'icon': Icons.access_time,
+          'textColor': Colors.white,
+        };
+    }
+  }
+}
+
+class _ProjectCardWidget extends StatefulWidget {
+  final Map<String, dynamic> project;
+  final String status;
+  final Map<String, dynamic> statusConfig;
+  final String projectName;
+  final String description;
+  final String gateCount;
+  final String technology;
+  final String lastRun;
+  final double progress;
+  final bool isRunning;
+  final VoidCallback onTap;
+
+  const _ProjectCardWidget({
+    required this.project,
+    required this.status,
+    required this.statusConfig,
+    required this.projectName,
+    required this.description,
+    required this.gateCount,
+    required this.technology,
+    required this.lastRun,
+    required this.progress,
+    required this.isRunning,
+    required this.onTap,
+  });
+
+  @override
+  State<_ProjectCardWidget> createState() => _ProjectCardWidgetState();
+}
+
+class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: InkWell(
+        onTap: widget.onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: _isHovered 
+                  ? Theme.of(context).colorScheme.primary.withOpacity(0.5)
+                  : Theme.of(context).dividerColor, 
+              width: 1,
             ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Header with Icon and Status Badge
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Icon
-                Container(
-                  width: 48,
-                  height: 48,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E96B1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(
-                    Icons.memory,
-                    color: Colors.white,
-                    size: 24,
-                  ),
-                ),
-                // Status Badge
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: statusColor,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        statusIcon,
-                        size: 12,
-                        color: Colors.white,
-                      ),
-                      const SizedBox(width: 4),
-                Text(
-                        status,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.5,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            // Title
-            Text(
-              projectName,
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Theme.of(context).colorScheme.onSurface,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 2),
-            // Description
-            Text(
-              description.isEmpty ? 'Hardware design project' : description,
-              style: TextStyle(
-                fontSize: 15,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 14),
-            // Details Row with gap
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Gate Count',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        gateCount.toString(),
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Theme.of(context).colorScheme.onSurface,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 60),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Technology',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                Text(
-                        technology,
-                  style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Theme.of(context).colorScheme.onSurface,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            // Last Run and Progress Section
-            Text(
-              'Last run: $lastRun',
-              style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-              ),
-            ),
-            if (isRunning) ...[
-              const SizedBox(height: 5),
-              // Progress Label and Percentage Row
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header with Icon and Status Badge
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    'Progress',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                  // Icon with gradient background
+                  Container(
+                    width: 64,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Theme.of(context).colorScheme.primary,
+                          Theme.of(context).colorScheme.secondary,
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(
+                      Icons.memory,
+                      color: Colors.white,
+                      size: 32,
                     ),
                   ),
-                  Text(
-                    '${progress.toInt()}%',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                  // Status Badge
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: widget.statusConfig['color'] as Color,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          widget.statusConfig['icon'] as IconData,
+                          size: 12,
+                          color: widget.statusConfig['textColor'] as Color? ?? Colors.white,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          widget.status,
+                          style: TextStyle(
+                            color: widget.statusConfig['textColor'] as Color? ?? Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 5),
-              // Progress Bar
-              Container(
-                width: double.infinity,
-                height: 7,
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(999),
+              const SizedBox(height: 16),
+              
+              // Project Name
+              Text(
+                widget.projectName,
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).colorScheme.onSurface,
                 ),
-                child: FractionallySizedBox(
-                  alignment: Alignment.centerLeft,
-                  widthFactor: (progress / 100).clamp(0.0, 1.0),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1E96B1),
-                      borderRadius: BorderRadius.circular(999),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 8),
+              
+              // Description
+              Text(
+                widget.description,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 20),
+              
+              // Details Grid - Gate Count and Technology
+              Row(
+                children: [
+                  if (widget.gateCount != 'N/A')
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Gate Count',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            widget.gateCount,
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Theme.of(context).colorScheme.onSurface,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Technology',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          widget.technology,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              
+              // Last Run
+              Text(
+                'Last run: ${widget.lastRun}',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                ),
+              ),
+              
+              const Spacer(),
+              
+              // Progress Bar (if running)
+              if (widget.isRunning) ...[
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Progress',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                      ),
+                    ),
+                    Text(
+                      '${widget.progress.toInt()}%',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: FractionallySizedBox(
+                    alignment: Alignment.centerLeft,
+                    widthFactor: (widget.progress / 100).clamp(0.0, 1.0),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: widget.statusConfig['color'] as Color,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
                     ),
                   ),
                 ),
+                const SizedBox(height: 12),
+              ],
+              
+              // Divider
+              Divider(
+                color: Theme.of(context).dividerColor,
+                height: 1,
               ),
-            ],
-            const SizedBox(height: 12),
-            // Click to open with border top
-            Container(
-              padding: const EdgeInsets.only(top: 10),
-              decoration: BoxDecoration(
-                border: Border(
-                  top: BorderSide(color: Theme.of(context).dividerColor, width: 1),
-                ),
-              ),
-              child: Row(
+              const SizedBox(height: 12),
+              
+              // Click to open
+              Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Click to open',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
+                children: [
+                  Text(
+                    'Click to open',
+                    style: TextStyle(
+                      fontSize: 14,
                       color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
                     ),
                   ),
-                Icon(
-                  Icons.arrow_forward,
-                    size: 13,
+                  Icon(
+                    Icons.arrow_forward,
+                    size: 16,
                     color: Theme.of(context).colorScheme.primary,
-                ),
-              ],
+                  ),
+                ],
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
-

@@ -3,7 +3,6 @@ import 'dart:html' as html;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
-import '../providers/view_screen_provider.dart';
 import '../services/api_service.dart';
 import 'domain_plan_screen.dart';
 import 'zoho_integration_screen.dart';
@@ -1390,6 +1389,85 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
     }
   }
 
+  Future<void> _openViewScreenInNewWindow(dynamic project) async {
+    try {
+      final projectName = project['name'] ?? '';
+      if (projectName.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Project name not available'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      // Get domain from project data if available, otherwise fetch from API
+      String? domainName = project['domain_name']?.toString();
+      
+      // If no domain in project data, try to get first domain from API
+      if (domainName == null || domainName.isEmpty) {
+        try {
+          final token = ref.read(authProvider).token;
+          if (token != null) {
+            final filesResponse = await _apiService.getEdaFiles(
+              token: token,
+              projectName: projectName,
+              limit: 100,
+            );
+            final files = filesResponse['files'] ?? [];
+            if (files.isNotEmpty) {
+              final firstFile = files[0];
+              domainName = firstFile['domain_name']?.toString();
+            }
+          }
+        } catch (e) {
+          // Ignore domain loading errors
+        }
+      }
+
+      // Store data in localStorage for the new window
+      final viewData = {
+        'project': projectName,
+        if (domainName != null && domainName.isNotEmpty) 'domain': domainName,
+        'viewType': 'engineer', // Default to engineer view
+      };
+      html.window.localStorage['standalone_view'] = jsonEncode(viewData);
+      
+      // Get current URL and construct new window URL
+      final currentUrl = html.window.location.href;
+      final baseUrl = currentUrl.split('?')[0].split('#')[0];
+      final projectNameEncoded = Uri.encodeComponent(projectName);
+      final domainNameEncoded = domainName != null && domainName.isNotEmpty 
+          ? Uri.encodeComponent(domainName) 
+          : '';
+      
+      // Open new window with view route
+      String newWindowUrl = '$baseUrl#/view?project=$projectNameEncoded';
+      if (domainNameEncoded.isNotEmpty) {
+        newWindowUrl += '&domain=$domainNameEncoded';
+      }
+      newWindowUrl += '&viewType=engineer';
+      
+      html.window.open(
+        newWindowUrl,
+        'view_${projectName.replaceAll(' ', '_')}',
+        'width=1600,height=1000,scrollbars=yes,resizable=yes',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to open view window: $e'),
+            backgroundColor: Colors.red.shade600,
+          ),
+        );
+      }
+    }
+  }
+
   void _showMappedProjectOptions(dynamic project) {
     showDialog(
       context: context,
@@ -1505,17 +1583,8 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                       child: ElevatedButton.icon(
                         onPressed: () {
                           Navigator.of(context).pop();
-                          // Navigate to View screen
-                          ref.read(viewScreenParamsProvider.notifier).state = ViewScreenParams(
-                            project: project['name'],
-                            viewType: 'engineer',
-                          );
-                          // Switch to View tab (index 2 for admin) in MainNavigationScreen
-                          ref.read(navigationIndexProvider.notifier).state = 2;
-                          // Pop any dialogs first, then the ViewScreen in MainNavigationScreen will read params and auto-load
-                          if (Navigator.of(context).canPop()) {
-                            Navigator.of(context).popUntil((route) => route.isFirst || route.settings.name == '/');
-                          }
+                          // Open View screen in new window
+                          _openViewScreenInNewWindow(project);
                         },
                         icon: const Icon(Icons.visibility, size: 20),
                         label: const Text(
@@ -2072,17 +2141,8 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                       ElevatedButton.icon(
                         onPressed: () {
                           Navigator.of(context).pop(); // Close Project Plan dialog
-                          // Navigate to View screen
-                          ref.read(viewScreenParamsProvider.notifier).state = ViewScreenParams(
-                            project: project['name'],
-                            viewType: 'engineer',
-                          );
-                          // Switch to View tab (index 2 for admin) in MainNavigationScreen
-                          ref.read(navigationIndexProvider.notifier).state = 2;
-                          // Pop any dialogs first, then the ViewScreen in MainNavigationScreen will read params and auto-load
-                          if (Navigator.of(context).canPop()) {
-                            Navigator.of(context).popUntil((route) => route.isFirst || route.settings.name == '/');
-                          }
+                          // Open View screen in new window
+                          _openViewScreenInNewWindow(project);
                         },
                         icon: const Icon(Icons.visibility, size: 18),
                         label: const Text('View'),

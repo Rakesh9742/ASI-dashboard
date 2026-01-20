@@ -8,30 +8,62 @@ const router = express.Router();
 
 // Register new user (admin only for creating users with domain)
 router.post('/register', authenticate, async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { username, email, password, full_name, role, domain_id, ipaddress, port, ssh_user, sshpassword } = req.body;
+    await client.query('BEGIN');
+    
+    const { username, email, password, full_name, role, domain_id, ipaddress, port, ssh_user, sshpassword, project_ids } = req.body;
     const currentUser = (req as any).user;
 
     // Only admins can create users
     if (currentUser?.role !== 'admin') {
+      await client.query('ROLLBACK');
       return res.status(403).json({ error: 'Only admins can create users' });
     }
 
     // Validate required fields
     if (!username || !email || !password) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Username, email, and password are required' });
     }
 
     // Validate role
     const validRoles = ['admin', 'project_manager', 'lead', 'engineer', 'customer'];
     if (role && !validRoles.includes(role)) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Invalid role' });
+    }
+
+    // Validate project_ids for customer role
+    if (role === 'customer') {
+      if (!project_ids || !Array.isArray(project_ids) || project_ids.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'At least one project must be selected for customer role' });
+      }
+      
+      // Validate that all project_ids exist
+      const projectIds = project_ids.map((id: any) => parseInt(id)).filter((id: number) => !isNaN(id));
+      if (projectIds.length !== project_ids.length) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Invalid project IDs' });
+      }
+      
+      const projectCheck = await client.query(
+        'SELECT id FROM projects WHERE id = ANY($1::int[])',
+        [projectIds]
+      );
+      
+      if (projectCheck.rows.length !== projectIds.length) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'One or more project IDs are invalid' });
+      }
     }
 
     // Validate domain_id if provided
     if (domain_id) {
-      const domainCheck = await pool.query('SELECT id FROM domains WHERE id = $1 AND is_active = true', [domain_id]);
+      const domainCheck = await client.query('SELECT id FROM domains WHERE id = $1 AND is_active = true', [domain_id]);
       if (domainCheck.rows.length === 0) {
+        await client.query('ROLLBACK');
         return res.status(400).json({ error: 'Invalid domain' });
       }
     }
@@ -40,17 +72,19 @@ router.post('/register', authenticate, async (req, res) => {
     if (port !== undefined && port !== null) {
       const portNum = parseInt(port);
       if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+        await client.query('ROLLBACK');
         return res.status(400).json({ error: 'Port must be a number between 1 and 65535' });
       }
     }
 
     // Check if user already exists
-    const existingUser = await pool.query(
+    const existingUser = await client.query(
       'SELECT id FROM users WHERE username = $1 OR email = $2',
       [username, email]
     );
 
     if (existingUser.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(409).json({ error: 'Username or email already exists' });
     }
 
@@ -64,7 +98,7 @@ router.post('/register', authenticate, async (req, res) => {
     }
 
     // Insert user
-    const result = await pool.query(
+    const result = await client.query(
       `INSERT INTO users (username, email, password_hash, full_name, role, domain_id, ipaddress, port, ssh_user, sshpassword_hash)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id, username, email, full_name, role, domain_id, is_active, created_at, ipaddress, port, ssh_user`,
@@ -82,13 +116,35 @@ router.post('/register', authenticate, async (req, res) => {
       ]
     );
 
+    const newUserId = result.rows[0].id;
+
+    // If customer role, assign projects
+    if (role === 'customer' && project_ids && Array.isArray(project_ids)) {
+      const projectIds = project_ids.map((id: any) => parseInt(id)).filter((id: number) => !isNaN(id));
+      
+      if (projectIds.length > 0) {
+        // Insert user-project relationships
+        for (const projectId of projectIds) {
+          await client.query(
+            'INSERT INTO user_projects (user_id, project_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [newUserId, projectId]
+          );
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+
     res.status(201).json({
       message: 'User created successfully',
       user: result.rows[0]
     });
   } catch (error: any) {
+    await client.query('ROLLBACK');
     console.error('Error registering user:', error);
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 

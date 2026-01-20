@@ -25,7 +25,7 @@ if (Test-Path $envFile) {
         $env:PGPASSWORD = $dbPass
         
         # Get migration file path
-        $migrationPath = Join-Path (Get-Location) "backend\migrations\012_add_ssh_fields_to_users.sql"
+        $migrationPath = Join-Path (Get-Location) "backend\migrations\019_create_user_projects.sql"
         
         if (-not (Test-Path $migrationPath)) {
             Write-Host "Error: Migration file not found at: $migrationPath" -ForegroundColor Red

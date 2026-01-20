@@ -210,7 +210,16 @@ router.get('/', authenticate, async (req, res) => {
 
     // Filter by user role: engineers and customers only see their own runs
     // OR runs where project name matches their Zoho projects
-    if (userRole === 'engineer' || userRole === 'customer') {
+    if (userRole === 'customer') {
+      // For customers, show all EDA files for projects assigned to them via user_projects table
+      query += ` AND EXISTS (
+        SELECT 1 FROM user_projects up 
+        WHERE up.user_id = $${++paramCount} AND up.project_id = p.id
+      )`;
+      params.push(userId);
+      console.log(`Filtering EDA files for customer - only projects assigned via user_projects: ${userId}`);
+    } else if (userRole === 'engineer') {
+      // Engineers see runs where user_name matches their username
       if (extractedUsername || username) {
         // Build condition: user_name matches extracted username OR
         // (project_name matches Zoho project AND user_name matches extracted username)
@@ -247,7 +256,7 @@ router.get('/', authenticate, async (req, res) => {
         
         if (conditions.length > 0) {
           query += ` AND (${conditions.join(' OR ')})`;
-          console.log(`Filtering EDA files for ${userRole}:`);
+          console.log(`Filtering EDA files for engineer:`);
           console.log(`  - Extracted username: ${extractedUsername}`);
           console.log(`  - Zoho projects: ${zohoProjectNames.length} projects`);
           console.log(`  - Conditions: ${conditions.length} condition(s)`);

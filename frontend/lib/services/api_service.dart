@@ -367,6 +367,7 @@ class ApiService {
     int? port,
     String? sshUser,
     String? sshPassword,
+    List<int>? projectIds,
     String? token,
   }) async {
     final response = await http.post(
@@ -383,6 +384,7 @@ class ApiService {
         if (port != null) 'port': port,
         if (sshUser != null) 'ssh_user': sshUser,
         if (sshPassword != null) 'sshpassword': sshPassword,
+        if (projectIds != null && projectIds.isNotEmpty) 'project_ids': projectIds,
       }),
     );
     
@@ -693,6 +695,41 @@ class ApiService {
     }
     
     return json.decode(response.body);
+  }
+
+  // Get run history for a project
+  Future<List<dynamic>> getRunHistory({
+    required int projectId,
+    String? blockName,
+    String? experiment,
+    int limit = 20,
+    String? token,
+  }) async {
+    final queryParams = <String, String>{
+      'limit': limit.toString(),
+    };
+    
+    if (blockName != null) queryParams['blockName'] = blockName;
+    if (experiment != null) queryParams['experiment'] = experiment;
+
+    final uri = Uri.parse('$baseUrl/projects/$projectId/run-history')
+        .replace(queryParameters: queryParams);
+    
+    final response = await http.get(
+      uri,
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      if (data is Map && data.containsKey('data')) {
+        return data['data'] as List;
+      }
+      return [];
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to load run history');
+    }
   }
 }
 

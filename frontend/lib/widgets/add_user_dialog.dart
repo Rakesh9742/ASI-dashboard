@@ -17,25 +17,18 @@ class AddUserDialog extends ConsumerStatefulWidget {
 
 class _AddUserDialogState extends ConsumerState<AddUserDialog> {
   final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
   final _emailController = TextEditingController();
-  final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
-  final _ipaddressController = TextEditingController();
-  final _portController = TextEditingController();
-  final _sshUserController = TextEditingController();
-  final _sshPasswordController = TextEditingController();
   
   final ApiService _apiService = ApiService();
-  List<dynamic> _domains = [];
+  List<dynamic> _projects = [];
+  List<int> _selectedProjectIds = [];
   String? _selectedRole;
-  int? _selectedDomainId;
   bool _isLoading = false;
-  bool _isLoadingDomains = true;
+  bool _isLoadingProjects = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
-  bool _obscureSshPassword = true;
 
   final List<String> _roles = [
     'admin',
@@ -46,54 +39,66 @@ class _AddUserDialogState extends ConsumerState<AddUserDialog> {
   ];
 
   @override
-  void initState() {
-    super.initState();
-    _loadDomains();
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    _confirmPasswordController.dispose();
+    super.dispose();
   }
 
-  Future<void> _loadDomains() async {
+  Future<void> _loadProjects() async {
+    if (_selectedRole != 'customer') {
+      return;
+    }
+
     setState(() {
-      _isLoadingDomains = true;
+      _isLoadingProjects = true;
     });
     
     try {
       final token = ref.read(authProvider.notifier).getToken();
-      final domains = await _apiService.getDomains(token: token);
+      final projectsResponse = await _apiService.getProjects(token: token);
       setState(() {
-        _domains = domains;
-        _isLoadingDomains = false;
+        // Handle both array and object response formats
+        // json.decode can return List or Map, so we need to handle both
+        try {
+          if (projectsResponse is List) {
+            _projects = projectsResponse;
+          } else {
+            // Cast to dynamic to access Map methods
+            final projectsMap = projectsResponse as dynamic;
+            // Check if it has the expected Map structure
+            if (projectsMap != null && 
+                projectsMap['all'] != null && 
+                projectsMap['all'] is List) {
+              _projects = projectsMap['all'] as List;
+            } else if (projectsMap != null && 
+                       projectsMap['local'] != null && 
+                       projectsMap['local'] is List) {
+              _projects = projectsMap['local'] as List;
+            } else {
+              _projects = [];
+            }
+          }
+        } catch (e) {
+          _projects = [];
+        }
+        _isLoadingProjects = false;
       });
-      
-      // Debug: Print domains to console
-      print('Loaded ${domains.length} domains: $domains');
     } catch (e) {
-      print('Error loading domains: $e');
+      print('Error loading projects: $e');
       setState(() {
-        _isLoadingDomains = false;
+        _isLoadingProjects = false;
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error loading domains: $e'),
+            content: Text('Error loading projects: $e'),
             backgroundColor: Colors.red,
           ),
         );
       }
     }
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _emailController.dispose();
-    _usernameController.dispose();
-    _passwordController.dispose();
-    _confirmPasswordController.dispose();
-    _ipaddressController.dispose();
-    _portController.dispose();
-    _sshUserController.dispose();
-    _sshPasswordController.dispose();
-    super.dispose();
   }
 
   Future<void> _handleSubmit() async {
@@ -111,33 +116,36 @@ class _AddUserDialogState extends ConsumerState<AddUserDialog> {
       return;
     }
 
+    // Validate project selection for customer role
+    if (_selectedRole == 'customer' && _selectedProjectIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select at least one project for customer role'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _isLoading = true;
     });
 
     try {
       final token = ref.read(authProvider.notifier).getToken();
+      
+      // Generate username from email (use email prefix before @)
+      final email = _emailController.text.trim();
+      final username = email.split('@').first;
+      
       await _apiService.createUser(
-        username: _usernameController.text.trim(),
-        email: _emailController.text.trim(),
+        username: username,
+        email: email,
         password: _passwordController.text,
-        fullName: _nameController.text.trim().isEmpty 
-            ? null 
-            : _nameController.text.trim(),
         role: _selectedRole,
-        domainId: _selectedDomainId,
-        ipaddress: _ipaddressController.text.trim().isEmpty 
-            ? null 
-            : _ipaddressController.text.trim(),
-        port: _portController.text.trim().isEmpty 
-            ? null 
-            : int.tryParse(_portController.text.trim()),
-        sshUser: _sshUserController.text.trim().isEmpty 
-            ? null 
-            : _sshUserController.text.trim(),
-        sshPassword: _sshPasswordController.text.isEmpty 
-            ? null 
-            : _sshPasswordController.text,
+        projectIds: _selectedRole == 'customer' && _selectedProjectIds.isNotEmpty
+            ? _selectedProjectIds
+            : null,
         token: token,
       );
 
@@ -201,73 +209,7 @@ class _AddUserDialogState extends ConsumerState<AddUserDialog> {
                   ],
                 ),
                 const SizedBox(height: 24),
-                // Full Name
-                TextFormField(
-                  controller: _nameController,
-                  decoration: InputDecoration(
-                    labelText: 'Full Name',
-                    prefixIcon: const Icon(Icons.person),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                // Username
-                TextFormField(
-                  controller: _usernameController,
-                  decoration: InputDecoration(
-                    labelText: 'Username *',
-                    prefixIcon: const Icon(Icons.account_circle),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return 'Username is required';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                // Email
-                TextFormField(
-                  controller: _emailController,
-                  decoration: InputDecoration(
-                    labelText: 'Email *',
-                    prefixIcon: const Icon(Icons.email),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  keyboardType: TextInputType.emailAddress,
-                  onChanged: (value) {
-                    // Auto-extract SSH username from email
-                    // Example: rakesh.p@sumedhait.com -> rakesh
-                    if (value.isNotEmpty && value.contains('@')) {
-                      final emailPrefix = value.split('@').first;
-                      final sshUsername = emailPrefix.split('.').first;
-                      // Only update if SSH username field is empty
-                      if (_sshUserController.text.isEmpty) {
-                        setState(() {
-                          _sshUserController.text = sshUsername;
-                        });
-                      }
-                    }
-                  },
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return 'Email is required';
-                    }
-                    if (!value.contains('@')) {
-                      return 'Please enter a valid email';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                // Role Dropdown
+                // Role Dropdown - Show first
                 DropdownButtonFormField<String>(
                   value: _selectedRole,
                   decoration: InputDecoration(
@@ -286,6 +228,10 @@ class _AddUserDialogState extends ConsumerState<AddUserDialog> {
                   onChanged: (value) {
                     setState(() {
                       _selectedRole = value;
+                      _selectedProjectIds = []; // Reset project selection
+                      if (value == 'customer') {
+                        _loadProjects();
+                      }
                     });
                   },
                   validator: (value) {
@@ -295,205 +241,153 @@ class _AddUserDialogState extends ConsumerState<AddUserDialog> {
                     return null;
                   },
                 ),
-                const SizedBox(height: 16),
-                // Domain Dropdown
-                _isLoadingDomains
-                    ? const LinearProgressIndicator()
-                    : DropdownButtonFormField<int>(
-                        value: _selectedDomainId,
-                        decoration: InputDecoration(
-                          labelText: 'Domain (Optional)',
-                          prefixIcon: const Icon(Icons.category),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          helperText: _domains.isEmpty
-                              ? 'No domains available'
-                              : 'Select a design domain',
-                        ),
-                        items: _domains.isEmpty
-                            ? [
-                                const DropdownMenuItem<int>(
-                                  value: null,
-                                  child: Text('No domains available'),
-                                  enabled: false,
-                                )
-                              ]
-                            : _domains.map<DropdownMenuItem<int>>((domain) {
-                                final domainId = domain['id'];
-                                final domainCode = domain['code'] ?? '';
-                                final domainName = domain['name'] ?? '';
-                                
-                                return DropdownMenuItem<int>(
-                                  value: domainId is int 
-                                      ? domainId 
-                                      : int.tryParse(domainId.toString()),
-                                  child: Text(
-                                    domainCode.isNotEmpty && domainName.isNotEmpty
-                                        ? '$domainCode - $domainName'
-                                        : domainName.isNotEmpty
-                                            ? domainName
-                                            : domainCode.isNotEmpty
-                                                ? domainCode
-                                                : 'Unknown Domain',
-                                  ),
-                                );
-                              }).toList(),
-                        onChanged: _domains.isEmpty
-                            ? null
-                            : (value) {
-                                setState(() {
-                                  _selectedDomainId = value;
-                                });
-                              },
+                // Show email and password for all roles
+                if (_selectedRole != null) ...[
+                  const SizedBox(height: 16),
+                  // Email
+                  TextFormField(
+                    controller: _emailController,
+                    decoration: InputDecoration(
+                      labelText: 'Email *',
+                      prefixIcon: const Icon(Icons.email),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                const SizedBox(height: 16),
-                // SSH Credentials Section
-                const Divider(),
-                const SizedBox(height: 8),
-                Text(
-                  'SSH Credentials (Optional)',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                // IP Address
-                TextFormField(
-                  controller: _ipaddressController,
-                  decoration: InputDecoration(
-                    labelText: 'IP Address',
-                    prefixIcon: const Icon(Icons.computer),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
                     ),
-                    helperText: 'SSH server IP address',
-                  ),
-                  keyboardType: TextInputType.text,
-                ),
-                const SizedBox(height: 16),
-                // Port
-                TextFormField(
-                  controller: _portController,
-                  decoration: InputDecoration(
-                    labelText: 'Port',
-                    prefixIcon: const Icon(Icons.numbers),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    helperText: 'SSH server port (1-65535)',
-                  ),
-                  keyboardType: TextInputType.number,
-                  validator: (value) {
-                    if (value != null && value.trim().isNotEmpty) {
-                      final port = int.tryParse(value.trim());
-                      if (port == null || port < 1 || port > 65535) {
-                        return 'Port must be between 1 and 65535';
+                    keyboardType: TextInputType.emailAddress,
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'Email is required';
                       }
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                // SSH User
-                TextFormField(
-                  controller: _sshUserController,
-                  decoration: InputDecoration(
-                    labelText: 'SSH Username',
-                    prefixIcon: const Icon(Icons.person_outline),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    helperText: 'SSH login username',
+                      if (!value.contains('@')) {
+                        return 'Please enter a valid email';
+                      }
+                      return null;
+                    },
                   ),
-                ),
-                const SizedBox(height: 16),
-                // SSH Password
-                TextFormField(
-                  controller: _sshPasswordController,
-                  decoration: InputDecoration(
-                    labelText: 'SSH Password',
-                    prefixIcon: const Icon(Icons.lock),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscureSshPassword ? Icons.visibility : Icons.visibility_off,
+                  const SizedBox(height: 16),
+                  // Password
+                  TextFormField(
+                    controller: _passwordController,
+                    decoration: InputDecoration(
+                      labelText: 'Password *',
+                      prefixIcon: const Icon(Icons.lock),
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscurePassword ? Icons.visibility : Icons.visibility_off,
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _obscurePassword = !_obscurePassword;
+                          });
+                        },
                       ),
-                      onPressed: () {
-                        setState(() {
-                          _obscureSshPassword = !_obscureSshPassword;
-                        });
-                      },
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    helperText: 'SSH login password',
-                  ),
-                  obscureText: _obscureSshPassword,
-                ),
-                const SizedBox(height: 16),
-                const Divider(),
-                const SizedBox(height: 16),
-                // Password
-                TextFormField(
-                  controller: _passwordController,
-                  decoration: InputDecoration(
-                    labelText: 'Password *',
-                    prefixIcon: const Icon(Icons.lock),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscurePassword ? Icons.visibility : Icons.visibility_off,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                      onPressed: () {
-                        setState(() {
-                          _obscurePassword = !_obscurePassword;
-                        });
-                      },
                     ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
+                    obscureText: _obscurePassword,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Password is required';
+                      }
+                      if (value.length < 6) {
+                        return 'Password must be at least 6 characters';
+                      }
+                      return null;
+                    },
                   ),
-                  obscureText: _obscurePassword,
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Password is required';
-                    }
-                    if (value.length < 6) {
-                      return 'Password must be at least 6 characters';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                // Confirm Password
-                TextFormField(
-                  controller: _confirmPasswordController,
-                  decoration: InputDecoration(
-                    labelText: 'Confirm Password *',
-                    prefixIcon: const Icon(Icons.lock_outline),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscureConfirmPassword ? Icons.visibility : Icons.visibility_off,
+                  const SizedBox(height: 16),
+                  // Confirm Password
+                  TextFormField(
+                    controller: _confirmPasswordController,
+                    decoration: InputDecoration(
+                      labelText: 'Confirm Password *',
+                      prefixIcon: const Icon(Icons.lock_outline),
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscureConfirmPassword ? Icons.visibility : Icons.visibility_off,
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _obscureConfirmPassword = !_obscureConfirmPassword;
+                          });
+                        },
                       ),
-                      onPressed: () {
-                        setState(() {
-                          _obscureConfirmPassword = !_obscureConfirmPassword;
-                        });
-                      },
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
+                    obscureText: _obscureConfirmPassword,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please confirm password';
+                      }
+                      return null;
+                    },
+                  ),
+                ],
+                // Show project selection only for customer role
+                if (_selectedRole == 'customer') ...[
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Select Projects *',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                  obscureText: _obscureConfirmPassword,
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please confirm password';
-                    }
-                    return null;
-                  },
-                ),
+                  const SizedBox(height: 16),
+                  _isLoadingProjects
+                      ? const Center(child: CircularProgressIndicator())
+                      : _projects.isEmpty
+                          ? const Padding(
+                              padding: EdgeInsets.all(16.0),
+                              child: Text(
+                                'No projects available',
+                                style: TextStyle(color: Colors.grey),
+                              ),
+                            )
+                          : Container(
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey.shade300),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              constraints: const BoxConstraints(maxHeight: 200),
+                              child: ListView.builder(
+                                shrinkWrap: true,
+                                itemCount: _projects.length,
+                                itemBuilder: (context, index) {
+                                  final project = _projects[index];
+                                  final projectId = project['id'] is int
+                                      ? project['id']
+                                      : int.tryParse(project['id'].toString());
+                                  final projectName = project['name'] ?? 'Unknown Project';
+                                  final isSelected = projectId != null &&
+                                      _selectedProjectIds.contains(projectId);
+
+                                  return CheckboxListTile(
+                                    title: Text(projectName),
+                                    value: isSelected,
+                                    onChanged: (value) {
+                                      setState(() {
+                                        if (projectId != null) {
+                                          if (value == true) {
+                                            if (!_selectedProjectIds.contains(projectId)) {
+                                              _selectedProjectIds.add(projectId);
+                                            }
+                                          } else {
+                                            _selectedProjectIds.remove(projectId);
+                                          }
+                                        }
+                                      });
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                ],
                 const SizedBox(height: 24),
                 // Buttons
                 Row(
@@ -540,4 +434,3 @@ class _AddUserDialogState extends ConsumerState<AddUserDialog> {
     );
   }
 }
-

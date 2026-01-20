@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASI Workflow Diagram</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes bounce-slow {
+            0%, 100% { transform: translateY(-25%); animation-timing-function: cubic-bezier(0.8, 0, 1, 1); }
+            50% { transform: translateY(0); animation-timing-function: cubic-bezier(0, 0, 0.2, 1); }
+        }
+        .animate-bounce-slow { animation: bounce-slow 1s infinite; }
+        
+        .node-transition { transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+        
+        /* Custom scrollbar for log terminal */
+        #log-container::-webkit-scrollbar { width: 4px; }
+        #log-container::-webkit-scrollbar-track { background: #1e293b; }
+        #log-container::-webkit-scrollbar-thumb { background: #475569; border-radius: 10px; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen font-sans p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <!-- Header Section -->
+        <div class="flex flex-col md:flex-row justify-between items-center mb-12 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            <div>
+                <h1 class="text-2xl font-black text-slate-800 tracking-tight">ASI JOB WORKFLOW</h1>
+                <p class="text-slate-500 text-sm">Automated Synthesis Infrastructure Lifecycle</p>
+            </div>
+            <div class="flex gap-3 mt-4 md:mt-0">
+                <button id="reset-btn" class="hidden flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors font-medium text-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>
+                    Reset
+                </button>
+                <button id="start-btn" class="flex items-center gap-2 px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm transition-all shadow-md active:scale-95">
+                    <span id="btn-text">Start Synthesis</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                </button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <!-- Main Diagram Area -->
+            <div class="lg:col-span-2 flex flex-col items-center">
+                
+                <!-- Node: User -->
+                <div id="node-1" class="node-transition relative flex flex-col items-center p-4 rounded-xl border-2 w-48 shadow-lg bg-white border-slate-200 text-slate-500 opacity-60">
+                    <div class="icon-container p-3 rounded-full mb-2 bg-slate-100 text-slate-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                    </div>
+                    <span class="font-bold text-sm text-center uppercase tracking-wider">User Interface</span>
+                    <span class="text-[10px] text-center opacity-70 mt-1">Browser / CLI</span>
+                    <div class="active-indicator hidden absolute -top-2 -right-2 h-5 w-5">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-5 w-5 bg-blue-500"></span>
+                    </div>
+                </div>
+
+                <!-- Connection 1 -->
+                <div class="conn-1 flex flex-col items-center h-12 justify-center relative">
+                    <div class="line w-0.5 h-full bg-slate-200 transition-colors duration-500"></div>
+                    <div class="arrow hidden absolute animate-bounce-slow text-blue-500"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg></div>
+                    <div class="label absolute left-6 text-[10px] font-mono text-blue-600 whitespace-nowrap bg-white px-1 border border-blue-100 rounded hidden">1: Start Synthesize</div>
+                </div>
+
+                <!-- Node: ASI App -->
+                <div id="node-2" class="node-transition relative flex flex-col items-center p-4 rounded-xl border-2 w-48 shadow-lg bg-white border-slate-200 text-slate-500 opacity-60">
+                    <div class="icon-container p-3 rounded-full mb-2 bg-slate-100 text-slate-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+                    </div>
+                    <span class="font-bold text-sm text-center uppercase tracking-wider">ASI Application</span>
+                    <span class="text-[10px] text-center opacity-70 mt-1">https://ap.com</span>
+                    <div class="active-indicator hidden absolute -top-2 -right-2 h-5 w-5">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-5 w-5 bg-blue-500"></span>
+                    </div>
+                </div>
+
+                <!-- Connection 2 -->
+                <div class="conn-2 flex flex-col items-center h-12 justify-center relative">
+                    <div class="line w-0.5 h-full bg-slate-200 transition-colors duration-500"></div>
+                    <div class="arrow hidden absolute animate-bounce-slow text-blue-500"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg></div>
+                    <div class="label absolute left-6 text-[10px] font-mono text-blue-600 whitespace-nowrap bg-white px-1 border border-blue-100 rounded hidden">2: Create Job</div>
+                </div>
+
+                <!-- Node: DB -->
+                <div id="node-3" class="node-transition relative flex flex-col items-center p-4 rounded-xl border-2 w-48 shadow-lg bg-white border-slate-200 text-slate-500 opacity-60">
+                    <div class="icon-container p-3 rounded-full mb-2 bg-slate-100 text-slate-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+                    </div>
+                    <span class="font-bold text-sm text-center uppercase tracking-wider">ASI Job Queue</span>
+                    <span class="text-[10px] text-center opacity-70 mt-1">SQL / Redis / Table</span>
+                    <div class="active-indicator hidden absolute -top-2 -right-2 h-5 w-5">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-5 w-5 bg-blue-500"></span>
+                    </div>
+                </div>
+
+                <!-- Agent Cluster -->
+                <div class="flex flex-row items-center w-full justify-center mt-4">
+                    <div class="h-24 flex flex-col items-center">
+                        <div class="conn-3 flex flex-col items-center h-12 justify-center relative">
+                            <div class="line w-0.5 h-full bg-slate-200 transition-colors duration-500"></div>
+                            <div class="arrow hidden absolute animate-bounce-slow text-blue-500"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg></div>
+                            <div id="conn-3-label" class="label absolute left-6 text-[10px] font-mono text-blue-600 whitespace-nowrap bg-white px-1 border border-blue-100 rounded hidden">3: Poll</div>
+                        </div>
+                        <div id="node-agent" class="node-transition relative flex flex-col items-center p-4 rounded-xl border-2 w-48 shadow-lg bg-white border-slate-200 text-slate-500 opacity-60">
+                            <div class="icon-container p-3 rounded-full mb-2 bg-slate-100 text-slate-400">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg>
+                            </div>
+                            <span class="font-bold text-sm text-center uppercase tracking-wider">Chipex Agent</span>
+                            <span class="text-[10px] text-center opacity-70 mt-1">agent.service</span>
+                            <div class="active-indicator hidden absolute -top-2 -right-2 h-5 w-5">
+                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                                <span class="relative inline-flex rounded-full h-5 w-5 bg-blue-500"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Agent Sub-nodes -->
+                <div class="mt-20 flex flex-col items-center">
+                    <div class="conn-5 flex flex-col items-center h-12 justify-center relative">
+                        <div class="line w-0.5 h-full bg-slate-200 transition-colors duration-500"></div>
+                        <div class="arrow hidden absolute animate-bounce-slow text-blue-500"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg></div>
+                        <div class="label absolute left-6 text-[10px] font-mono text-blue-600 whitespace-nowrap bg-white px-1 border border-blue-100 rounded hidden">5: Prepare Env</div>
+                    </div>
+                    <div id="node-5" class="node-transition relative flex flex-col items-center p-4 rounded-xl border-2 w-48 shadow-lg bg-white border-slate-200 text-slate-500 opacity-60">
+                        <div class="icon-container p-3 rounded-full mb-2 bg-slate-100 text-slate-400">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                        </div>
+                        <span class="font-bold text-sm text-center uppercase tracking-wider">Local Staging</span>
+                        <span class="text-[10px] text-center opacity-70 mt-1">/home/agent/users/...</span>
+                    </div>
+                    
+                    <div class="conn-6 flex flex-col items-center h-12 justify-center relative">
+                        <div class="line w-0.5 h-full bg-slate-200 transition-colors duration-500"></div>
+                        <div class="arrow hidden absolute animate-bounce-slow text-blue-500"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg></div>
+                        <div class="label absolute left-6 text-[10px] font-mono text-blue-600 whitespace-nowrap bg-white px-1 border border-blue-100 rounded hidden">6: Execute Script</div>
+                    </div>
+                    <div id="node-6" class="node-transition relative flex flex-col items-center p-4 rounded-xl border-2 w-48 shadow-lg bg-white border-slate-200 text-slate-500 opacity-60">
+                        <div class="icon-container p-3 rounded-full mb-2 bg-slate-100 text-slate-400">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+                        </div>
+                        <span class="font-bold text-sm text-center uppercase tracking-wider">Execution Engine</span>
+                        <span class="text-[10px] text-center opacity-70 mt-1">./run_synthesize.sh</span>
+                    </div>
+
+                    <div class="conn-7 flex flex-col items-center h-12 justify-center relative">
+                        <div class="line w-0.5 h-full bg-slate-200 transition-colors duration-500"></div>
+                        <div id="report-up" class="hidden text-blue-500 animate-pulse mt-4 flex flex-col items-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+                            <span class="text-[10px] font-bold">Reporting back</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status Panel -->
+            <div class="lg:col-span-1 space-y-4">
+                <div class="bg-slate-900 rounded-2xl p-6 text-white shadow-xl min-h-[450px] flex flex-col">
+                    <div class="flex items-center gap-2 mb-6 border-b border-slate-700 pb-4">
+                        <div id="status-dot" class="w-3 h-3 rounded-full bg-slate-600"></div>
+                        <h3 class="font-mono text-sm tracking-widest text-slate-400 uppercase">System Logs</h3>
+                    </div>
+
+                    <div id="log-container" class="flex-grow overflow-y-auto space-y-6 font-mono text-xs pr-2">
+                        <!-- Initial Idle State -->
+                        <div id="idle-log" class="flex flex-col items-center justify-center h-64 text-slate-500 text-center space-y-4">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-20"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                            <p class="text-sm">System Idle. <br>Awaiting user trigger.</p>
+                        </div>
+                        <!-- Active Step Content will be injected here -->
+                        <div id="active-log-content" class="hidden">
+                            <p id="log-timestamp" class="text-blue-400 mb-1"></p>
+                            <p id="log-title" class="text-white font-bold text-sm mb-1"></p>
+                            <p id="log-desc" class="text-slate-300 leading-relaxed italic mb-4"></p>
+                            
+                            <div id="log-details" class="bg-black/50 p-3 rounded-lg border border-slate-700 space-y-1 mb-6">
+                                <!-- Details here -->
+                            </div>
+
+                            <div class="pt-4 border-t border-slate-700">
+                                <p class="text-slate-500 mb-2 uppercase text-[10px] tracking-widest">Progress Trace</p>
+                                <div id="progress-list" class="space-y-2">
+                                    <!-- List items here -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-blue-600 rounded-2xl p-6 text-white shadow-lg overflow-hidden relative">
+                    <div class="relative z-10">
+                        <h4 class="font-bold mb-1">Architecture Note</h4>
+                        <p class="text-blue-100 text-xs leading-relaxed">
+                            This <strong>Pull-based</strong> model ensures the Chipex Server (Agent) stays behind a firewall without needing inbound open ports.
+                        </p>
+                    </div>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="absolute -bottom-4 -right-4 text-blue-500 opacity-20 rotate-12"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const steps = [
+            { id: 1, title: "User Triggers Synthesis", desc: "User clicks 'Run Synthesize' in the UI", details: ["Action: Click", "Command: synthesize"] },
+            { id: 2, title: "Job Creation", desc: "ASI Application creates job in the database", details: ["cmd: run_synthesize.sh", "user: user123", "target: chipex-01"] },
+            { id: 3, title: "Agent Polling", desc: "Agent checks for new tasks via HTTPS", details: ["Method: GET", "Endpoint: /api/jobs/poll"] },
+            { id: 4, title: "Job Dispatch", desc: "ASI sends job details and credentials", details: ["job_id: 101", "token: <JWT>", "inputs: [s3://...]"] },
+            { id: 5, title: "Staging Area", desc: "Agent prepares local folder and downloads input", details: ["Path: /home/agent/users/user123/job_101", "Action: S3 Download (Signed URL)"] },
+            { id: 6, title: "Execution", desc: "Agent runs the synthesis script in the sandbox", details: ["cd job_101", "./run_synthesize.sh"] },
+            { id: 7, title: "Results Upload", desc: "Agent pushes results back to storage", details: ["Status: SUCCESS", "Logs: uploaded", "Artifacts: s3://results/"] },
+            { id: 8, title: "User Notification", desc: "UI updates to show the finished job", details: ["Status: Complete", "Result: SUCCESS"] }
+        ];
+
+        let currentStep = 0;
+        let isSimulating = false;
+        let timer = null;
+
+        const startBtn = document.getElementById('start-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        const btnText = document.getElementById('btn-text');
+        const statusDot = document.getElementById('status-dot');
+        const idleLog = document.getElementById('idle-log');
+        const activeLogContent = document.getElementById('active-log-content');
+
+        function updateUI() {
+            // Reset all nodes and connections classes first
+            document.querySelectorAll('[id^="node-"], [id^="node-agent"]').forEach(el => {
+                el.classList.remove('bg-blue-50', 'border-blue-500', 'scale-105', 'shadow-blue-200', 'text-slate-800', 'opacity-100');
+                el.classList.add('bg-white', 'border-slate-200', 'text-slate-500', 'opacity-60');
+                el.querySelector('.icon-container').classList.replace('bg-blue-500', 'bg-slate-100');
+                el.querySelector('.icon-container').classList.replace('text-white', 'text-slate-400');
+                if (el.querySelector('.active-indicator')) el.querySelector('.active-indicator').classList.add('hidden');
+            });
+
+            document.querySelectorAll('.line').forEach(el => el.classList.replace('bg-blue-500', 'bg-slate-200'));
+            document.querySelectorAll('.arrow, .label').forEach(el => el.classList.add('hidden'));
+            document.getElementById('report-up').classList.add('hidden');
+
+            if (currentStep === 0) {
+                idleLog.classList.remove('hidden');
+                activeLogContent.classList.add('hidden');
+                statusDot.classList.replace('bg-green-500', 'bg-slate-600');
+                statusDot.classList.remove('animate-pulse');
+                resetBtn.classList.add('hidden');
+                btnText.innerText = "Start Synthesis";
+                return;
+            }
+
+            idleLog.classList.add('hidden');
+            activeLogContent.classList.remove('hidden');
+            statusDot.classList.replace('bg-slate-600', 'bg-green-500');
+            statusDot.classList.add('animate-pulse');
+            resetBtn.classList.remove('hidden');
+            btnText.innerText = currentStep === steps.length ? "Restart" : "Simulating...";
+
+            // Highlight Logic
+            const highlightNode = (id) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.classList.replace('bg-white', 'bg-blue-50');
+                el.classList.replace('border-slate-200', 'border-blue-500');
+                el.classList.add('scale-105', 'shadow-blue-200', 'opacity-100');
+                el.querySelector('.icon-container').classList.replace('bg-slate-100', 'bg-blue-500');
+                el.querySelector('.icon-container').classList.replace('text-slate-400', 'text-white');
+                if (el.querySelector('.active-indicator')) el.querySelector('.active-indicator').classList.remove('hidden');
+            };
+
+            const highlightConn = (num, labelText) => {
+                const conn = document.querySelector(`.conn-${num}`);
+                if (!conn) return;
+                conn.querySelector('.line').classList.replace('bg-slate-200', 'bg-blue-500');
+                conn.querySelector('.arrow').classList.remove('hidden');
+                const lbl = conn.querySelector('.label');
+                if (lbl) {
+                    lbl.classList.remove('hidden');
+                    if (labelText) lbl.innerText = labelText;
+                }
+            };
+
+            // Step specific highlights
+            if (currentStep === 1 || currentStep === 8) highlightNode('node-1');
+            if (currentStep === 2 || currentStep === 7) highlightNode('node-2');
+            if (currentStep === 3 || currentStep === 4) highlightNode('node-3');
+            if (currentStep >= 3 && currentStep <= 7) highlightNode('node-agent');
+            if (currentStep === 5) highlightNode('node-5');
+            if (currentStep === 6) highlightNode('node-6');
+
+            if (currentStep === 1) highlightConn(1);
+            if (currentStep === 2) highlightConn(2);
+            if (currentStep === 3) highlightConn(3, '3: Poll');
+            if (currentStep === 4) highlightConn(3, '4: Dispatch');
+            if (currentStep === 5) highlightConn(5);
+            if (currentStep === 6) highlightConn(6);
+            if (currentStep === 7) document.getElementById('report-up').classList.remove('hidden');
+
+            // Update Logs
+            const stepData = steps[currentStep - 1];
+            document.getElementById('log-timestamp').innerText = `[${new Date().toLocaleTimeString()}] STEP ${currentStep}`;
+            document.getElementById('log-title').innerText = stepData.title;
+            document.getElementById('log-desc').innerText = `"${stepData.desc}"`;
+            
+            const detailsHtml = stepData.details.map(d => `<p class="text-green-400"><span class="text-slate-500 mr-2">$</span> ${d}</p>`).join('');
+            document.getElementById('log-details').innerHTML = detailsHtml;
+
+            const progressHtml = steps.map((s, idx) => {
+                const isDone = idx + 1 < currentStep;
+                const isCurrent = idx + 1 === currentStep;
+                return `
+                    <div class="flex items-center gap-3">
+                        <div class="w-4 h-4 rounded-full flex items-center justify-center ${isDone ? 'bg-green-500' : isCurrent ? 'bg-blue-500' : 'bg-slate-800'}">
+                            ${isDone ? '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>' : `<span class="text-[8px]">${idx + 1}</span>`}
+                        </div>
+                        <span class="${isCurrent ? 'text-white font-bold' : 'text-slate-600'}">${s.title}</span>
+                    </div>
+                `;
+            }).join('');
+            document.getElementById('progress-list').innerHTML = progressHtml;
+        }
+
+        function startSimulation() {
+            if (isSimulating) return;
+            if (currentStep === steps.length) currentStep = 0;
+            
+            isSimulating = true;
+            currentStep = 1;
+            updateUI();
+
+            timer = setInterval(() => {
+                if (currentStep < steps.length) {
+                    currentStep++;
+                    updateUI();
+                } else {
+                    clearInterval(timer);
+                    isSimulating = false;
+                    updateUI();
+                }
+            }, 2500);
+        }
+
+        startBtn.addEventListener('click', startSimulation);
+        resetBtn.addEventListener('click', () => {
+            clearInterval(timer);
+            isSimulating = false;
+            currentStep = 0;
+            updateUI();
+        });
+
+        // Initialize UI
+        updateUI();
+    </script>
+</body>
+</html>

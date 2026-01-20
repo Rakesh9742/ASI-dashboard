@@ -67,19 +67,27 @@ router.get('/', authenticate, async (req, res) => {
     const userRole = (req as any).user?.role;
 
     // Build query based on user role
-    // Engineers and customers only see projects they created
+    // Engineers see projects they created
+    // Customers see projects assigned via user_projects table
     // Admin, project_manager, and lead see all projects
     let projectFilter = '';
+    let joinClause = '';
     const queryParams: any[] = [];
     
     console.log('Project filtering - User ID:', userId, 'Role:', userRole);
     
-    if (userRole === 'engineer' || userRole === 'customer') {
-      // Engineers and customers only see their own projects (created_by = userId)
+    if (userRole === 'customer') {
+      // Customers see projects assigned to them via user_projects table
+      joinClause = 'INNER JOIN user_projects up ON p.id = up.project_id';
+      projectFilter = 'WHERE up.user_id = $1';
+      queryParams.push(userId);
+      console.log('Filtering projects for customer - only projects assigned via user_projects:', userId);
+    } else if (userRole === 'engineer') {
+      // Engineers only see their own projects (created_by = userId)
       // Also exclude projects with NULL created_by (old projects or admin-created)
       projectFilter = 'WHERE p.created_by = $1 AND p.created_by IS NOT NULL';
       queryParams.push(userId);
-      console.log('Filtering projects for engineer/customer - only projects created by user:', userId);
+      console.log('Filtering projects for engineer - only projects created by user:', userId);
     } else {
       console.log('No filter applied - showing all projects for role:', userRole);
     }
@@ -102,6 +110,7 @@ router.get('/', authenticate, async (req, res) => {
             '[]'
           ) as domains
         FROM projects p
+        ${joinClause}
         LEFT JOIN project_domains pd ON pd.project_id = p.id
         LEFT JOIN domains d ON d.id = pd.domain_id
         ${projectFilter}
@@ -440,6 +449,151 @@ router.get(
       });
     } catch (error: any) {
       console.error('Error fetching blocks:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
+ * GET /api/projects/:projectId/run-history
+ * Get run history for a project (optionally filtered by block and experiment)
+ */
+router.get(
+  '/:projectId/run-history',
+  authenticate,
+  async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.projectId, 10);
+      const { blockName, experiment, limit = '20' } = req.query;
+      
+      if (isNaN(projectId)) {
+        return res.status(400).json({ error: 'Invalid project ID' });
+      }
+
+      // Get user info for filtering
+      const userId = (req as any).user?.id;
+      const userRole = (req as any).user?.role;
+      const username = (req as any).user?.username;
+
+      let query = `
+        SELECT DISTINCT
+          s.id as stage_id,
+          s.stage_name as command,
+          s.timestamp,
+          s.run_status,
+          s.runtime as duration,
+          r.experiment,
+          r.rtl_tag,
+          r.user_name,
+          b.block_name,
+          p.name as project_name
+        FROM stages s
+        INNER JOIN runs r ON s.run_id = r.id
+        INNER JOIN blocks b ON r.block_id = b.id
+        INNER JOIN projects p ON b.project_id = p.id
+        WHERE p.id = $1
+      `;
+
+      const params: any[] = [projectId];
+      let paramCount = 1;
+
+      // Filter by block name if provided
+      if (blockName) {
+        paramCount++;
+        query += ` AND b.block_name = $${paramCount}`;
+        params.push(blockName);
+      }
+
+      // Filter by experiment if provided
+      if (experiment) {
+        paramCount++;
+        query += ` AND r.experiment = $${paramCount}`;
+        params.push(experiment);
+      }
+
+      // Filter by user role: engineers and customers only see their own runs
+      if (userRole === 'engineer' || userRole === 'customer') {
+        if (username) {
+          paramCount++;
+          query += ` AND r.user_name = $${paramCount}`;
+          params.push(username);
+        }
+      }
+      // Admin, project_manager, and lead see all runs (no additional filter)
+
+      query += ` ORDER BY s.timestamp DESC LIMIT $${paramCount + 1}`;
+      params.push(parseInt(limit as string, 10));
+
+      const result = await pool.query(query, params);
+
+      // Format the response to match the frontend expectations
+      const runHistory = result.rows.map((row: any) => {
+        const timestamp = row.timestamp ? new Date(row.timestamp) : null;
+        const now = new Date();
+        
+        // Calculate relative time
+        let relativeTime = 'Unknown';
+        if (timestamp) {
+          const diffMs = now.getTime() - timestamp.getTime();
+          const diffMins = Math.floor(diffMs / (1000 * 60));
+          const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+          const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+          
+          if (diffMins < 1) {
+            relativeTime = 'just now';
+          } else if (diffMins < 60) {
+            relativeTime = `about ${diffMins} ${diffMins === 1 ? 'minute' : 'minutes'} ago`;
+          } else if (diffHours < 24) {
+            relativeTime = `about ${diffHours} ${diffHours === 1 ? 'hour' : 'hours'} ago`;
+          } else {
+            relativeTime = `about ${diffDays} ${diffDays === 1 ? 'day' : 'days'} ago`;
+          }
+        }
+
+        // Format status
+        let status = 'UNKNOWN';
+        if (row.run_status) {
+          const statusLower = row.run_status.toLowerCase();
+          if (statusLower === 'pass' || statusLower === 'completed') {
+            status = 'COMPLETED';
+          } else if (statusLower === 'fail' || statusLower === 'failed') {
+            status = 'FAILED';
+          } else {
+            status = row.run_status.toUpperCase();
+          }
+        }
+
+        // Format command (stage name)
+        const commandMap: { [key: string]: string } = {
+          'syn': 'Execute synthesis',
+          'init': 'Initialize design',
+          'floorplan': 'Floorplan',
+          'place': 'Place',
+          'cts': 'Clock tree synthesis',
+          'postcts': 'Post-CTS optimization',
+          'route': 'Place and route',
+          'postroute': 'Post-route optimization',
+        };
+        const command = commandMap[row.command?.toLowerCase()] || row.command || 'Unknown command';
+
+        return {
+          timestamp: relativeTime,
+          exactTime: timestamp ? timestamp.toISOString().replace('T', ' ').substring(0, 19) : '',
+          command: command,
+          status: status,
+          duration: row.duration || 'N/A',
+          experiment: row.experiment,
+          rtlTag: row.rtl_tag,
+          blockName: row.block_name,
+        };
+      });
+
+      res.json({
+        success: true,
+        data: runHistory,
+      });
+    } catch (error: any) {
+      console.error('Error fetching run history:', error);
       res.status(500).json({ error: error.message });
     }
   }

@@ -34,7 +34,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   String? _selectedTag;
   String? _selectedExperiment;
   String _stageFilter = 'all';
-  String _viewType = 'engineer'; // 'engineer', 'lead', 'manager'
+  String _viewType = 'engineer'; // Will be set based on user role in initState
   
   // Lead View filters
   String _leadStageFilter = ''; // Empty means all stages
@@ -90,8 +90,13 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       if (params?.viewType != null) {
         _viewType = params!.viewType!;
       }
+      // View type will be set in _loadProjectsAndDomains based on user role
     }
-    _loadProjectsAndDomains();
+    
+    // Wait for next frame to ensure auth state is loaded
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadProjectsAndDomains();
+    });
   }
 
   @override
@@ -131,7 +136,9 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       
       // Set default view type based on user role
       String defaultViewType = 'engineer';
-      if (userRole == 'admin' || userRole == 'project_manager') {
+      if (userRole == 'customer') {
+        defaultViewType = 'customer';
+      } else if (userRole == 'admin' || userRole == 'project_manager') {
         defaultViewType = 'manager';
       } else if (userRole == 'lead') {
         defaultViewType = 'lead';
@@ -139,7 +146,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       
       setState(() {
         _projects = projectsData['all'] ?? projectsData['local'] ?? [];
-        // Only set default view type if not already set from parameters
+        // Always set view type based on user role if not explicitly set via parameters
+        // This ensures customers always see customer view, even on refresh
         if (widget.initialViewType == null) {
           _viewType = defaultViewType;
         }
@@ -151,12 +159,29 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       final projectToLoad = widget.initialProject ?? params?.project ?? _selectedProject;
       final domainToLoad = widget.initialDomain ?? params?.domain ?? _selectedDomain;
       
+      // Set project immediately if provided (important for customer view)
+      if (projectToLoad != null && _selectedProject != projectToLoad) {
+        setState(() {
+          _selectedProject = projectToLoad;
+        });
+      }
+      
       if (projectToLoad != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _loadDomainsForProject(projectToLoad);
-          // If domain is also provided, load data after domains are loaded
-          if (domainToLoad != null) {
-            // Wait a bit for domains to load, then set domain and load data
+          // For customers, auto-select first domain and load data
+          if (userRole == 'customer') {
+            // Wait for domains to load, then auto-select first domain
+            Future.delayed(const Duration(milliseconds: 800), () {
+              if (mounted && _availableDomainsForProject.isNotEmpty && _selectedDomain == null) {
+                setState(() {
+                  _selectedDomain = _availableDomainsForProject.first;
+                });
+                _loadInitialData();
+              }
+            });
+          } else if (domainToLoad != null) {
+            // For other roles, use provided domain
             Future.delayed(const Duration(milliseconds: 500), () {
               if (mounted) {
                 setState(() {
@@ -430,7 +455,28 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    // Show project and domain selection if not selected
+    // Watch auth state to check user role
+    final currentAuthState = ref.watch(authProvider);
+    final userRole = currentAuthState.user?['role'];
+    final isCustomer = userRole == 'customer';
+    
+    // For customers, show customer view even if project/domain not selected yet (they're loading)
+    if (isCustomer && _viewType == 'customer') {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Center(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 1900),
+              child: _buildCustomerView(),
+            ),
+          ),
+        ),
+      );
+    }
+    
+    // Show project and domain selection if not selected (for non-customers)
     if (_selectedProject == null || _selectedDomain == null) {
       return Scaffold(
         backgroundColor: const Color(0xFFF8FAFC),
@@ -445,6 +491,22 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                   _buildHeader(),
                 ],
               ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // For customers, show customer view (even if data is empty, let customer view handle it)
+    if (isCustomer && _viewType == 'customer') {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Center(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 1900),
+              child: _buildCustomerView(),
             ),
           ),
         ),
@@ -478,6 +540,29 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       );
     }
 
+    // Update view type if it doesn't match the user's role (important for refresh)
+    if (widget.initialViewType == null && userRole != null) {
+      String correctViewType = 'engineer';
+      if (userRole == 'customer') {
+        correctViewType = 'customer';
+      } else if (userRole == 'admin' || userRole == 'project_manager') {
+        correctViewType = 'manager';
+      } else if (userRole == 'lead') {
+        correctViewType = 'lead';
+      }
+      
+      // Only update if current view type is wrong
+      if (_viewType != correctViewType) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            setState(() {
+              _viewType = correctViewType;
+            });
+          }
+        });
+      }
+    }
+
     final activeRun = _getActiveRun();
     final activeStages = _getActiveStages();
 
@@ -491,8 +576,11 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildHeader(),
-                const SizedBox(height: 24),
+                // Hide header for customers - they don't need project/domain selection
+                if (_viewType != 'customer') ...[
+                  _buildHeader(),
+                  const SizedBox(height: 24),
+                ],
                 if (_viewType == 'engineer') ...[
                   _buildFilterBar(),
                   const SizedBox(height: 24),
@@ -513,6 +601,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                   _buildLeadView(activeStages),
                 ] else if (_viewType == 'manager') ...[
                   _buildManagerView(),
+                ] else if (_viewType == 'customer') ...[
+                  _buildCustomerView(),
                 ],
               ],
             ),
@@ -679,26 +769,34 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
               ],
             ],
           ),
-          // Right side: View Type Selector (only show when project and domain are selected)
+          // Right side: View Type Selector (only show when project and domain are selected, and not customer)
           if (_selectedProject != null && _selectedDomain != null)
-            Row(
-              children: [
-                const Text(
-                  'VIEW TYPE:',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    color: Color(0xFF94A3B8),
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                _buildViewTypeChip('Engineer View', 'engineer'),
-                const SizedBox(width: 8),
-                _buildViewTypeChip('Lead View', 'lead'),
-                const SizedBox(width: 8),
-                _buildViewTypeChip('Manager View', 'manager'),
-              ],
+            Builder(
+              builder: (context) {
+                final userRole = ref.read(authProvider).user?['role'];
+                if (userRole == 'customer') {
+                  return const SizedBox.shrink();
+                }
+                return Row(
+                  children: [
+                    const Text(
+                      'VIEW TYPE:',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF94A3B8),
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    _buildViewTypeChip('Engineer View', 'engineer'),
+                    const SizedBox(width: 8),
+                    _buildViewTypeChip('Lead View', 'lead'),
+                    const SizedBox(width: 8),
+                    _buildViewTypeChip('Manager View', 'manager'),
+                  ],
+                );
+              },
             ),
         ],
       ),
@@ -742,16 +840,24 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         // Auto-select domain if:
         // 1. Only one domain available, OR
         // 2. initialDomain is provided and exists in available domains
+        // 3. For customers, always auto-select first domain
         if (widget.initialDomain != null && availableDomains.contains(widget.initialDomain)) {
           _selectedDomain = widget.initialDomain;
           _loadInitialData();
         } else if (availableDomains.length == 1) {
           _selectedDomain = availableDomains.first;
           _loadInitialData();
-        } else if (availableDomains.isNotEmpty && widget.initialDomain == null) {
-          // If multiple domains but no initial domain specified, select first one
-          _selectedDomain = availableDomains.first;
-          _loadInitialData();
+        } else if (availableDomains.isNotEmpty && _selectedDomain == null) {
+          // For customers, always auto-select first domain
+          // For other roles, also auto-select first domain if available
+          final authStateForRole = ref.read(authProvider);
+          final userRoleForDomain = authStateForRole.user?['role'];
+          final isCustomerForDomain = userRoleForDomain == 'customer';
+          
+          if (isCustomerForDomain || widget.initialDomain == null) {
+            _selectedDomain = availableDomains.first;
+            _loadInitialData();
+          }
         }
       });
     } catch (e) {
@@ -2112,6 +2218,41 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           letterSpacing: 0.5,
         ),
         textAlign: TextAlign.center,
+      ),
+    );
+  }
+
+  // Build header cell for customer view with consistent structure
+  Widget _buildCustomerHeaderCell(String text, Alignment alignment) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      alignment: alignment,
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+          color: Colors.white,
+          letterSpacing: 0.5,
+        ),
+        textAlign: alignment == Alignment.centerLeft ? TextAlign.left : TextAlign.center,
+      ),
+    );
+  }
+
+  // Build data cell for customer view with consistent structure matching header
+  Widget _buildCustomerDataCell(String text, Alignment alignment, {FontWeight? fontWeight}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      alignment: alignment,
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: fontWeight ?? FontWeight.w500,
+          color: const Color(0xFF1E293B),
+        ),
+        textAlign: alignment == Alignment.centerLeft ? TextAlign.left : TextAlign.center,
       ),
     );
   }
@@ -6346,7 +6487,423 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       ],
     );
   }
-  
+
+  Widget _buildCustomerView() {
+    // For customers, show loading if project is not selected yet
+    if (_selectedProject == null) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Column(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text(
+                'Loading project data...',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Auto-select first domain if not selected yet (for customers)
+    if (_selectedDomain == null) {
+      if (_availableDomainsForProject.isNotEmpty) {
+        // Auto-select first domain
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _selectedDomain == null) {
+            setState(() {
+              _selectedDomain = _availableDomainsForProject.first;
+            });
+            _loadInitialData();
+          }
+        });
+        return const Center(
+          child: Padding(
+            padding: EdgeInsets.all(32.0),
+            child: Column(
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text(
+                  'Loading domains...',
+                  style: TextStyle(color: Colors.grey, fontSize: 16),
+                ),
+              ],
+            ),
+          ),
+        );
+      } else {
+        // Domains are loading, wait for them
+        return const Center(
+          child: Padding(
+            padding: EdgeInsets.all(32.0),
+            child: Column(
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text(
+                  'Loading domains...',
+                  style: TextStyle(color: Colors.grey, fontSize: 16),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+    }
+
+    // Show loading if data is being loaded
+    if (_isLoading || _groupedData.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Column(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text(
+                'Loading project data...',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Get all stages for the selected project
+    final allStages = _getAllStagesForProject();
+    
+    // If no stages found, show message
+    if (allStages.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text(
+            'No data available for this project',
+            style: TextStyle(color: Colors.grey, fontSize: 16),
+          ),
+        ),
+      );
+    }
+    
+    // Group by block to get unique blocks with their latest stage info
+    final blockDataMap = <String, Map<String, dynamic>>{};
+    
+    for (var stage in allStages) {
+      final blockName = stage['block_name']?.toString() ?? '';
+      final rtlTag = stage['rtl_tag']?.toString() ?? '';
+      final userName = stage['user_name']?.toString() ?? 'N/A';
+      final currentStage = stage['stage']?.toString().toUpperCase() ?? 'N/A';
+      final aiSummary = stage['ai_summary']?.toString() ?? 'N/A';
+      
+      if (blockName.isEmpty) continue;
+      
+      // Get or create block entry
+      if (!blockDataMap.containsKey(blockName)) {
+        blockDataMap[blockName] = {
+          'block_name': blockName,
+          'rtl_tag': rtlTag,
+          'user_name': userName,
+          'current_stage': currentStage,
+          'ai_summary': aiSummary,
+          'stages': <Map<String, dynamic>>[],
+        };
+      }
+      
+      // Add stage to block's stages list
+      blockDataMap[blockName]!['stages']!.add(stage);
+      
+      // Update to latest stage if this one is more recent
+      final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
+      final currentStageLower = currentStage.toLowerCase();
+      final currentIndex = stageOrder.indexOf(currentStageLower);
+      final existingStageLower = (blockDataMap[blockName]!['current_stage'] as String).toLowerCase();
+      final existingIndex = stageOrder.indexOf(existingStageLower);
+      
+      if (currentIndex > existingIndex) {
+        blockDataMap[blockName]!['current_stage'] = currentStage;
+        blockDataMap[blockName]!['rtl_tag'] = rtlTag;
+        blockDataMap[blockName]!['user_name'] = userName;
+        blockDataMap[blockName]!['ai_summary'] = aiSummary;
+      }
+    }
+    
+    // Calculate health index for each block
+    for (var blockEntry in blockDataMap.entries) {
+      final stages = blockEntry.value['stages'] as List<Map<String, dynamic>>;
+      final healthIndex = _calculateBlockHealthIndex(stages);
+      blockDataMap[blockEntry.key]!['health_index'] = healthIndex;
+      
+      // Determine milestone based on current stage
+      final currentStage = (blockEntry.value['current_stage'] as String).toUpperCase();
+      String milestone = 'N/A';
+      if (currentStage.contains('SYN')) {
+        milestone = 'Synthesis';
+      } else if (currentStage.contains('INIT') || currentStage.contains('FLOORPLAN')) {
+        milestone = 'Floorplan';
+      } else if (currentStage.contains('PLACE')) {
+        milestone = 'Placement';
+      } else if (currentStage.contains('CTS')) {
+        milestone = 'Clock Tree';
+      } else if (currentStage.contains('ROUTE')) {
+        milestone = 'Routing';
+      } else if (currentStage.contains('POSTROUTE')) {
+        milestone = 'Post-Route';
+      }
+      blockDataMap[blockEntry.key]!['milestone'] = milestone;
+    }
+    
+    final blockList = blockDataMap.values.toList();
+    
+    // Build table with header
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Project Header Section
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2563EB).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.folder_special,
+                  color: Color(0xFF2563EB),
+                  size: 32,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _selectedProject ?? 'Project',
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E293B),
+                      ),
+                    ),
+                    if (_selectedDomain != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Domain: $_selectedDomain',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF10B981),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${blockList.length} Block${blockList.length != 1 ? 's' : ''}',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF10B981),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        // Data Table
+        Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              columnWidths: const {
+                0: FixedColumnWidth(180), // Block name
+                1: FixedColumnWidth(140), // user_name
+                2: FixedColumnWidth(140), // RTL Tag
+                3: FixedColumnWidth(140), // current_stage
+                4: FixedColumnWidth(180), // Block health index
+                5: FixedColumnWidth(300), // Brief summary - fixed width instead of flex
+                6: FixedColumnWidth(140), // Milestone
+              },
+              border: TableBorder(
+                horizontalInside: BorderSide(color: Colors.grey.shade200),
+                verticalInside: BorderSide(color: Colors.grey.shade200),
+              ),
+              children: [
+                // Header row
+                TableRow(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF1E293B),
+                    borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(12),
+                      topRight: Radius.circular(12),
+                    ),
+                  ),
+                  children: [
+                    // Block Name
+                    _buildCustomerHeaderCell('Block Name', Alignment.centerLeft),
+                    // User Name
+                    _buildCustomerHeaderCell('User Name', Alignment.center),
+                    // RTL Tag
+                    _buildCustomerHeaderCell('RTL Tag', Alignment.center),
+                    // Current Stage
+                    _buildCustomerHeaderCell('Current Stage', Alignment.center),
+                    // Block Health Index
+                    _buildCustomerHeaderCell('Block Health Index', Alignment.center),
+                    // Brief Summary
+                    _buildCustomerHeaderCell('Brief Summary', Alignment.centerLeft),
+                    // Milestone
+                    _buildCustomerHeaderCell('Milestone', Alignment.center),
+                  ],
+                ),
+                // Data rows
+                ...blockList.map((block) {
+                    final healthIndex = block['health_index'] as double? ?? 0.0;
+                    Color healthColor;
+                    if (healthIndex >= 80) {
+                      healthColor = const Color(0xFF10B981);
+                    } else if (healthIndex >= 60) {
+                      healthColor = const Color(0xFFF59E0B);
+                    } else {
+                      healthColor = const Color(0xFFEF4444);
+                    }
+                    
+                    return TableRow(
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                      ),
+                      children: [
+                        // Block Name
+                        _buildCustomerDataCell(
+                          block['block_name']?.toString() ?? 'N/A',
+                          Alignment.centerLeft,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        // User Name
+                        _buildCustomerDataCell(
+                          block['user_name']?.toString() ?? 'N/A',
+                          Alignment.center,
+                        ),
+                        // RTL Tag
+                        _buildCustomerDataCell(
+                          block['rtl_tag']?.toString() ?? 'N/A',
+                          Alignment.center,
+                        ),
+                        // Current Stage
+                        _buildCustomerDataCell(
+                          block['current_stage']?.toString() ?? 'N/A',
+                          Alignment.center,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        // Block Health Index
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          alignment: Alignment.center,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 12,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                  color: healthColor,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                healthIndex.toStringAsFixed(1),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: healthColor,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        // Brief Summary
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            block['ai_summary']?.toString() ?? 'N/A',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF64748B),
+                            ),
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        // Milestone
+                        _buildCustomerDataCell(
+                          block['milestone']?.toString() ?? 'N/A',
+                          Alignment.center,
+                        ),
+                      ],
+                    );
+                  }).toList(),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   // Get all stages from all blocks in the selected project
   List<Map<String, dynamic>> _getAllStagesForProject() {
     if (_selectedProject == null || _selectedDomain == null) return [];
