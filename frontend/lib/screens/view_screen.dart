@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../providers/auth_provider.dart';
 import '../providers/view_screen_provider.dart';
 import '../services/api_service.dart';
+import '../services/qms_service.dart';
+import '../widgets/qms_status_badge.dart';
+import 'qms_dashboard_screen.dart';
 import 'package:fl_chart/fl_chart.dart';
 
 class ViewScreen extends ConsumerStatefulWidget {
@@ -23,6 +28,7 @@ class ViewScreen extends ConsumerStatefulWidget {
 
 class _ViewScreenState extends ConsumerState<ViewScreen> {
   final ApiService _apiService = ApiService();
+  final QmsService _qmsService = QmsService();
   
   // Data structure: project -> block -> rtl_tag -> experiment -> stages
   Map<String, dynamic> _groupedData = {};
@@ -45,6 +51,10 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   bool _isLoadingDomains = false;
   List<dynamic> _projects = [];
   List<String> _availableDomainsForProject = [];
+  
+  // QMS data - block IDs and checklist data
+  Map<String, int> _blockNameToId = {}; // Map block name to block ID
+  Map<String, Map<String, dynamic>> _blockQmsData = {}; // Map block name to QMS checklist info
   
   // Graph Selection State - Multiple selections
   Set<String> _selectedMetricGroups = {'INTERNAL (R2R)'};
@@ -4624,6 +4634,11 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     // Get block summary data for the table
     final blockSummaryData = _getBlockSummaryData(allProjectStages);
     
+    // Load QMS data if not already loaded (async, will update UI when ready)
+    if (_blockNameToId.isEmpty && _selectedProject != null) {
+      _loadQmsDataForBlocks(blockSummaryData);
+    }
+    
     // Apply filters
     final filteredBlockSummary = _applyLeadFilters(blockSummaryData);
 
@@ -4810,10 +4825,102 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     }
     
     // Sort by block name
-    blockSummaryList.sort((a, b) => 
+      blockSummaryList.sort((a, b) => 
       (a['block_name'] as String).compareTo(b['block_name'] as String));
     
     return blockSummaryList;
+  }
+  
+  // Load block IDs and QMS checklist data
+  Future<void> _loadQmsDataForBlocks(List<Map<String, dynamic>> blockSummary) async {
+    if (_selectedProject == null) return;
+    
+    try {
+      final token = ref.read(authProvider).token;
+      if (token == null) return;
+      
+      // Get project ID
+      final projects = await _apiService.getProjects(token: token);
+      Map<String, dynamic>? project;
+      try {
+        project = projects.firstWhere(
+          (p) => (p['name']?.toString().toLowerCase() ?? '') == _selectedProject!.toLowerCase(),
+        ) as Map<String, dynamic>?;
+      } catch (e) {
+        return;
+      }
+      
+      if (project == null || project['id'] == null) return;
+      
+      final projectId = project['id'] as int;
+      
+      // Get blocks for this project
+      final headers = <String, String>{
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      };
+      
+      final response = await http.get(
+        Uri.parse('${ApiService.baseUrl}/projects/$projectId/blocks'),
+        headers: headers,
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final blocks = data is Map && data['data'] != null ? data['data'] : (data is List ? data : []);
+        if (blocks is List) {
+          final blockMap = <String, int>{};
+          for (var block in blocks) {
+            final blockName = block['block_name']?.toString();
+            final blockId = block['id'];
+            if (blockName != null && blockId != null) {
+              blockMap[blockName] = blockId is int ? blockId : int.tryParse(blockId.toString()) ?? 0;
+            }
+          }
+          
+          if (mounted) {
+            setState(() {
+              _blockNameToId = blockMap;
+            });
+          }
+          
+          // Load QMS checklist data for each block
+          final qmsDataMap = <String, Map<String, dynamic>>{};
+          for (var blockEntry in blockMap.entries) {
+            final blockName = blockEntry.key;
+            final blockId = blockEntry.value;
+            
+            try {
+              final checklists = await _qmsService.getChecklistsForBlock(blockId, token: token);
+              if (checklists.isNotEmpty) {
+                // Store all checklists for this block
+                final checklistList = checklists.map((checklist) => {
+                  'name': checklist['name'] ?? 'N/A',
+                  'status': checklist['status'] ?? 'draft',
+                  'id': checklist['id'],
+                }).toList();
+                
+                qmsDataMap[blockName] = {
+                  'checklists': checklistList,
+                  'block_id': blockId,
+                };
+              }
+            } catch (e) {
+              // Silently fail for blocks without QMS data
+            }
+          }
+          
+          if (mounted) {
+            setState(() {
+              _blockQmsData = qmsDataMap;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      // Silently fail - QMS data won't be available
+      print('Failed to load QMS data: $e');
+    }
   }
   
   // Apply filters to block summary data
@@ -5192,6 +5299,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                   8: FixedColumnWidth(100), // DRC
                   9: FixedColumnWidth(100), // Runtime
                   10: FixedColumnWidth(80), // Trend
+                  11: FixedColumnWidth(350), // Checklist (wider for long names and statuses)
                 },
                 border: TableBorder(
                   horizontalInside: BorderSide(color: Colors.grey.shade200),
@@ -5215,6 +5323,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                       _buildTableHeaderCell('DRC'),
                       _buildTableHeaderCell('Runtime'),
                       _buildTableHeaderCell('Trend'),
+                      _buildChecklistHeaderCell(),
                     ],
                   ),
                   
@@ -5266,6 +5375,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                           runtime != null ? _formatRuntime(runtime) : 'N/A',
                         ),
                         _buildTrendCell(trend),
+                        _buildQmsChecklistCell(block),
                       ],
                     );
                   }).toList(),
@@ -5322,6 +5432,151 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           fontSize: 11,
           fontWeight: FontWeight.w600,
           color: textColor,
+        ),
+      ),
+    );
+  }
+  
+  // Build checklist header cell with sub-headers
+  Widget _buildChecklistHeaderCell() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: const BoxDecoration(
+        color: Color(0xFF0F172A),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'Checklist',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                flex: 1,
+                child: Text(
+                  'Name',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white.withOpacity(0.9),
+                  ),
+                ),
+              ),
+              Expanded(
+                flex: 1,
+                child: Center(
+                  child: Text(
+                    'Status',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white.withOpacity(0.9),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Build QMS checklist cell with all checklist names and statuses
+  Widget _buildQmsChecklistCell(Map<String, dynamic> block) {
+    final blockName = block['block_name']?.toString() ?? '';
+    final qmsData = _blockQmsData[blockName];
+    
+    if (qmsData == null) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        alignment: Alignment.centerLeft,
+        child: const Text(
+          'N/A',
+          style: TextStyle(
+            fontSize: 12,
+            color: Color(0xFF94A3B8),
+          ),
+        ),
+      );
+    }
+    
+    final checklists = qmsData['checklists'] as List<dynamic>?;
+    final blockId = qmsData['block_id'] as int?;
+    
+    if (checklists == null || checklists.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        alignment: Alignment.centerLeft,
+        child: const Text(
+          'N/A',
+          style: TextStyle(
+            fontSize: 12,
+            color: Color(0xFF94A3B8),
+          ),
+        ),
+      );
+    }
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      alignment: Alignment.centerLeft,
+      child: InkWell(
+        onTap: blockId != null ? () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => QmsDashboardScreen(blockId: blockId),
+            ),
+          );
+        } : null,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: checklists.map<Widget>((checklist) {
+            final checklistName = checklist['name']?.toString() ?? 'N/A';
+            final checklistStatus = checklist['status']?.toString() ?? 'draft';
+            
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  // Name column - 50% width
+                  Expanded(
+                    flex: 1,
+                    child: Text(
+                      checklistName,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: blockId != null ? const Color(0xFF3B82F6) : const Color(0xFF1E293B),
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Status column - 50% width with center alignment
+                  Expanded(
+                    flex: 1,
+                    child: Center(
+                      child: QmsStatusBadge(status: checklistStatus),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
         ),
       ),
     );
