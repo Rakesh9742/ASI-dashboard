@@ -1124,7 +1124,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                               const double colEvidence = 150;
                               const double colReportPath = 250;
                               const double colResult = 150;
-                              const double colStatus = 200;
+                              const double colStatus = 260;
                               const double colComments = 200;
                               const double colReviewerComments = 200;
                               const double colSignoff = 120;
