@@ -2963,19 +2963,31 @@ class QmsService {
       ...(blockId ? { block_id: blockId } : {})
     };
 
+    // Build description text from actionDetails
+    let descriptionText = '';
+    if (actionDetails && typeof actionDetails === 'object') {
+      const detailKeys = Object.keys(actionDetails);
+      if (detailKeys.length > 0) {
+        descriptionText = JSON.stringify(actionDetails);
+      }
+    } else if (actionDetails) {
+      descriptionText = String(actionDetails);
+    }
+
     await client.query(
       `
         INSERT INTO qms_audit_log 
-          (check_item_id, checklist_id, block_id, user_id, action_type, action_details)
-        VALUES ($1, $2, $3, $4, $5, $6)
+          (check_item_id, checklist_id, user_id, action, entity_type, new_value, description)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
       `,
       [
         checkItemId, 
         checklistId, 
-        blockId,
         userId, 
         actionType,
-        JSON.stringify(detailsWithBlock)
+        entityType,
+        JSON.stringify(detailsWithBlock),
+        descriptionText || null
       ]
     );
   }
