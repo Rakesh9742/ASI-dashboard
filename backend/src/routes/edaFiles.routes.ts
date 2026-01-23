@@ -1368,10 +1368,38 @@ router.get('/watcher/status', authenticate, async (req, res) => {
  */
 router.post('/process/:filename', authenticate, async (req, res) => {
   try {
-    // TODO: Update to use new Physical Design schema
-    return res.status(503).json({
-      error: 'Endpoint temporarily unavailable - new schema migration in progress',
-      message: 'File processing is disabled until the new Physical Design schema is implemented.'
+    const filename = decodeURIComponent(req.params.filename);
+    const outputFolder = fileProcessorService.getOutputFolder();
+    const filePath = path.join(outputFolder, filename);
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        error: 'File not found',
+        message: `File "${filename}" not found in output folder`,
+        path: filePath
+      });
+    }
+    
+    console.log(`📄 [PROCESS ENDPOINT] Processing file: ${filename}`);
+    
+    // Get user ID from authentication
+    const userId = (req as any).user?.id;
+    
+    // Process the file
+    const fileId = await fileProcessorService.processFile(filePath, userId);
+    
+    console.log(`✅ [PROCESS ENDPOINT] Successfully processed file: ${filename} (Stage ID: ${fileId})`);
+    
+    res.json({
+      success: true,
+      message: 'File processed successfully',
+      data: {
+        filename,
+        filePath,
+        stageId: fileId,
+        processedAt: new Date().toISOString()
+      }
     });
   } catch (error: any) {
     console.error('Error processing file:', error);
@@ -1381,7 +1409,10 @@ router.post('/process/:filename', authenticate, async (req, res) => {
         message: 'The eda_output_files table has been replaced. Please update the API to use the new Physical Design schema.'
       });
     }
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: error.message || 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
