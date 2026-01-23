@@ -186,17 +186,34 @@ export async function executeSSHCommand(userId: number, command: string, retries
   
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      // Only reuse existing connection (established at login), don't create new ones
-      const connection = sshConnections.get(userId);
+      // Get or reuse existing connection (established at login)
+      // If connection is lost, automatically reconnect instead of throwing error
+      let connection = sshConnections.get(userId);
       if (!connection || !connection.connected) {
-        throw new Error('SSH connection not established. Please log out and log in again to establish SSH connection.');
+        console.log(`SSH connection not found or disconnected for user ${userId}, attempting to reconnect...`);
+        // Reuse the existing connection if possible, or create a new one if needed
+        // getSSHConnection will reuse existing connection if it exists and is connected
+        await getSSHConnection(userId);
+        connection = sshConnections.get(userId);
+        if (!connection || !connection.connected) {
+          throw new Error('Failed to establish SSH connection. Please check your SSH credentials.');
+        }
+      } else {
+        // Connection exists and is active - reusing it
+        console.log(`✅ Reusing existing SSH connection for user ${userId} (established at login)`);
       }
       
       const client = connection.client;
       
-      // Verify connection is still active
+      // Verify connection is still active (double-check after getting it)
       if (!connection.connected) {
-        throw new Error('SSH connection is not active. Please log out and log in again.');
+        console.log(`SSH connection marked as inactive for user ${userId}, attempting to reconnect...`);
+        // Try to reconnect - getSSHConnection will create new connection if old one is dead
+        await getSSHConnection(userId, true); // Force new connection
+        connection = sshConnections.get(userId);
+        if (!connection || !connection.connected) {
+          throw new Error('SSH connection is not active and reconnection failed. Please check your SSH credentials.');
+        }
       }
 
       // Check if command contains sudo - if so, we need to use shell with PTY
@@ -258,6 +275,10 @@ export async function executeSSHCommand(userId: number, command: string, retries
             stream.on('data', (data: Buffer) => {
               const output = data.toString();
               allOutput += output;
+              
+              // Log actual output for debugging (limit to avoid spam)
+              const outputPreview = output.replace(/\n/g, '\\n').substring(0, Math.min(150, output.length));
+              console.log(`[SSH Output] Received ${data.length} bytes. Preview: ${outputPreview}${output.length > 150 ? '...' : ''}`);
               
               // Check for password prompt
               if (!passwordPrompted && /password/i.test(output)) {
@@ -354,20 +375,29 @@ export async function executeSSHCommand(userId: number, command: string, retries
                   
                   console.log(`[Completion Check] Password sent. Output after command: ${outputAfterCommand.length} chars, Has prompt: ${hasPromptInLastLines || anyLineIsPrompt}, Time since activity: ${timeSinceLastActivity}ms`);
                   
+                  // Check for completion indicators in the output
+                  const hasDoneMessage = /Done\./i.test(outputAfterCommand) || /done\./i.test(allOutput);
+                  const hasSuccessMessage = /success/i.test(outputAfterCommand) || /completed/i.test(outputAfterCommand);
+                  
                   // Complete if:
                   // 1. We see a prompt in the output (command finished)
-                  // 2. No activity for 30 seconds (command likely finished or hung)
-                  // 3. We have substantial output and no activity for 15 seconds
+                  // 2. We see "Done." or success message (command explicitly finished)
+                  // 3. No activity for 60 seconds (command likely finished or hung) - increased from 30s
+                  // 4. We have substantial output and no activity for 30 seconds - increased from 15s
                   if (anyLineIsPrompt && hasOutputAfterCommand) {
                     console.log('Command completion detected: Shell prompt found after command output');
                     shouldComplete = true;
-                  } else if (timeSinceLastActivity > 30000) {
-                    // Wait up to 30 seconds after password sent for command to complete
-                    console.log('Command completion detected: Timeout (30s) after password sent');
+                  } else if (hasDoneMessage || hasSuccessMessage) {
+                    // Command explicitly indicates completion
+                    console.log(`Command completion detected: Found completion message (Done/Success)`);
                     shouldComplete = true;
-                  } else if (hasOutputAfterCommand && outputAfterCommand.length > 100 && timeSinceLastActivity > 15000) {
-                    // If we have substantial output and no activity for 15 seconds, likely done
-                    console.log('Command completion detected: Substantial output with 15s inactivity');
+                  } else if (timeSinceLastActivity > 60000) {
+                    // Wait up to 60 seconds after password sent for command to complete (increased from 30s)
+                    console.log('Command completion detected: Timeout (60s) after password sent');
+                    shouldComplete = true;
+                  } else if (hasOutputAfterCommand && outputAfterCommand.length > 100 && timeSinceLastActivity > 30000) {
+                    // If we have substantial output and no activity for 30 seconds, likely done (increased from 15s)
+                    console.log('Command completion detected: Substantial output with 30s inactivity');
                     shouldComplete = true;
                   }
                 } else if (timeSinceLastActivity > 30000) {
@@ -386,61 +416,162 @@ export async function executeSSHCommand(userId: number, command: string, retries
               }
               
               if (shouldComplete && !outputComplete && commandStarted) {
-                outputComplete = true;
-                clearInterval(completionCheckInterval);
-                clearTimeout(commandTimeout);
-                
-                console.log('═══════════════════════════════════════════════════════════');
-                console.log('✅ Command completion detected');
-                console.log(`   Output length: ${allOutput.length} characters`);
-                console.log(`   Password prompted: ${passwordPrompted}`);
-                console.log(`   Password sent: ${passwordSent}`);
-                console.log(`   Time since last activity: ${timeSinceLastActivity}ms`);
-                console.log(`   Last 5 lines of output:`);
-                const lastLines = allOutput.split('\n').slice(-5);
-                lastLines.forEach((line, idx) => {
-                  console.log(`     ${idx + 1}. ${line.substring(0, 100)}`);
-                });
-                console.log('═══════════════════════════════════════════════════════════');
-                
-                // Clean up output - remove command echo and prompt
-                let cleanOutput = allOutput;
-                // Remove the command line if it was echoed
-                const commandLines = finalCommand.split('\n');
-                for (const cmdLine of commandLines) {
-                  cleanOutput = cleanOutput.replace(new RegExp(cmdLine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '');
-                }
-                // Remove prompt lines
-                cleanOutput = cleanOutput.split('\n')
-                  .filter(line => !/^[\w@\-]+[:\/][\w\/~]+[#$>]\s*$/.test(line.trim()))
-                  .filter(line => !line.includes('Last login:'))
-                  .join('\n')
-                  .trim();
-                
-                stdout = cleanOutput;
-                
-                // Determine exit code - if password was prompted but command didn't complete, it's an error
-                // Otherwise, check if there are error indicators in output
-                let exitCode = 0;
-                if (passwordPrompted && !passwordSent) {
-                  exitCode = 1; // Password required but not provided
-                } else if (cleanOutput.toLowerCase().includes('error') || cleanOutput.toLowerCase().includes('failed')) {
-                  exitCode = 1;
-                }
-                
-                resolve({ stdout, stderr, code: exitCode });
+                // Don't resolve immediately - wait a bit more to capture any remaining output
+                // This is especially important for commands that output data after completion
+                setTimeout(() => {
+                  if (!outputComplete) {
+                    outputComplete = true;
+                    clearInterval(completionCheckInterval);
+                    clearTimeout(commandTimeout);
+                    
+                    console.log('═══════════════════════════════════════════════════════════');
+                    console.log('✅ Command completion detected (after final wait)');
+                    console.log(`   Output length: ${allOutput.length} characters`);
+                    console.log(`   Password prompted: ${passwordPrompted}`);
+                    console.log(`   Password sent: ${passwordSent}`);
+                    console.log(`   Time since last activity: ${timeSinceLastActivity}ms`);
+                    console.log(`   Last 10 lines of output:`);
+                    const lastLines = allOutput.split('\n').slice(-10);
+                    lastLines.forEach((line, idx) => {
+                      console.log(`     ${idx + 1}. ${line.substring(0, 150)}`);
+                    });
+                    console.log('═══════════════════════════════════════════════════════════');
+                    
+                    // Log raw output before cleaning for debugging
+                    console.log('═══════════════════════════════════════════════════════════');
+                    console.log('📋 RAW OUTPUT BEFORE CLEANING:');
+                    console.log(`   Total length: ${allOutput.length} characters`);
+                    console.log(`   First 1500 chars:\n${allOutput.substring(0, Math.min(1500, allOutput.length))}`);
+                    console.log(`   Last 1500 chars:\n${allOutput.substring(Math.max(0, allOutput.length - 1500))}`);
+                    console.log('═══════════════════════════════════════════════════════════');
+                    
+                    // Clean up output - remove command echo and prompt
+                    let cleanOutput = allOutput;
+                    // Remove the command line if it was echoed (be more careful - only exact line matches)
+                    const commandLines = finalCommand.split('\n');
+                    for (const cmdLine of commandLines) {
+                      // Only remove if it's a complete line match
+                      const escapedCmd = cmdLine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                      cleanOutput = cleanOutput.replace(new RegExp(`^${escapedCmd}\\s*$`, 'gm'), '');
+                    }
+                    // Remove prompt lines (but keep actual command output)
+                    cleanOutput = cleanOutput.split('\n')
+                      .filter(line => {
+                        const trimmed = line.trim();
+                        // Remove shell prompts
+                        if (/^[\w@\-]+[:\/][\w\/~]+[#$>]\s*$/.test(trimmed)) {
+                          return false;
+                        }
+                        // Remove "Last login" messages
+                        if (trimmed.includes('Last login:')) {
+                          return false;
+                        }
+                        // Remove password prompts
+                        if (/\[sudo\] password for/i.test(trimmed)) {
+                          return false;
+                        }
+                        // Remove command echo (if it appears as a standalone line)
+                        if (trimmed.includes('sudo python3') && trimmed.length > 100) {
+                          return false;
+                        }
+                        // Keep everything else (including actual script output)
+                        return true;
+                      })
+                      .join('\n')
+                      .trim();
+                    
+                    // Log cleaned output for debugging
+                    console.log('═══════════════════════════════════════════════════════════');
+                    console.log('📋 CLEANED OUTPUT:');
+                    console.log(`   Length: ${cleanOutput.length} characters`);
+                    console.log(`   Content:\n${cleanOutput.substring(0, Math.min(2000, cleanOutput.length))}${cleanOutput.length > 2000 ? '\n... (truncated)' : ''}`);
+                    console.log('═══════════════════════════════════════════════════════════');
+                    
+                    stdout = cleanOutput;
+                    
+                    // Determine exit code - if password was prompted but command didn't complete, it's an error
+                    // Otherwise, check if there are error indicators in output
+                    let exitCode = 0;
+                    if (passwordPrompted && !passwordSent) {
+                      exitCode = 1; // Password required but not provided
+                    } else if (cleanOutput.toLowerCase().includes('error') || cleanOutput.toLowerCase().includes('failed')) {
+                      exitCode = 1;
+                    } else if (cleanOutput.toLowerCase().includes('done.') || cleanOutput.toLowerCase().includes('success')) {
+                      exitCode = 0; // Success indicators
+                    }
+                    
+                    resolve({ stdout, stderr, code: exitCode });
+                  }
+                }, 3000); // Wait 3 seconds after completion detection to capture all output
               }
             }, 500); // Check every 500ms
 
             stream.on('close', (code: number | null) => {
-              clearInterval(completionCheckInterval);
-              clearTimeout(commandTimeout);
-              activeShellStreams.delete(userId); // Clean up
-              passwordSentFlags.delete(userId); // Clean up password flag
-              if (!outputComplete) {
-                outputComplete = true;
-                resolve({ stdout, stderr, code });
-              }
+              console.log(`[SSH Stream] Stream closed with code: ${code}`);
+              console.log(`[SSH Stream] Final output length: ${allOutput.length} characters`);
+              
+              // Wait a bit more to ensure all data is captured
+              setTimeout(() => {
+                clearInterval(completionCheckInterval);
+                clearTimeout(commandTimeout);
+                activeShellStreams.delete(userId); // Clean up
+                passwordSentFlags.delete(userId); // Clean up password flag
+                if (!outputComplete) {
+                  outputComplete = true;
+                  console.log('═══════════════════════════════════════════════════════════');
+                  console.log('✅ Command completion detected (stream closed)');
+                  console.log(`   Final output length: ${allOutput.length} characters`);
+                  console.log('═══════════════════════════════════════════════════════════');
+                  
+                  // Clean up output - remove command echo and prompt
+                  let cleanOutput = allOutput;
+                  // Remove the command line if it was echoed
+                  const commandLines = finalCommand.split('\n');
+                  for (const cmdLine of commandLines) {
+                    const escapedCmd = cmdLine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    cleanOutput = cleanOutput.replace(new RegExp(`^${escapedCmd}\\s*$`, 'gm'), '');
+                  }
+                  // Remove prompt lines (but keep actual command output)
+                  cleanOutput = cleanOutput.split('\n')
+                    .filter(line => {
+                      const trimmed = line.trim();
+                      // Remove shell prompts
+                      if (/^[\w@\-]+[:\/][\w\/~]+[#$>]\s*$/.test(trimmed)) {
+                        return false;
+                      }
+                      // Remove "Last login" messages
+                      if (trimmed.includes('Last login:')) {
+                        return false;
+                      }
+                      // Remove password prompts
+                      if (/\[sudo\] password for/i.test(trimmed)) {
+                        return false;
+                      }
+                      // Remove command echo (if it appears as a standalone line)
+                      if (trimmed.includes('sudo python3') && trimmed.length > 100) {
+                        return false;
+                      }
+                      // Keep everything else (including actual script output)
+                      return true;
+                    })
+                    .join('\n')
+                    .trim();
+                  
+                  stdout = cleanOutput;
+                  
+                  // Determine exit code
+                  let exitCode = code || 0;
+                  if (passwordPrompted && !passwordSent) {
+                    exitCode = 1;
+                  } else if (cleanOutput.toLowerCase().includes('error') || cleanOutput.toLowerCase().includes('failed')) {
+                    exitCode = 1;
+                  } else if (cleanOutput.toLowerCase().includes('done.') || cleanOutput.toLowerCase().includes('success')) {
+                    exitCode = 0;
+                  }
+                  
+                  resolve({ stdout, stderr, code: exitCode });
+                }
+              }, 2000); // Wait 2 seconds after stream close to capture any final data
             });
             
             stream.on('error', (err: Error) => {
