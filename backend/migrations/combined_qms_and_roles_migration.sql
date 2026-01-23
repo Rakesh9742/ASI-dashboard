@@ -27,6 +27,50 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- ============================================================================
+-- PART 0: ENSURE PREREQUISITE TABLES EXIST (projects, blocks)
+-- ============================================================================
+-- The blocks table is required for checklists. If it doesn't exist, create it.
+-- This is from migration 010_create_physical_design_schema.sql
+
+DO $$
+BEGIN
+    -- First, ensure projects table exists (required for blocks)
+    IF NOT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'projects'
+    ) THEN
+        RAISE EXCEPTION 'Projects table does not exist. Please run migration 006_create_projects.sql first.';
+    END IF;
+    
+    -- Check if blocks table exists
+    IF NOT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'blocks'
+    ) THEN
+        -- Create blocks table if it doesn't exist
+        CREATE TABLE blocks (
+            id SERIAL PRIMARY KEY,
+            project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            block_name VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (project_id, block_name)
+        );
+        
+        -- Create indexes for blocks
+        CREATE INDEX IF NOT EXISTS idx_blocks_project_id ON blocks(project_id);
+        CREATE INDEX IF NOT EXISTS idx_blocks_name ON blocks(block_name);
+        CREATE INDEX IF NOT EXISTS idx_blocks_project_name ON blocks(project_id, block_name);
+        
+        RAISE NOTICE 'Created blocks table (prerequisite for QMS schema)';
+    ELSE
+        RAISE NOTICE 'Blocks table already exists';
+    END IF;
+END $$;
+
 -- Create checklists table
 CREATE TABLE IF NOT EXISTS checklists (
     id SERIAL PRIMARY KEY,
@@ -116,48 +160,81 @@ CREATE TABLE IF NOT EXISTS qms_audit_log (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create indexes for performance
-CREATE INDEX IF NOT EXISTS idx_checklists_block_id ON checklists(block_id);
-CREATE INDEX IF NOT EXISTS idx_checklists_milestone_id ON checklists(milestone_id);
-CREATE INDEX IF NOT EXISTS idx_checklists_status ON checklists(status);
-CREATE INDEX IF NOT EXISTS idx_checklists_approver_id ON checklists(approver_id);
-CREATE INDEX IF NOT EXISTS idx_checklists_submitted_by ON checklists(submitted_by);
-CREATE INDEX IF NOT EXISTS idx_checklists_submitted_at ON checklists(submitted_at);
+-- Create indexes for performance (only if tables exist)
+DO $$
+BEGIN
+    -- Indexes for checklists table
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'checklists') THEN
+        CREATE INDEX IF NOT EXISTS idx_checklists_block_id ON checklists(block_id);
+        CREATE INDEX IF NOT EXISTS idx_checklists_milestone_id ON checklists(milestone_id);
+        CREATE INDEX IF NOT EXISTS idx_checklists_status ON checklists(status);
+        CREATE INDEX IF NOT EXISTS idx_checklists_approver_id ON checklists(approver_id);
+        CREATE INDEX IF NOT EXISTS idx_checklists_submitted_by ON checklists(submitted_by);
+        CREATE INDEX IF NOT EXISTS idx_checklists_submitted_at ON checklists(submitted_at);
+    END IF;
+    
+    -- Indexes for check_items table
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'check_items') THEN
+        CREATE INDEX IF NOT EXISTS idx_check_items_checklist_id ON check_items(checklist_id);
+        CREATE INDEX IF NOT EXISTS idx_check_items_category ON check_items(category);
+        CREATE INDEX IF NOT EXISTS idx_check_items_sub_category ON check_items(sub_category);
+        CREATE INDEX IF NOT EXISTS idx_check_items_severity ON check_items(severity);
+        CREATE INDEX IF NOT EXISTS idx_check_items_version ON check_items(version);
+    END IF;
+    
+    -- Indexes for c_report_data table
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'c_report_data') THEN
+        CREATE INDEX IF NOT EXISTS idx_c_report_data_check_item_id ON c_report_data(check_item_id);
+        CREATE INDEX IF NOT EXISTS idx_c_report_data_signoff_status ON c_report_data(signoff_status);
+        CREATE INDEX IF NOT EXISTS idx_c_report_data_signoff_by ON c_report_data(signoff_by);
+    END IF;
+    
+    -- Indexes for check_item_approvals table
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'check_item_approvals') THEN
+        CREATE INDEX IF NOT EXISTS idx_check_item_approvals_check_item_id ON check_item_approvals(check_item_id);
+        CREATE INDEX IF NOT EXISTS idx_check_item_approvals_status ON check_item_approvals(status);
+    END IF;
+    
+    -- Indexes for qms_audit_log table
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'qms_audit_log') THEN
+        CREATE INDEX IF NOT EXISTS idx_qms_audit_log_checklist_id ON qms_audit_log(checklist_id);
+        CREATE INDEX IF NOT EXISTS idx_qms_audit_log_check_item_id ON qms_audit_log(check_item_id);
+        CREATE INDEX IF NOT EXISTS idx_qms_audit_log_user_id ON qms_audit_log(user_id);
+        CREATE INDEX IF NOT EXISTS idx_qms_audit_log_created_at ON qms_audit_log(created_at);
+    END IF;
+END $$;
 
-CREATE INDEX IF NOT EXISTS idx_check_items_checklist_id ON check_items(checklist_id);
-CREATE INDEX IF NOT EXISTS idx_check_items_category ON check_items(category);
-CREATE INDEX IF NOT EXISTS idx_check_items_sub_category ON check_items(sub_category);
-CREATE INDEX IF NOT EXISTS idx_check_items_severity ON check_items(severity);
-CREATE INDEX IF NOT EXISTS idx_check_items_version ON check_items(version);
-
-CREATE INDEX IF NOT EXISTS idx_c_report_data_check_item_id ON c_report_data(check_item_id);
-CREATE INDEX IF NOT EXISTS idx_c_report_data_signoff_status ON c_report_data(signoff_status);
-CREATE INDEX IF NOT EXISTS idx_c_report_data_signoff_by ON c_report_data(signoff_by);
-
-CREATE INDEX IF NOT EXISTS idx_check_item_approvals_check_item_id ON check_item_approvals(check_item_id);
-CREATE INDEX IF NOT EXISTS idx_check_item_approvals_status ON check_item_approvals(status);
-
-CREATE INDEX IF NOT EXISTS idx_qms_audit_log_checklist_id ON qms_audit_log(checklist_id);
-CREATE INDEX IF NOT EXISTS idx_qms_audit_log_check_item_id ON qms_audit_log(check_item_id);
-CREATE INDEX IF NOT EXISTS idx_qms_audit_log_user_id ON qms_audit_log(user_id);
-CREATE INDEX IF NOT EXISTS idx_qms_audit_log_created_at ON qms_audit_log(created_at);
-
--- Add triggers to update updated_at timestamp
-DROP TRIGGER IF EXISTS update_checklists_updated_at ON checklists;
-CREATE TRIGGER update_checklists_updated_at BEFORE UPDATE ON checklists
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_check_items_updated_at ON check_items;
-CREATE TRIGGER update_check_items_updated_at BEFORE UPDATE ON check_items
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_c_report_data_updated_at ON c_report_data;
-CREATE TRIGGER update_c_report_data_updated_at BEFORE UPDATE ON c_report_data
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_check_item_approvals_updated_at ON check_item_approvals;
-CREATE TRIGGER update_check_item_approvals_updated_at BEFORE UPDATE ON check_item_approvals
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+-- Add triggers to update updated_at timestamp (only if tables exist)
+DO $$
+BEGIN
+    -- Triggers for checklists table
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'checklists') THEN
+        DROP TRIGGER IF EXISTS update_checklists_updated_at ON checklists;
+        CREATE TRIGGER update_checklists_updated_at BEFORE UPDATE ON checklists
+            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+    
+    -- Triggers for check_items table
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'check_items') THEN
+        DROP TRIGGER IF EXISTS update_check_items_updated_at ON check_items;
+        CREATE TRIGGER update_check_items_updated_at BEFORE UPDATE ON check_items
+            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+    
+    -- Triggers for c_report_data table
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'c_report_data') THEN
+        DROP TRIGGER IF EXISTS update_c_report_data_updated_at ON c_report_data;
+        CREATE TRIGGER update_c_report_data_updated_at BEFORE UPDATE ON c_report_data
+            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+    
+    -- Triggers for check_item_approvals table
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'check_item_approvals') THEN
+        DROP TRIGGER IF EXISTS update_check_item_approvals_updated_at ON check_item_approvals;
+        CREATE TRIGGER update_check_item_approvals_updated_at BEFORE UPDATE ON check_item_approvals
+            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+END $$;
 
 -- ============================================================================
 -- PART 2: ENSURE ALL QMS COLUMNS EXIST (from 015_ensure_qms_columns_exist.sql)
