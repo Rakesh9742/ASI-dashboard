@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { pool } from '../config/database';
 import { authenticate, authorize } from '../middleware/auth.middleware';
+import { authenticateApiKey } from '../middleware/apiKey.middleware';
 import { decryptNumber, encrypt } from '../utils/encryption';
 import { getSSHConnection } from '../services/ssh.service';
 
@@ -14,7 +15,7 @@ router.post('/register', authenticate, async (req, res) => {
   try {
     await client.query('BEGIN');
     
-    const { username, email, password, full_name, role, domain_id, ssh_user, sshpassword, project_ids } = req.body;
+    const { username, email, password, full_name, role, domain_id, ssh_user, sshpassword, project_ids, run_directory } = req.body;
     const currentUser = (req as any).user;
 
     // Only admins can create users
@@ -111,9 +112,9 @@ router.post('/register', authenticate, async (req, res) => {
 
     // Insert user
     const result = await client.query(
-      `INSERT INTO users (username, email, password_hash, full_name, role, domain_id, ipaddress, port, ssh_user, sshpassword_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING id, username, email, full_name, role, domain_id, is_active, created_at, ipaddress, port, ssh_user`,
+      `INSERT INTO users (username, email, password_hash, full_name, role, domain_id, ipaddress, port, ssh_user, sshpassword_hash, run_directory)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING id, username, email, full_name, role, domain_id, is_active, created_at, ipaddress, port, ssh_user, run_directory`,
       [
         username, 
         email, 
@@ -124,7 +125,8 @@ router.post('/register', authenticate, async (req, res) => {
         ipaddress || null,
         port,
         ssh_user || null,
-        sshpasswordHash
+        sshpasswordHash,
+        run_directory || null
       ]
     );
 
@@ -257,7 +259,7 @@ router.get('/me', authenticate, async (req, res) => {
 
     const result = await pool.query(
       `SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.created_at, u.last_login,
-              u.domain_id, d.name as domain_name, d.code as domain_code
+              u.domain_id, d.name as domain_name, d.code as domain_code, u.run_directory
        FROM users u
        LEFT JOIN domains d ON u.domain_id = d.id
        WHERE u.id = $1`,
@@ -386,13 +388,14 @@ router.get('/users', authenticate, authorize('admin', 'project_manager', 'lead',
       FROM information_schema.columns 
       WHERE table_schema = 'public' 
         AND table_name = 'users' 
-        AND column_name IN ('ipaddress', 'port', 'ssh_user')
+        AND column_name IN ('ipaddress', 'port', 'ssh_user', 'run_directory')
     `);
     
     const existingColumns = columnCheck.rows.map((row: any) => row.column_name);
     const hasIpaddress = existingColumns.includes('ipaddress');
     const hasPort = existingColumns.includes('port');
     const hasSshUser = existingColumns.includes('ssh_user');
+    const hasRunDirectory = existingColumns.includes('run_directory');
 
     // Build query based on available columns
     let sshFields = '';
@@ -404,9 +407,15 @@ router.get('/users', authenticate, authorize('admin', 'project_manager', 'lead',
       sshFields = ', ' + fields.join(', ');
     }
 
+    // Add run_directory if column exists
+    let runDirectoryField = '';
+    if (hasRunDirectory) {
+      runDirectoryField = ', u.run_directory';
+    }
+
     const query = `SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.domain_id, 
                           u.created_at, u.last_login, d.name as domain_name, d.code as domain_code
-                          ${sshFields}
+                          ${sshFields}${runDirectoryField}
                    FROM users u
                    LEFT JOIN domains d ON u.domain_id = d.id
                    ORDER BY u.created_at DESC`;
@@ -431,7 +440,7 @@ router.put('/users/:id', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'Only admins can update users' });
     }
 
-    const { ssh_user, sshpassword, full_name, role, domain_id, is_active } = req.body;
+    const { ssh_user, sshpassword, full_name, role, domain_id, is_active, run_directory } = req.body;
 
     // Get IP and port from environment variables (hardcoded)
     const ipaddress = process.env.SSH_IP || null;
@@ -509,6 +518,10 @@ router.put('/users/:id', authenticate, async (req, res) => {
         values.push(null);
       }
     }
+    if (run_directory !== undefined) {
+      updates.push(`run_directory = $${paramCount++}`);
+      values.push(run_directory || null);
+    }
 
     if (updates.length === 0) {
       return res.status(400).json({ error: 'No fields to update' });
@@ -517,7 +530,7 @@ router.put('/users/:id', authenticate, async (req, res) => {
     values.push(userId);
     const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount}
                    RETURNING id, username, email, full_name, role, domain_id, is_active, 
-                             created_at, ipaddress, port, ssh_user`;
+                             created_at, ipaddress, port, ssh_user, run_directory`;
 
     const result = await pool.query(query, values);
 
@@ -542,6 +555,111 @@ router.put('/users/:id', authenticate, async (req, res) => {
   } catch (error: any) {
     console.error('Error updating user:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Extract username from email (first part before first dot)
+ * Example: "rakesh.p@sumedhait.com" -> "rakesh"
+ */
+function extractUsernameFromEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const emailPrefix = email.split('@')[0];
+  // Get first part before first dot (if any)
+  const username = emailPrefix.split('.')[0].toLowerCase();
+  return username;
+}
+
+/**
+ * Extract username from directory path
+ * Example: "pd/rakesh/pd1" -> "rakesh"
+ */
+function extractUsernameFromPath(directoryPath: string): string | null {
+  if (!directoryPath) return null;
+  // Split by '/' and get the second segment (index 1)
+  const parts = directoryPath.split('/').filter(part => part.length > 0);
+  if (parts.length >= 2) {
+    return parts[1].toLowerCase();
+  }
+  return null;
+}
+
+// External API: Set run_directory by username from directory path
+// POST /api/auth/external/set-run-directory
+// Body: { "directory": "pd/rakesh/pd1" }
+router.post('/external/set-run-directory', authenticateApiKey, async (req, res) => {
+  try {
+    const { directory } = req.body;
+
+    if (!directory || typeof directory !== 'string') {
+      return res.status(400).json({ 
+        error: 'Invalid request', 
+        message: 'Directory path is required. Format: "pd/username/path"' 
+      });
+    }
+
+    // Extract username from directory path (e.g., "pd/rakesh/pd1" -> "rakesh")
+    const usernameFromPath = extractUsernameFromPath(directory);
+    
+    if (!usernameFromPath) {
+      return res.status(400).json({ 
+        error: 'Invalid directory format', 
+        message: 'Directory path must be in format: "pd/username/path" (e.g., "pd/rakesh/pd1")' 
+      });
+    }
+
+    console.log(`[External API] Setting run_directory for username: ${usernameFromPath}, directory: ${directory}`);
+
+    // Find user by matching username extracted from email
+    // Get all users and check if extracted username matches
+    const allUsers = await pool.query('SELECT id, username, email, run_directory FROM users WHERE is_active = true');
+    
+    let matchedUser = null;
+    for (const user of allUsers.rows) {
+      const extractedUsername = extractUsernameFromEmail(user.email);
+      if (extractedUsername && extractedUsername.toLowerCase() === usernameFromPath.toLowerCase()) {
+        matchedUser = user;
+        break;
+      }
+      // Also check if username field matches
+      if (user.username && user.username.toLowerCase() === usernameFromPath.toLowerCase()) {
+        matchedUser = user;
+        break;
+      }
+    }
+
+    if (!matchedUser) {
+      console.log(`[External API] User not found for username: ${usernameFromPath}`);
+      return res.status(404).json({ 
+        error: 'User not found', 
+        message: `No user found matching username "${usernameFromPath}" extracted from directory path "${directory}"` 
+      });
+    }
+
+    // Update run_directory for the matched user
+    const updateResult = await pool.query(
+      'UPDATE users SET run_directory = $1 WHERE id = $2 RETURNING id, username, email, run_directory',
+      [directory, matchedUser.id]
+    );
+
+    console.log(`[External API] Successfully updated run_directory for user: ${matchedUser.email} (ID: ${matchedUser.id})`);
+
+    res.json({
+      success: true,
+      message: 'Run directory updated successfully',
+      user: {
+        id: updateResult.rows[0].id,
+        username: updateResult.rows[0].username,
+        email: updateResult.rows[0].email,
+        run_directory: updateResult.rows[0].run_directory
+      }
+    });
+  } catch (error: any) {
+    console.error('[External API] Error setting run_directory:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      message: error.message 
+    });
   }
 });
 

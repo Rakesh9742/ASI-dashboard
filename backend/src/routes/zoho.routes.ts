@@ -659,22 +659,126 @@ router.get('/projects', authenticate, async (req, res) => {
       portalId as string | undefined
     );
     
+    // Log roles and owner information for each project
+    console.log('\n📊 PROJECTS DATA WITH ROLES AND OWNER:');
+    console.log('========================================');
+    
+    const projectsWithMembers = await Promise.all(
+      projects.map(async (project) => {
+        try {
+          // Get project members (roles table)
+          const members = await zohoService.getProjectMembers(
+            userId,
+            project.id || project.id_string,
+            portalId as string | undefined
+          );
+          
+          // Helper function to extract role name from role object/string
+          const extractRoleName = (role: any): string => {
+            if (!role) return 'Employee';
+            if (typeof role === 'string') return role;
+            if (typeof role === 'object') {
+              return role.name || role.role || role.designation || role.value || role.label || role.title || 'Employee';
+            }
+            return String(role);
+          };
+          
+          // Helper function to extract status
+          const extractStatus = (status: any): string => {
+            if (!status) return 'active';
+            if (typeof status === 'string') return status;
+            if (status === 1 || status === '1' || status === true) return 'active';
+            if (status === 0 || status === '0' || status === false) return 'inactive';
+            return String(status);
+          };
+          
+          // Format members with proper role extraction
+          const formattedMembers = members.map(m => {
+            const roleName = extractRoleName(m.role || m.project_role || m.project_profile || m.role_in_project);
+            const status = extractStatus(m.status);
+            return {
+              id: m.id || m.zpuid || m.zuid,
+              name: m.name || `${m.first_name || ''} ${m.last_name || ''}`.trim() || m.email?.split('@')[0] || 'Unknown',
+              email: m.email || m.Email || m.mail || 'N/A',
+              role: roleName,
+              role_mapped: zohoService.mapZohoProjectRoleToAppRole(roleName),
+              status: status,
+              first_name: m.first_name,
+              last_name: m.last_name,
+              zpuid: m.zpuid,
+              zuid: m.zuid
+            };
+          });
+          
+          console.log(`\n📁 Project: ${project.name} (ID: ${project.id || project.id_string})`);
+          console.log(`   Owner Name: ${project.owner_name || project.owner?.name || 'N/A'}`);
+          console.log(`   Owner ID: ${project.owner_id || project.owner?.id || 'N/A'}`);
+          console.log(`   Owner Email: ${project.owner_email || project.owner?.email || 'N/A'}`);
+          console.log(`   Members/Roles Count: ${formattedMembers.length}`);
+          
+          if (formattedMembers.length > 0) {
+            console.log(`   📋 Roles Table:`);
+            formattedMembers.forEach((member, idx) => {
+              console.log(`      ${idx + 1}. ${member.name} (${member.email}) - Role: ${member.role} [Mapped: ${member.role_mapped}] - Status: ${member.status}`);
+            });
+          } else {
+            console.log(`   ⚠️  No members/roles found for this project`);
+          }
+          
+          return {
+            id: project.id,
+            name: project.name,
+            description: project.description,
+            status: project.status,
+            start_date: project.start_date,
+            end_date: project.end_date,
+            owner_name: project.owner_name,
+            owner_id: project.owner_id,
+            owner_email: project.owner_email,
+            created_time: project.created_time,
+            source: 'zoho',
+            // Include roles/members table with properly formatted data
+            members: formattedMembers,
+            roles: formattedMembers.map(m => ({
+              name: m.name,
+              email: m.email,
+              role: m.role,
+              role_mapped: m.role_mapped,
+              status: m.status,
+              id: m.id
+            })),
+            // Include full project data for reference
+            raw: project
+          };
+        } catch (memberError: any) {
+          console.error(`   ❌ Error fetching members for project ${project.name}:`, memberError.message);
+          // Return project without members if fetch fails
+          return {
+            id: project.id,
+            name: project.name,
+            description: project.description,
+            status: project.status,
+            start_date: project.start_date,
+            end_date: project.end_date,
+            owner_name: project.owner_name,
+            owner_id: project.owner_id,
+            owner_email: project.owner_email,
+            created_time: project.created_time,
+            source: 'zoho',
+            members: [],
+            roles: [],
+            raw: project
+          };
+        }
+      })
+    );
+    
+    console.log('\n========================================\n');
+    
     res.json({
       success: true,
-      count: projects.length,
-      projects: projects.map(project => ({
-        id: project.id,
-        name: project.name,
-        description: project.description,
-        status: project.status,
-        start_date: project.start_date,
-        end_date: project.end_date,
-        owner_name: project.owner_name,
-        created_time: project.created_time,
-        source: 'zoho',
-        // Include full project data for reference
-        raw: project
-      }))
+      count: projectsWithMembers.length,
+      projects: projectsWithMembers
     });
   } catch (error: any) {
     console.error('Error fetching Zoho projects:', error);
@@ -701,6 +805,77 @@ router.get('/projects/:projectId', authenticate, async (req, res) => {
       portalId as string | undefined
     );
     
+    // Get project members (roles table)
+    let members: any[] = [];
+    let formattedMembers: any[] = [];
+    
+    // Helper function to extract role name from role object/string
+    const extractRoleName = (role: any): string => {
+      if (!role) return 'Employee';
+      if (typeof role === 'string') return role;
+      if (typeof role === 'object') {
+        return role.name || role.role || role.designation || role.value || role.label || role.title || 'Employee';
+      }
+      return String(role);
+    };
+    
+    // Helper function to extract status
+    const extractStatus = (status: any): string => {
+      if (!status) return 'active';
+      if (typeof status === 'string') return status;
+      if (status === 1 || status === '1' || status === true) return 'active';
+      if (status === 0 || status === '0' || status === false) return 'inactive';
+      return String(status);
+    };
+    
+    try {
+      members = await zohoService.getProjectMembers(
+        userId,
+        projectId,
+        portalId as string | undefined
+      );
+      
+      // Format members with proper role extraction
+      formattedMembers = members.map((m: any) => {
+        const roleName = extractRoleName(m.role || m.project_role || m.project_profile || m.role_in_project);
+        const status = extractStatus(m.status);
+        return {
+          id: m.id || m.zpuid || m.zuid,
+          name: m.name || `${m.first_name || ''} ${m.last_name || ''}`.trim() || m.email?.split('@')[0] || 'Unknown',
+          email: m.email || m.Email || m.mail || 'N/A',
+          role: roleName,
+          role_mapped: zohoService.mapZohoProjectRoleToAppRole(roleName),
+          status: status,
+          first_name: m.first_name,
+          last_name: m.last_name,
+          zpuid: m.zpuid,
+          zuid: m.zuid
+        };
+      });
+      
+      // Log roles and owner information
+      console.log('\n📊 SINGLE PROJECT DATA WITH ROLES AND OWNER:');
+      console.log('========================================');
+      console.log(`📁 Project: ${project.name} (ID: ${project.id || project.id_string})`);
+      console.log(`   Owner Name: ${project.owner_name || project.owner?.name || 'N/A'}`);
+      console.log(`   Owner ID: ${project.owner_id || project.owner?.id || 'N/A'}`);
+      console.log(`   Owner Email: ${project.owner_email || project.owner?.email || 'N/A'}`);
+      console.log(`   Members/Roles Count: ${formattedMembers.length}`);
+      
+      if (formattedMembers.length > 0) {
+        console.log(`   📋 Roles Table:`);
+        formattedMembers.forEach((member, idx) => {
+          console.log(`      ${idx + 1}. ${member.name} (${member.email}) - Role: ${member.role} [Mapped: ${member.role_mapped}] - Status: ${member.status}`);
+        });
+      } else {
+        console.log(`   ⚠️  No members/roles found for this project`);
+      }
+      console.log('========================================\n');
+    } catch (memberError: any) {
+      console.error(`❌ Error fetching members for project ${project.name}:`, memberError.message);
+      formattedMembers = []; // Ensure it's initialized even on error
+    }
+    
     res.json({
       success: true,
       project: {
@@ -711,8 +886,20 @@ router.get('/projects/:projectId', authenticate, async (req, res) => {
         start_date: project.start_date,
         end_date: project.end_date,
         owner_name: project.owner_name,
+        owner_id: project.owner_id,
+        owner_email: project.owner_email,
         created_time: project.created_time,
         source: 'zoho',
+        // Include roles/members table with properly formatted data
+        members: formattedMembers,
+        roles: formattedMembers.map((m: any) => ({
+          name: m.name,
+          email: m.email,
+          role: m.role,
+          role_mapped: m.role_mapped,
+          status: m.status,
+          id: m.id
+        })),
         raw: project
       }
     });

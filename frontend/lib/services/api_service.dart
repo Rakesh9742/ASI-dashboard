@@ -937,5 +937,24 @@ class ApiService {
       throw Exception(error['error'] ?? 'Failed to disconnect SSH');
     }
   }
+
+  // Send password to active SSH command
+  Future<Map<String, dynamic>> sendSSHPassword({
+    required String password,
+    String? token,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/ssh/password'),
+      headers: _getHeaders(token: token),
+      body: json.encode({'password': password}),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to send password');
+    }
+  }
 }
 

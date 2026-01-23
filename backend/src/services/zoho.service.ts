@@ -280,9 +280,40 @@ class ZohoService {
         }
       );
 
-      return response.data;
+      const data = response.data;
+
+      // Check if Zoho returned an error in the response (even with 200 status)
+      if (data.error) {
+        console.error('Zoho token refresh error:', {
+          error: data.error,
+          error_description: data.error_description,
+          full_response: data
+        });
+        throw new Error(`Zoho token refresh failed: ${data.error} - ${data.error_description || 'No description provided'}`);
+      }
+
+      // Validate that we have an access_token
+      if (!data.access_token) {
+        console.error('Zoho token refresh response missing access_token:', {
+          response_keys: Object.keys(data),
+          full_response: data
+        });
+        throw new Error('Zoho token refresh response missing access_token. The refresh token may be invalid or expired. Please re-authorize.');
+      }
+
+      return data;
     } catch (error: any) {
-      console.error('Error refreshing token:', error.response?.data || error.message);
+      // If it's already our custom error, re-throw it
+      if (error.message && error.message.includes('Zoho token refresh')) {
+        throw error;
+      }
+      
+      console.error('Error refreshing token:', {
+        error: error.response?.data || error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        full_error: error.response?.data
+      });
       throw new Error(`Failed to refresh token: ${error.response?.data?.error || error.message}`);
     }
   }
@@ -1936,6 +1967,51 @@ class ZohoService {
               console.log(`📋 Task names in "${tasklistName}": ${taskNames}`);
             }
             
+            // Helper function to extract owner information from task
+            const extractOwnerInfo = (taskItem: any): { owner_name?: string; owner_role?: string } => {
+              let ownerName: string | undefined;
+              let ownerRole: string | undefined;
+              
+              // Try to extract from owners_and_work field (V3 API format)
+              if (taskItem.owners_and_work) {
+                if (Array.isArray(taskItem.owners_and_work) && taskItem.owners_and_work.length > 0) {
+                  const ownerWork = taskItem.owners_and_work[0];
+                  const owner = ownerWork?.owner || ownerWork;
+                  if (owner) {
+                    ownerName = owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim() || undefined;
+                    ownerRole = owner.role || ownerWork?.role || undefined;
+                  }
+                } else if (typeof taskItem.owners_and_work === 'object') {
+                  const owner = taskItem.owners_and_work.owner || taskItem.owners_and_work;
+                  if (owner) {
+                    ownerName = owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim() || undefined;
+                    ownerRole = owner.role || undefined;
+                  }
+                }
+              }
+              
+              // Fallback to owner fields
+              if (!ownerName && taskItem.owner) {
+                if (typeof taskItem.owner === 'object') {
+                  ownerName = taskItem.owner.name || `${taskItem.owner.first_name || ''} ${taskItem.owner.last_name || ''}`.trim() || undefined;
+                  ownerRole = taskItem.owner.role || undefined;
+                } else {
+                  ownerName = taskItem.owner;
+                }
+              }
+              
+              // Fallback to owner_name field
+              if (!ownerName && taskItem.owner_name) {
+                ownerName = taskItem.owner_name;
+                ownerRole = taskItem.owner_role || undefined;
+              }
+              
+              return {
+                owner_name: ownerName,
+                owner_role: ownerRole
+              };
+            };
+            
             // Add tasklist info and milestone info to each task
             // Try to get milestone info from task itself if milestone API failed
             tasks = tasks.map(task => {
@@ -1959,8 +2035,31 @@ class ZohoService {
                 };
               }
               
+              // Extract owner information
+              const ownerInfo = extractOwnerInfo(task);
+              
+              // Return task with all original fields plus additional metadata
+              // Using spread operator first to include ALL original task fields
               return {
-                ...task,
+                ...task, // Include ALL original task fields from Zoho API
+                // Explicitly include common fields to ensure they're present
+                id: task.id || task.id_string,
+                id_string: task.id_string || task.id,
+                name: task.name || task.task_name,
+                task_name: task.task_name || task.name,
+                description: task.description || task.details?.description || task.details,
+                status: task.status || task.status_detail?.status,
+                start_date: task.start_date || task.start_date_format,
+                end_date: task.end_date || task.end_date_format,
+                created_date: task.created_date || task.created_date_format,
+                updated_date: task.updated_date || task.updated_date_format,
+                priority: task.priority,
+                percent_complete: task.percent_complete || task.completion_percentage,
+                owner: task.owner,
+                assignee: task.assignee,
+                details: task.details,
+                link: task.link,
+                // Additional metadata fields
                 tasklist_id: tasklistId,
                 tasklist_name: tasklistName,
                 milestone_id: taskMilestoneId || null,
@@ -1973,7 +2072,10 @@ class ZohoService {
                   name: finalMilestoneInfo.name,
                   start_date: finalMilestoneInfo.start_date,
                   end_date: finalMilestoneInfo.end_date
-                } : null
+                } : null,
+                // Add owner information
+                owner_name: ownerInfo.owner_name,
+                owner_role: ownerInfo.owner_role
               };
             });
             
@@ -2224,17 +2326,155 @@ class ZohoService {
               }
             }
             
+            // Helper function to extract owner information (reuse from above scope)
+            const extractOwnerInfo = (taskItem: any): { owner_name?: string; owner_role?: string } => {
+              let ownerName: string | undefined;
+              let ownerRole: string | undefined;
+              
+              // Try to extract from owners_and_work field (V3 API format)
+              if (taskItem.owners_and_work) {
+                if (Array.isArray(taskItem.owners_and_work) && taskItem.owners_and_work.length > 0) {
+                  const ownerWork = taskItem.owners_and_work[0];
+                  const owner = ownerWork?.owner || ownerWork;
+                  if (owner) {
+                    ownerName = owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim() || undefined;
+                    ownerRole = owner.role || ownerWork?.role || undefined;
+                  }
+                } else if (typeof taskItem.owners_and_work === 'object') {
+                  const owner = taskItem.owners_and_work.owner || taskItem.owners_and_work;
+                  if (owner) {
+                    ownerName = owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim() || undefined;
+                    ownerRole = owner.role || undefined;
+                  }
+                }
+              }
+              
+              // Fallback to owner fields
+              if (!ownerName && taskItem.owner) {
+                if (typeof taskItem.owner === 'object') {
+                  ownerName = taskItem.owner.name || `${taskItem.owner.first_name || ''} ${taskItem.owner.last_name || ''}`.trim() || undefined;
+                  ownerRole = taskItem.owner.role || undefined;
+                } else {
+                  ownerName = taskItem.owner;
+                }
+              }
+              
+              // Fallback to owner_name field
+              if (!ownerName && taskItem.owner_name) {
+                ownerName = taskItem.owner_name;
+                ownerRole = taskItem.owner_role || undefined;
+              }
+              
+              return {
+                owner_name: ownerName,
+                owner_role: ownerRole
+              };
+            };
+            
+            // Extract owner information for the main task
+            const taskOwnerInfo = extractOwnerInfo(task);
+            
+            // Add owner information to subtasks
+            const subtasksWithOwner = (subtasks || []).map((subtask: any) => {
+              const ownerInfo = extractOwnerInfo(subtask);
+              return {
+                ...subtask,
+                owner_name: ownerInfo.owner_name,
+                owner_role: ownerInfo.owner_role
+              };
+            });
+            
+            // Ensure all task fields are included in the response
             return {
-              ...task,
-              subtasks: subtasks || []
+              ...task, // Include all original task fields
+              // Explicitly include common task fields to ensure they're present
+              id: task.id || task.id_string,
+              id_string: task.id_string || task.id,
+              name: task.name || task.task_name,
+              task_name: task.task_name || task.name,
+              description: task.description || task.details?.description || task.details,
+              status: task.status || task.status_detail?.status,
+              start_date: task.start_date || task.start_date_format,
+              end_date: task.end_date || task.end_date_format,
+              created_date: task.created_date || task.created_date_format,
+              updated_date: task.updated_date || task.updated_date_format,
+              priority: task.priority,
+              percent_complete: task.percent_complete || task.completion_percentage,
+              owner: task.owner,
+              assignee: task.assignee,
+              details: task.details,
+              link: task.link,
+              // Explicitly include owner_name and owner_role extracted from the task
+              owner_name: taskOwnerInfo.owner_name || task.owner_name,
+              owner_role: taskOwnerInfo.owner_role || task.owner_role,
+              subtasks: subtasksWithOwner
             };
           } catch (subtaskError: any) {
+            // Helper function to extract owner information (reuse from above scope)
+            const extractOwnerInfo = (taskItem: any): { owner_name?: string; owner_role?: string } => {
+              let ownerName: string | undefined;
+              let ownerRole: string | undefined;
+              
+              // Try to extract from owners_and_work field (V3 API format)
+              if (taskItem.owners_and_work) {
+                if (Array.isArray(taskItem.owners_and_work) && taskItem.owners_and_work.length > 0) {
+                  const ownerWork = taskItem.owners_and_work[0];
+                  const owner = ownerWork?.owner || ownerWork;
+                  if (owner) {
+                    ownerName = owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim() || undefined;
+                    ownerRole = owner.role || ownerWork?.role || undefined;
+                  }
+                } else if (typeof taskItem.owners_and_work === 'object') {
+                  const owner = taskItem.owners_and_work.owner || taskItem.owners_and_work;
+                  if (owner) {
+                    ownerName = owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim() || undefined;
+                    ownerRole = owner.role || undefined;
+                  }
+                }
+              }
+              
+              // Fallback to owner fields
+              if (!ownerName && taskItem.owner) {
+                if (typeof taskItem.owner === 'object') {
+                  ownerName = taskItem.owner.name || `${taskItem.owner.first_name || ''} ${taskItem.owner.last_name || ''}`.trim() || undefined;
+                  ownerRole = taskItem.owner.role || undefined;
+                } else {
+                  ownerName = taskItem.owner;
+                }
+              }
+              
+              // Fallback to owner_name field
+              if (!ownerName && taskItem.owner_name) {
+                ownerName = taskItem.owner_name;
+                ownerRole = taskItem.owner_role || undefined;
+              }
+              
+              return {
+                owner_name: ownerName,
+                owner_role: ownerRole
+              };
+            };
+            
+            // Extract owner information for the main task
+            const taskOwnerInfo = extractOwnerInfo(task);
+            
             // If subtasks endpoint fails, check if task already has subtasks embedded
             if (task.subtasks && Array.isArray(task.subtasks) && task.subtasks.length > 0) {
               console.log(`✅ Using embedded subtasks for task ${task.id_string || task.id} (${task.subtasks.length} subtasks)`);
+              // Add owner information to embedded subtasks
+              const subtasksWithOwner = task.subtasks.map((subtask: any) => {
+                const ownerInfo = extractOwnerInfo(subtask);
+                return {
+                  ...subtask,
+                  owner_name: ownerInfo.owner_name,
+                  owner_role: ownerInfo.owner_role
+                };
+              });
               return {
                 ...task,
-                subtasks: task.subtasks
+                owner_name: taskOwnerInfo.owner_name || task.owner_name,
+                owner_role: taskOwnerInfo.owner_role || task.owner_role,
+                subtasks: subtasksWithOwner
               };
             }
             
@@ -2242,6 +2482,8 @@ class ZohoService {
             console.warn(`Failed to fetch subtasks for task ${task.id_string || task.id}:`, subtaskError.response?.data?.error?.message || subtaskError.message);
             return {
               ...task,
+              owner_name: taskOwnerInfo.owner_name || task.owner_name,
+              owner_role: taskOwnerInfo.owner_role || task.owner_role,
               subtasks: []
             };
           }

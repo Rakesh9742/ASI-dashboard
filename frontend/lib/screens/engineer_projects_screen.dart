@@ -19,6 +19,61 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
   final ScrollController _horizontalScrollController = ScrollController();
   bool _isZohoConnected = false;
 
+  // Helper function to convert Map to YAML string
+  String _mapToYaml(dynamic data, {int indent = 0}) {
+    final indentStr = '  ' * indent;
+    final buffer = StringBuffer();
+    
+    if (data is Map) {
+      data.forEach((key, value) {
+        if (value == null) {
+          buffer.writeln('$indentStr${key}: null');
+        } else if (value is Map) {
+          buffer.writeln('$indentStr${key}:');
+          buffer.write(_mapToYaml(value, indent: indent + 1));
+        } else if (value is List) {
+          buffer.writeln('$indentStr${key}:');
+          for (var item in value) {
+            if (item is Map) {
+              buffer.writeln('$indentStr  -');
+              buffer.write(_mapToYaml(item, indent: indent + 2));
+            } else {
+              buffer.writeln('$indentStr  - ${_escapeYamlValue(item)}');
+            }
+          }
+        } else {
+          buffer.writeln('$indentStr${key}: ${_escapeYamlValue(value)}');
+        }
+      });
+    } else if (data is List) {
+      for (var item in data) {
+        if (item is Map) {
+          buffer.writeln('$indentStr-');
+          buffer.write(_mapToYaml(item, indent: indent + 1));
+        } else {
+          buffer.writeln('$indentStr- ${_escapeYamlValue(item)}');
+        }
+      }
+    }
+    
+    return buffer.toString();
+  }
+  
+  String _escapeYamlValue(dynamic value) {
+    if (value == null) return 'null';
+    final str = value.toString();
+    // If value contains special characters, wrap in quotes
+    if (str.contains(':') || str.contains('#') || str.contains('|') || 
+        str.contains('&') || str.contains('*') || str.contains('!') ||
+        str.contains('[') || str.contains(']') || str.contains('{') ||
+        str.contains('}') || str.contains(',') || str.contains('`') ||
+        str.contains("'") || str.contains('"') || str.contains('\n') ||
+        str.startsWith(' ') || str.endsWith(' ') || str.isEmpty) {
+      return '"${str.replaceAll('"', '\\"')}"';
+    }
+    return str;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -558,7 +613,7 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
                           _exportMappedData(projectName, mappedData, originalTasks: originalTasks, project: projectData);
                         },
                         icon: const Icon(Icons.download, size: 16),
-                        label: const Text('Export JSON'),
+                        label: const Text('Export YAML'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.green.shade700,
                           foregroundColor: Colors.white,
@@ -888,6 +943,32 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
     final startDate = project?['start_date']?.toString() ?? '';
     final updatedDate = project?['updated_at']?.toString() ?? '';
     
+    // Get project roles/members to map owner names to their project roles
+    final projectRoles = <String, String>{}; // Map owner_name -> role
+    final projectMembers = project?['members'] as List<dynamic>?;
+    final projectRolesList = project?['roles'] as List<dynamic>?;
+    
+    // Build role mapping from project members/roles
+    if (projectMembers != null && projectMembers.isNotEmpty) {
+      for (final member in projectMembers) {
+        final memberName = member['name']?.toString();
+        final memberRole = member['role']?.toString() ?? member['role_mapped']?.toString();
+        if (memberName != null && memberRole != null) {
+          projectRoles[memberName] = memberRole;
+        }
+      }
+    }
+    
+    if (projectRolesList != null && projectRolesList.isNotEmpty) {
+      for (final role in projectRolesList) {
+        final roleName = role['name']?.toString();
+        final roleValue = role['role']?.toString() ?? role['role_mapped']?.toString();
+        if (roleName != null && roleValue != null) {
+          projectRoles[roleName] = roleValue;
+        }
+      }
+    }
+    
     // Build simplified export structure
     final exportDomains = <Map<String, dynamic>>[];
     
@@ -902,32 +983,74 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
         final blockName = block['name'] ?? '';
         final requirements = block['requirements'] as List<dynamic>? ?? [];
         
-        // Get dates from original task if available
+        // Get owner info from block first (it's already stored there from mapping)
+        String? blockOwnerName = block['owner_name']?.toString();
+        String? blockOwnerRole = block['owner_role']?.toString();
+        
+        // Get dates - try from block first, then from originalTasks
         String? blockStartDate;
         String? blockUpdatedDate;
         
+        // Try to get dates from originalTasks if available
         if (originalTasks != null) {
           for (final task in originalTasks) {
             final taskName = (task['name'] ?? task['task_name'] ?? '').toString();
             if (taskName == blockName) {
               blockStartDate = task['start_date']?.toString() ?? task['created_time']?.toString() ?? '';
               blockUpdatedDate = task['updated_at']?.toString() ?? task['modified_time']?.toString() ?? '';
+              
+              // If owner info not in block, try to get from task
+              if (blockOwnerName == null || blockOwnerName.isEmpty) {
+                blockOwnerName = task['owner_name']?.toString();
+              }
+              if (blockOwnerRole == null || blockOwnerRole.isEmpty) {
+                blockOwnerRole = task['owner_role']?.toString();
+              }
               break;
             }
           }
+        }
+        
+        // If still no role, try to get from project roles mapping
+        if ((blockOwnerRole == null || blockOwnerRole.isEmpty) && blockOwnerName != null && blockOwnerName.isNotEmpty) {
+          blockOwnerRole = projectRoles[blockOwnerName];
         }
         
         final simplifiedBlock = <String, dynamic>{
           'block': blockName,
           if (blockStartDate != null && blockStartDate.isNotEmpty) 'start_date': blockStartDate,
           if (blockUpdatedDate != null && blockUpdatedDate.isNotEmpty) 'updated_date': blockUpdatedDate,
+          if (blockOwnerName != null && blockOwnerName.isNotEmpty) 'owner': {
+            'name': blockOwnerName,
+            if (blockOwnerRole != null && blockOwnerRole.isNotEmpty) 'role': blockOwnerRole,
+          },
         };
         
         // Add requirements/modules only for DV domains
         if (requirements.isNotEmpty) {
           simplifiedBlock['requirements'] = requirements.map((req) {
             final reqName = req['name'] ?? '';
-            return reqName;
+            // Get owner info from requirement first (it's already stored there)
+            String? reqOwnerName = req['owner_name']?.toString();
+            String? reqOwnerRole = req['owner_role']?.toString();
+            
+            // If no role, try to get from project roles mapping
+            if ((reqOwnerRole == null || reqOwnerRole.isEmpty) && reqOwnerName != null && reqOwnerName.isNotEmpty) {
+              reqOwnerRole = projectRoles[reqOwnerName];
+            }
+            
+            // Return as object with name and owner info if available
+            if (reqOwnerName != null && reqOwnerName.isNotEmpty) {
+              return {
+                'name': reqName,
+                'owner': {
+                  'name': reqOwnerName,
+                  if (reqOwnerRole != null && reqOwnerRole.isNotEmpty) 'role': reqOwnerRole,
+                },
+              };
+            } else {
+              return reqName; // Backward compatibility: return just name if no owner
+            }
           }).toList();
         }
         
@@ -951,10 +1074,10 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
       'domains': exportDomains,
     };
     
-    // Convert to JSON string with pretty formatting
-    final jsonString = const JsonEncoder.withIndent('  ').convert(exportData);
+    // Convert to YAML string
+    final yamlString = _mapToYaml(exportData);
     
-    // Show dialog with JSON data
+    // Show dialog with YAML data
     showDialog(
       context: context,
       builder: (context) => Dialog(
@@ -1016,7 +1139,7 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
                   ],
                 ),
               ),
-              // JSON Content
+              // YAML Content
               Expanded(
                 child: Container(
                   margin: const EdgeInsets.all(20),
@@ -1028,7 +1151,7 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
                   ),
                   child: SingleChildScrollView(
                     child: SelectableText(
-                      jsonString,
+                      yamlString,
                       style: const TextStyle(
                         color: Colors.green,
                         fontSize: 12,
@@ -1053,24 +1176,24 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
                   children: [
                     ElevatedButton.icon(
                       onPressed: () {
-                        // Download JSON file
-                        final blob = html.Blob([jsonString], 'application/json');
+                        // Download YAML file
+                        final blob = html.Blob([yamlString], 'text/yaml');
                         final url = html.Url.createObjectUrlFromBlob(blob);
-                        final anchor = html.AnchorElement(href: url)
-                          ..setAttribute('download', '${projectName.replaceAll(' ', '_')}_project_plan.json')
+                        html.AnchorElement(href: url)
+                          ..setAttribute('download', '${projectName.replaceAll(' ', '_')}_project_plan.yaml')
                           ..click();
                         html.Url.revokeObjectUrl(url);
                         
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                            content: Text('JSON file downloaded: ${projectName.replaceAll(' ', '_')}_project_plan.json'),
+                            content: Text('YAML file downloaded: ${projectName.replaceAll(' ', '_')}_project_plan.yaml'),
                             backgroundColor: Colors.green,
                             duration: const Duration(seconds: 2),
                           ),
                         );
                       },
                       icon: const Icon(Icons.download, size: 18),
-                      label: const Text('Download JSON'),
+                      label: const Text('Download YAML'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.green.shade700,
                         foregroundColor: Colors.white,
@@ -1083,7 +1206,7 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
                         // Copy to clipboard
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
-                            content: Text('JSON data is selectable. Copy manually or use browser copy (Ctrl+C)'),
+                            content: Text('YAML data is selectable. Copy manually or use browser copy (Ctrl+C)'),
                             backgroundColor: Colors.blue,
                           ),
                         );

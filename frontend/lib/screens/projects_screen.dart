@@ -504,11 +504,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
           canExportToLinux: isCadEngineerForProject,
           onExportToLinux: isCadEngineerForProject
               ? () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Export to Linux triggered for \"$projectName\"'),
-                    ),
-                  );
+                  _showExportToLinuxDialog(context, project);
                 }
               : null,
         );
@@ -549,6 +545,137 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
           'icon': Icons.access_time,
           'textColor': Colors.white,
         };
+    }
+  }
+
+  void _showExportToLinuxDialog(BuildContext context, Map<String, dynamic> project) async {
+    final projectName = project['name'] ?? 'Unnamed Project';
+    
+    // Show loading dialog while fetching domains from project plan
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
+
+    try {
+      final token = ref.read(authProvider).token;
+      if (token == null) {
+        if (mounted) {
+          Navigator.of(context).pop(); // Close loading
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Not authenticated'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      // Get project ID - handle both zoho_ prefix and direct ID
+      final projectId = project['zoho_project_id']?.toString() ?? 
+                       project['id']?.toString() ?? '';
+      
+      // Remove zoho_ prefix if present
+      final actualProjectId = projectId.startsWith('zoho_') 
+          ? projectId.replaceFirst('zoho_', '') 
+          : projectId;
+      
+      List<Map<String, dynamic>> domains = [];
+      
+      // Try to fetch domains from Zoho tasks (project plan)
+      if (actualProjectId.isNotEmpty) {
+        try {
+          // Get portal ID from zoho_data if available
+          final zohoData = project['zoho_data'] as Map<String, dynamic>?;
+          final portalId = zohoData?['portal_id']?.toString() ?? 
+                          zohoData?['portal']?.toString();
+          
+          final tasksResponse = await _apiService.getZohoTasks(
+            projectId: actualProjectId,
+            token: token,
+            portalId: portalId,
+          );
+          
+          final tasks = tasksResponse['tasks'] ?? [];
+          
+          // Extract unique domains from tasklist_name
+          final domainMap = <String, Map<String, dynamic>>{};
+          
+          for (final task in tasks) {
+            final tasklistName = (task['tasklist_name'] ?? task['tasklistName'] ?? '').toString();
+            
+            if (tasklistName.isNotEmpty && !domainMap.containsKey(tasklistName)) {
+              final tasklistNameLower = tasklistName.toLowerCase();
+              
+              // Determine domain code from tasklist name
+              String domainCode;
+              if (tasklistNameLower.contains('pd') || 
+                  tasklistNameLower.contains('physical') || 
+                  tasklistNameLower.contains('physical design')) {
+                domainCode = 'pd';
+              } else if (tasklistNameLower.contains('dv') || 
+                        tasklistNameLower.contains('design verification') ||
+                        tasklistNameLower.contains('verification')) {
+                domainCode = 'dv';
+              } else if (tasklistNameLower.contains('rtl')) {
+                domainCode = 'rtl';
+              } else if (tasklistNameLower.contains('dft')) {
+                domainCode = 'dft';
+              } else if (tasklistNameLower.contains('al')) {
+                domainCode = 'al';
+              } else {
+                // Use first few characters of tasklist name as code
+                domainCode = tasklistName.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '').substring(0, tasklistName.length > 3 ? 3 : tasklistName.length);
+              }
+              
+              domainMap[tasklistName] = {
+                'name': tasklistName, // Use actual tasklist name as domain name
+                'code': domainCode,
+              };
+            }
+          }
+          
+          domains = domainMap.values.toList();
+        } catch (e) {
+          print('Error fetching domains from Zoho tasks: $e');
+          // Fallback to project domains if Zoho fetch fails
+        }
+      }
+      
+      // Fallback to project domains if no domains found from Zoho
+      if (domains.isEmpty) {
+        domains = (project['domains'] as List<dynamic>? ?? [])
+            .where((d) => d != null && d is Map<String, dynamic>)
+            .map((d) => d as Map<String, dynamic>)
+            .toList();
+      }
+      
+      if (mounted) {
+        Navigator.of(context).pop(); // Close loading dialog
+        
+        showDialog(
+          context: context,
+          builder: (context) => _ExportToLinuxDialog(
+            projectName: projectName,
+            domains: domains,
+            apiService: _apiService,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop(); // Close loading dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading domains: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 }
@@ -856,6 +983,562 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ExportToLinuxDialog extends ConsumerStatefulWidget {
+  final String projectName;
+  final List<Map<String, dynamic>> domains;
+  final ApiService apiService;
+
+  const _ExportToLinuxDialog({
+    required this.projectName,
+    required this.domains,
+    required this.apiService,
+  });
+
+  @override
+  ConsumerState<_ExportToLinuxDialog> createState() => _ExportToLinuxDialogState();
+}
+
+class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
+  final Set<String> _selectedDomainCodes = {};
+  bool _isRunning = false;
+  String? _output;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    // Select all domains by default
+    for (var domain in widget.domains) {
+      final code = domain['code']?.toString();
+      if (code != null && code.isNotEmpty) {
+        _selectedDomainCodes.add(code);
+      }
+    }
+  }
+
+  Future<void> _runCommand() async {
+    if (_selectedDomainCodes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select at least one domain'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isRunning = true;
+      _output = null;
+      _error = null;
+    });
+
+    try {
+      final token = ref.read(authProvider).token;
+      if (token == null) {
+        throw Exception('No authentication token');
+      }
+
+      // Build domain codes string (comma-separated)
+      final domainCodesStr = _selectedDomainCodes.join(',');
+      
+      // Build the command with sudo
+      final command = 'sudo createDir.py --base-path /CX_PROJ --proj ${widget.projectName} --dom $domainCodesStr --project-group ${widget.projectName} --scratch-base-path /CX_RUN_NEW';
+
+      // Print command to console
+      print('═══════════════════════════════════════════════════════════');
+      print('🚀 EXECUTING SSH COMMAND:');
+      print('   Command: $command');
+      print('   Project: ${widget.projectName}');
+      print('   Domains: $domainCodesStr');
+      print('═══════════════════════════════════════════════════════════');
+
+      // Execute via SSH
+      final result = await widget.apiService.executeSSHCommand(
+        command: command,
+        token: token,
+      );
+      
+      // Print result to console
+      print('═══════════════════════════════════════════════════════════');
+      print('📤 SSH COMMAND RESULT:');
+      print('   Success: ${result['success']}');
+      print('   Exit Code: ${result['exitCode']}');
+      if (result['stdout'] != null) {
+        print('   Stdout: ${result['stdout']}');
+      }
+      if (result['stderr'] != null) {
+        print('   Stderr: ${result['stderr']}');
+      }
+      if (result['requiresPassword'] == true) {
+        print('   ⚠️ Password Required!');
+      }
+      print('═══════════════════════════════════════════════════════════');
+
+      setState(() {
+        _isRunning = false;
+        if (result['success'] == true) {
+          _output = result['stdout']?.toString() ?? 'Command executed successfully';
+          if (result['stderr'] != null && result['stderr'].toString().isNotEmpty) {
+            _output = '${_output}\n\nStderr: ${result['stderr']}';
+          }
+        } else {
+          _error = result['error']?.toString() ?? 'Command execution failed';
+        }
+      });
+
+      // Check if password is required - also check exit code and output
+      final requiresPassword = result['requiresPassword'] == true || 
+          (result['exitCode'] == 1 && 
+           (result['stdout']?.toString().contains('password') == true ||
+            result['stderr']?.toString().contains('password') == true));
+      
+      if (mounted && requiresPassword) {
+        final output = (result['stdout']?.toString() ?? '') + 
+                      (result['stderr']?.toString() ?? '');
+        _showPasswordRequiredDialog(context, command, output);
+      } else if (mounted && result['success'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Command executed successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _isRunning = false;
+        _error = e.toString();
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showPasswordRequiredDialog(BuildContext context, String command, String output) async {
+    final passwordController = TextEditingController();
+    bool isSendingPassword = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Container(
+            width: 600,
+            constraints: const BoxConstraints(maxHeight: 600),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(16),
+                      topRight: Radius.circular(16),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.lock, color: Colors.orange),
+                      const SizedBox(width: 12),
+                      const Text(
+                        'Password Required',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // Scrollable content
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'The command requires a password to continue execution.',
+                          style: TextStyle(fontSize: 16),
+                        ),
+                        const SizedBox(height: 16),
+                        // Command display
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blue.shade200),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Command:',
+                                style: TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 8),
+                              SelectableText(
+                                command,
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        // Output display
+                        if (output.isNotEmpty) ...[
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.grey.shade300),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Command Output:',
+                                  style: TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                                const SizedBox(height: 8),
+                                SelectableText(
+                                  output,
+                                  style: const TextStyle(
+                                    fontFamily: 'monospace',
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                        ],
+                        // Password input
+                        TextField(
+                          controller: passwordController,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Enter Password',
+                            border: OutlineInputBorder(),
+                            hintText: 'Enter sudo password',
+                            prefixIcon: Icon(Icons.lock_outline),
+                          ),
+                          enabled: !isSendingPassword,
+                          onSubmitted: (value) async {
+                            if (value.isNotEmpty && !isSendingPassword) {
+                              setDialogState(() {
+                                isSendingPassword = true;
+                              });
+                              await _sendPassword(context, value, setDialogState, () {
+                                setDialogState(() {
+                                  isSendingPassword = true;
+                                });
+                              }, () {
+                                setDialogState(() {
+                                  isSendingPassword = false;
+                                });
+                              });
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                // Actions
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      top: BorderSide(color: Colors.grey.shade300),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: isSendingPassword ? null : () => Navigator.of(context).pop(),
+                        child: const Text('Cancel'),
+                      ),
+                      const SizedBox(width: 12),
+                      ElevatedButton(
+                        onPressed: isSendingPassword || passwordController.text.isEmpty
+                            ? null
+                            : () async {
+                                setDialogState(() {
+                                  isSendingPassword = true;
+                                });
+                                await _sendPassword(
+                                  context, 
+                                  passwordController.text, 
+                                  setDialogState,
+                                  () {
+                                    setDialogState(() {
+                                      isSendingPassword = true;
+                                    });
+                                  },
+                                  () {
+                                    setDialogState(() {
+                                      isSendingPassword = false;
+                                    });
+                                  },
+                                );
+                              },
+                        child: isSendingPassword
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Text('Send Password'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sendPassword(
+    BuildContext context, 
+    String password, 
+    StateSetter setDialogState,
+    VoidCallback setSending,
+    VoidCallback setNotSending,
+  ) async {
+    try {
+      final token = ref.read(authProvider).token;
+      if (token == null) {
+        throw Exception('No authentication token');
+      }
+
+      await widget.apiService.sendSSHPassword(
+        password: password,
+        token: token,
+      );
+
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Password sent. Waiting for command to complete...'),
+            backgroundColor: Colors.blue,
+          ),
+        );
+        
+        // Wait a bit and check command status again
+        await Future.delayed(const Duration(seconds: 2));
+        // Re-run the command check or wait for completion
+      }
+    } catch (e) {
+      setNotSending();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error sending password: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Container(
+        width: 600,
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Export to Linux',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+
+            // Project Name (read-only)
+            TextField(
+              readOnly: true,
+              decoration: InputDecoration(
+                labelText: 'Project Name',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                filled: true,
+                fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+              ),
+              controller: TextEditingController(text: widget.projectName),
+            ),
+            const SizedBox(height: 20),
+
+            // Domain Selection
+            Text(
+              'Select Domains',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 12),
+            
+            if (widget.domains.isEmpty)
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text(
+                  'No domains available for this project',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                  ),
+                ),
+              )
+            else
+              Container(
+                constraints: const BoxConstraints(maxHeight: 200),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Theme.of(context).dividerColor),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: widget.domains.length,
+                  itemBuilder: (context, index) {
+                    final domain = widget.domains[index];
+                    final code = domain['code']?.toString() ?? '';
+                    final name = domain['name']?.toString() ?? code;
+                    final isSelected = _selectedDomainCodes.contains(code);
+
+                    return CheckboxListTile(
+                      title: Text(name),
+                      subtitle: code.isNotEmpty && code != name.toLowerCase() 
+                          ? Text('Code: $code') 
+                          : null,
+                      value: isSelected,
+                      onChanged: _isRunning
+                          ? null
+                          : (value) {
+                              setState(() {
+                                if (value == true) {
+                                  _selectedDomainCodes.add(code);
+                                } else {
+                                  _selectedDomainCodes.remove(code);
+                                }
+                              });
+                            },
+                    );
+                  },
+                ),
+              ),
+            const SizedBox(height: 24),
+
+            // Output/Error Display
+            if (_output != null || _error != null) ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _error != null
+                      ? Colors.red.shade50
+                      : Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: _error != null
+                        ? Colors.red.shade300
+                        : Colors.green.shade300,
+                  ),
+                ),
+                constraints: const BoxConstraints(maxHeight: 200),
+                child: SingleChildScrollView(
+                  child: Text(
+                    _error ?? _output ?? '',
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      color: _error != null
+                          ? Colors.red.shade900
+                          : Colors.green.shade900,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+
+            // Action Buttons
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: 12),
+                ElevatedButton.icon(
+                  onPressed: _isRunning ? null : _runCommand,
+                  icon: _isRunning
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.play_arrow),
+                  label: Text(_isRunning ? 'Running...' : 'Run'),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
