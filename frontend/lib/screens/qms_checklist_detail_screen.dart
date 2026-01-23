@@ -175,9 +175,33 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
     final authState = ref.read(authProvider);
     final user = authState.user;
     final role = user?['role'];
-    
-    // Admins, project managers, and leads can approve
-    return role == 'admin' || role == 'project_manager' || role == 'lead';
+    final userId = user?['id'];
+
+    if (_checklist == null || userId == null) return false;
+
+    // Admins, project managers, and leads are always allowed (backend will still enforce assignee rules)
+    if (role == 'admin' || role == 'project_manager' || role == 'lead') {
+      return true;
+    }
+
+    // Engineers can be approvers only if they are assigned/default approver on at least one item
+    if (role == 'engineer') {
+      final items = _checklist!['check_items'] as List?;
+      if (items == null) return false;
+
+      for (final item in items) {
+        final approval = item['approval'];
+        if (approval != null) {
+          final approverId =
+              approval['assigned_approver_id'] ?? approval['default_approver_id'];
+          if (approverId == userId) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
   }
 
   bool _canApproveCheckItem(Map<String, dynamic> item) {
@@ -186,16 +210,35 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
     final checklistStatus = _checklist!['status'] ?? 'draft';
     if (checklistStatus != 'submitted_for_approval') return false;
 
-    if (!_isApprover()) return false;
+    final authState = ref.read(authProvider);
+    final user = authState.user;
+    final role = user?['role'];
+    final userId = user?['id'];
+
+    if (userId == null) return false;
 
     final approval = item['approval'];
     if (approval == null) return false;
 
     final approvalStatus = approval['status'] ?? 'pending';
-    // Can approve if status is pending (not yet approved/rejected)
-    return approvalStatus == 'pending' || approvalStatus == 'submitted';
+    // Only pending/submitted items can be approved/rejected
+    if (!(approvalStatus == 'pending' || approvalStatus == 'submitted')) {
+      return false;
+    }
 
-    // Note: Admin/PM/Lead can approve any item, assigned approver check is done on backend
+    // Admin / PM / Lead can act on any item (backend still enforces rules)
+    if (role == 'admin' || role == 'project_manager' || role == 'lead') {
+      return true;
+    }
+
+    // Engineer can act only if they are the assigned/default approver for this item
+    if (role == 'engineer') {
+      final approverId =
+          approval['assigned_approver_id'] ?? approval['default_approver_id'];
+      return approverId == userId;
+    }
+
+    return false;
   }
 
   Future<void> _loadApprovers() async {

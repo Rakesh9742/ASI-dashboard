@@ -26,6 +26,28 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     _loadProjects();
   }
 
+  Future<Map<String, dynamic>> _checkProjectCadRole(String projectIdentifier) async {
+    try {
+      final token = ref.read(authProvider).token;
+      if (token == null) return {'effectiveRole': null};
+      
+      final roleResponse = await _apiService.getUserProjectRole(
+        projectIdentifier: projectIdentifier,
+        token: token,
+      );
+      
+      if (roleResponse['success'] == true) {
+        return {
+          'effectiveRole': roleResponse['effectiveRole'],
+          'projectRole': roleResponse['projectRole'],
+        };
+      }
+    } catch (e) {
+      // Silently fail - will default to global role check
+    }
+    return {'effectiveRole': null};
+  }
+
   Future<void> _loadProjects() async {
     try {
       setState(() {
@@ -456,18 +478,41 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       }
     }
 
-    return _ProjectCardWidget(
-      project: project,
-      status: status,
-      statusConfig: statusConfig,
-      projectName: projectName,
-      description: description.isEmpty ? 'Hardware design project' : description,
-      gateCount: gateCount.toString(),
-      technology: technology,
-      lastRun: lastRun,
-      progress: progress,
-      isRunning: isRunning,
-      onTap: handleProjectClick,
+    final userRole = ref.read(authProvider).user?['role'];
+    final globalCanExportToLinux = userRole == 'cad_engineer' || userRole == 'admin';
+    
+    // Check project-specific CAD engineer role
+    return FutureBuilder<Map<String, dynamic>>(
+      future: _checkProjectCadRole(projectName),
+      builder: (context, snapshot) {
+        // Check if user is CAD engineer for this project (global or project-specific)
+        final isCadEngineerForProject = globalCanExportToLinux || 
+            (snapshot.hasData && snapshot.data!['effectiveRole'] == 'cad_engineer');
+        
+        return _ProjectCardWidget(
+          project: project,
+          status: status,
+          statusConfig: statusConfig,
+          projectName: projectName,
+          description: description.isEmpty ? 'Hardware design project' : description,
+          gateCount: gateCount.toString(),
+          technology: technology,
+          lastRun: lastRun,
+          progress: progress,
+          isRunning: isRunning,
+          onTap: handleProjectClick,
+          canExportToLinux: isCadEngineerForProject,
+          onExportToLinux: isCadEngineerForProject
+              ? () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Export to Linux triggered for \"$projectName\"'),
+                    ),
+                  );
+                }
+              : null,
+        );
+      },
     );
   }
 
@@ -520,6 +565,8 @@ class _ProjectCardWidget extends StatefulWidget {
   final double progress;
   final bool isRunning;
   final VoidCallback onTap;
+  final bool canExportToLinux;
+  final VoidCallback? onExportToLinux;
 
   const _ProjectCardWidget({
     required this.project,
@@ -533,6 +580,8 @@ class _ProjectCardWidget extends StatefulWidget {
     required this.progress,
     required this.isRunning,
     required this.onTap,
+    this.canExportToLinux = false,
+    this.onExportToLinux,
   });
 
   @override
@@ -766,7 +815,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
               ),
               const SizedBox(height: 12),
               
-              // Click to open
+              // Footer actions
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -777,10 +826,31 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                       color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
                     ),
                   ),
-                  Icon(
-                    Icons.arrow_forward,
-                    size: 16,
-                    color: Theme.of(context).colorScheme.primary,
+                  Row(
+                    children: [
+                      if (widget.canExportToLinux)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8.0),
+                          child: OutlinedButton.icon(
+                            onPressed: widget.onExportToLinux,
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              side: BorderSide(color: Theme.of(context).colorScheme.primary),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            icon: const Icon(Icons.file_download, size: 16),
+                            label: const Text(
+                              'Export to Linux',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ),
+                      Icon(
+                        Icons.arrow_forward,
+                        size: 16,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ],
                   ),
                 ],
               ),

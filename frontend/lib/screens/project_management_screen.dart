@@ -1601,6 +1601,33 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                         ),
                       ),
                     ),
+                    // Sync Members Button (only for Zoho projects)
+                    if (project['source'] == 'zoho')
+                      Builder(
+                        builder: (context) {
+                          try {
+                            return Column(
+                              children: [
+                                const SizedBox(height: 12),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: _SyncZohoMembersButton(
+                                    project: project,
+                                    apiService: _apiService,
+                                    authProvider: ref.read(authProvider),
+                                    onSyncComplete: () {
+                                      // Optionally refresh or show success message
+                                    },
+                                  ),
+                                ),
+                              ],
+                            );
+                          } catch (e) {
+                            print('[MappedDialog] Error rendering sync button: $e');
+                            return const SizedBox.shrink();
+                          }
+                        },
+                      ),
                   ],
                 ),
               ),
@@ -3004,12 +3031,25 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
   bool _isLoadingTasks = false;
   String? _tasksError;
   bool _hasLoadedTasks = false;
-  
-  List<dynamic> _milestones = [];
-  bool _isLoadingMilestones = false;
-  String? _milestonesError;
-  bool _hasLoadedMilestones = false;
-  int _selectedTab = 0; // 0 = Milestones, 1 = Tasks
+
+  // Check if this Zoho project has been linked to an ASI project
+  bool _hasAsiProjectId() {
+    // Check if project has an ASI project ID (not just zoho_project_id)
+    // ASI project ID should be a numeric ID, not starting with 'zoho_'
+    final projectId = widget.project['id'];
+    if (projectId == null) return false;
+    
+    // If it's a string starting with 'zoho_', it's not linked yet
+    if (projectId is String && projectId.startsWith('zoho_')) {
+      return false;
+    }
+    
+    // If it's a number or numeric string, it's an ASI project ID
+    if (projectId is int) return true;
+    if (projectId is String && int.tryParse(projectId) != null) return true;
+    
+    return false;
+  }
 
   @override
   void initState() {
@@ -3230,22 +3270,40 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
                   Container(
                     padding: const EdgeInsets.all(20),
                     color: const Color(0xFF1E1E1E),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          widget.project['name'] ?? 'Project',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                widget.project['name'] ?? 'Project',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              '${_tasks.length} Tasks',
+                              style: TextStyle(
+                                color: Colors.grey.shade400,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
                         ),
-                        const Spacer(),
-                        Text(
-                          '${_milestones.length} Milestones • ${_tasks.length} Tasks',
-                          style: TextStyle(
-                            color: Colors.grey.shade400,
-                            fontSize: 14,
+                        // Sync Members Button (show for all Zoho projects)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 16),
+                          child: _SyncZohoMembersButton(
+                            project: widget.project,
+                            apiService: widget.apiService,
+                            authProvider: widget.authProvider,
+                            onSyncComplete: () {
+                              // Optionally refresh or show success message
+                            },
                           ),
                         ),
                       ],
@@ -4286,6 +4344,255 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
     } catch (e) {
       return dateValue.toString();
     }
+  }
+}
+
+// Sync Zoho Members Button Widget
+class _SyncZohoMembersButton extends StatefulWidget {
+  final dynamic project;
+  final ApiService apiService;
+  final dynamic authProvider;
+  final VoidCallback? onSyncComplete;
+
+  const _SyncZohoMembersButton({
+    required this.project,
+    required this.apiService,
+    required this.authProvider,
+    this.onSyncComplete,
+  });
+
+  @override
+  State<_SyncZohoMembersButton> createState() => _SyncZohoMembersButtonState();
+}
+
+class _SyncZohoMembersButtonState extends State<_SyncZohoMembersButton> {
+  bool _isSyncing = false;
+
+  // Get ASI project ID
+  int? _getAsiProjectId() {
+    // First, check if there's an explicit asi_project_id field (for mapped projects)
+    final asiProjectId = widget.project['asi_project_id'];
+    if (asiProjectId != null) {
+      if (asiProjectId is int) return asiProjectId;
+      if (asiProjectId is String) {
+        final parsed = int.tryParse(asiProjectId);
+        if (parsed != null) return parsed;
+      }
+    }
+    
+    // Fallback: check the regular id field
+    final projectId = widget.project['id'];
+    if (projectId == null) return null;
+    
+    // If it's a string starting with 'zoho_', it's not linked yet
+    if (projectId is String && projectId.startsWith('zoho_')) {
+      return null;
+    }
+    
+    // If it's a number, return it
+    if (projectId is int) return projectId;
+    
+    // If it's a numeric string, parse it
+    if (projectId is String) {
+      final parsed = int.tryParse(projectId);
+      if (parsed != null) return parsed;
+    }
+    
+    return null;
+  }
+
+  // Get Zoho project ID
+  String? _getZohoProjectId() {
+    // Try different possible fields
+    var zohoProjectId = widget.project['zoho_project_id']?.toString() ?? 
+                        widget.project['zoho_id']?.toString() ??
+                        widget.project['id']?.toString();
+    
+    // Also check zoho_data
+    if (zohoProjectId == null) {
+      final zohoData = widget.project['zoho_data'] as Map<String, dynamic>?;
+      zohoProjectId = zohoData?['id']?.toString();
+    }
+    
+    if (zohoProjectId == null) return null;
+    
+    // Remove 'zoho_' prefix if present
+    if (zohoProjectId.startsWith('zoho_')) {
+      return zohoProjectId.replaceFirst('zoho_', '');
+    }
+    
+    return zohoProjectId;
+  }
+
+  // Get portal ID
+  String? _getPortalId() {
+    // Try multiple sources for portal ID
+    final portalId = widget.project['portal_id']?.toString() ??
+                     widget.project['portalId']?.toString();
+    
+    if (portalId != null) return portalId;
+    
+    final zohoData = widget.project['zoho_data'] as Map<String, dynamic>?;
+    return zohoData?['portal_id']?.toString() ?? 
+           zohoData?['portal']?.toString();
+  }
+
+  // Check if user has permission to sync
+  bool _canSync() {
+    final userRole = widget.authProvider.user?['role'];
+    return userRole == 'admin' || userRole == 'project_manager' || userRole == 'lead';
+  }
+
+  Future<void> _syncMembers() async {
+    final asiProjectId = _getAsiProjectId();
+    final zohoProjectId = _getZohoProjectId();
+    
+    if (asiProjectId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This Zoho project is not linked to an ASI project. Please link it first.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+
+    if (zohoProjectId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Zoho Project ID not found'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    if (!_canSync()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You do not have permission to sync members. Only admins, project managers, and leads can sync.'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSyncing = true;
+    });
+
+    try {
+      final token = widget.authProvider.token;
+
+      if (token == null) {
+        throw Exception('Not authenticated');
+      }
+
+      final portalId = _getPortalId();
+
+      final result = await widget.apiService.syncZohoProjectMembers(
+        asiProjectId: asiProjectId,
+        zohoProjectId: zohoProjectId,
+        portalId: portalId,
+        token: token,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Successfully synced ${result['updatedAssignments']} members. '
+              'Created ${result['createdUsers']} new users.'
+            ),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+
+        if (result['errors'] != null && (result['errors'] as List).isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Sync completed with ${(result['errors'] as List).length} errors. Check console for details.'
+              ),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
+
+        widget.onSyncComplete?.call();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error syncing members: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSyncing = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_canSync()) {
+      print('[SyncButton] User does not have permission to sync');
+      return const SizedBox.shrink();
+    }
+
+    final asiProjectId = _getAsiProjectId();
+    final zohoProjectId = _getZohoProjectId();
+    final hasAsiProject = asiProjectId != null;
+    final hasZohoProjectId = zohoProjectId != null;
+
+    print('[SyncButton] Project data: id=${widget.project['id']}, zoho_project_id=${widget.project['zoho_project_id']}, source=${widget.project['source']}, asiProjectId=$asiProjectId, zohoProjectId=$zohoProjectId, hasAsiProject=$hasAsiProject, hasZohoProjectId=$hasZohoProjectId');
+
+    // Show button even if not linked, but disable it with a tooltip
+    return Tooltip(
+      message: !hasZohoProjectId
+          ? 'Zoho Project ID not found'
+          : !hasAsiProject
+              ? 'This Zoho project needs to be linked to an ASI project first. Please link the project to sync members.'
+              : 'Sync members from Zoho project to ASI project',
+      child: SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: (_isSyncing || !hasAsiProject || !hasZohoProjectId) ? null : _syncMembers,
+          icon: _isSyncing
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.sync, size: 18),
+          label: Text(_isSyncing ? 'Syncing...' : 'Sync Members from Zoho'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: hasAsiProject && hasZohoProjectId
+                ? const Color(0xFF14B8A6)
+                : Colors.grey.shade600,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

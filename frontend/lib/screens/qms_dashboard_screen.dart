@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import '../providers/auth_provider.dart';
 import '../services/qms_service.dart';
 import '../widgets/qms_status_badge.dart';
+import '../widgets/qms_history_dialog.dart';
 import 'qms_checklist_detail_screen.dart';
 
 class QmsDashboardScreen extends ConsumerStatefulWidget {
@@ -87,6 +88,13 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
 
   void _refreshData() {
     _loadData();
+  }
+
+  void _showHistoryDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => QmsHistoryDialog(blockId: widget.blockId),
+    );
   }
 
   Future<void> _loadApproversForChecklist(int checklistId) async {
@@ -485,37 +493,59 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                       ),
                     ],
                   ),
-                  // Upload button moved here
-                  Builder(
-                    builder: (context) {
-                      final authState = ref.read(authProvider);
-                      final userRole = authState.user?['role'];
-                      final canUpload = userRole == 'admin' || userRole == 'project_manager' || userRole == 'lead';
-                      
-                      if (canUpload) {
-                        return ElevatedButton.icon(
-                          onPressed: _isUploading ? null : _showUploadDialog,
-                          icon: _isUploading
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                )
-                              : const Icon(Icons.upload_file, size: 18),
-                          label: Text(_isUploading ? 'Uploading...' : 'Upload Template'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF14B8A6),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            elevation: 2,
+                  // Upload button and Block History button
+                  Row(
+                    children: [
+                      // Block History button (always visible)
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          _showHistoryDialog();
+                        },
+                        icon: const Icon(Icons.history, size: 18),
+                        label: const Text('Block History'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF14B8A6),
+                          side: const BorderSide(color: Color(0xFF14B8A6)),
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
                           ),
-                        );
-                      }
-                      return const SizedBox.shrink();
-                    },
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      // Upload Template button (only for admin, project_manager, lead)
+                      Builder(
+                        builder: (context) {
+                          final authState = ref.read(authProvider);
+                          final userRole = authState.user?['role'];
+                          final canUpload = userRole == 'admin' || userRole == 'project_manager' || userRole == 'lead';
+                          
+                          if (canUpload) {
+                            return ElevatedButton.icon(
+                              onPressed: _isUploading ? null : _showUploadDialog,
+                              icon: _isUploading
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                    )
+                                  : const Icon(Icons.upload_file, size: 18),
+                              label: Text(_isUploading ? 'Uploading...' : 'Upload Template'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF14B8A6),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                elevation: 2,
+                              ),
+                            );
+                          }
+                          return const SizedBox.shrink();
+                        },
+                      ),
+                    ],
                   ),
                 ],
               ),

@@ -23,6 +23,15 @@ interface ZohoProject {
   [key: string]: any;
 }
 
+interface ZohoProjectMember {
+  id: string;
+  name: string;
+  email: string;
+  role: string; // Project role: "Admin", "Manager", "Employee", etc.
+  status: string; // "active", "inactive", etc.
+  [key: string]: any;
+}
+
 interface ZohoProjectsResponse {
   projects: ZohoProject[];
   response: {
@@ -92,7 +101,7 @@ class ZohoService {
       'ZohoProjects.portals.READ',
       'ZohoProjects.tasks.READ',  // Required for reading tasks and subtasks
       'ZohoProjects.tasklists.READ',  // Required for reading tasklists
-      'ZohoProjects.milestones.READ',  // Required for reading milestones
+      'ZohoProjects.users.READ',  // Required for reading project users/members
       'ZOHOPEOPLE.forms.ALL',  // Required for accessing employee forms/records
       'ZOHOPEOPLE.employee.ALL',  // Also include employee scope
     ].join(' ');
@@ -665,147 +674,749 @@ class ZohoService {
   }
 
   /**
-   * Get milestones for a project
+   * Get all members/users for a Zoho project
+   * @param userId - ASI user ID (for token retrieval)
+   * @param projectId - Zoho project ID
+   * @param portalId - Zoho portal ID (optional)
+   * @returns Array of project members with their roles
    */
-  async getMilestones(userId: number, projectId: string, portalId?: string): Promise<any[]> {
+  async getProjectMembers(
+    userId: number,
+    projectId: string,
+    portalId?: string
+  ): Promise<ZohoProjectMember[]> {
     try {
       const client = await this.getAuthenticatedClient(userId);
       
       let portal = portalId;
-      let portalName: string | undefined;
       if (!portal) {
         const portals = await this.getPortals(userId);
         if (portals.length === 0) {
           throw new Error('No portals found.');
         }
-        portal = portals[0].id;
-        portalName = portals[0].name || portals[0].portal_name || portals[0].id_string;
-      } else {
-        try {
-          const portals = await this.getPortals(userId);
-          const matchingPortal = portals.find(p => p.id === portal || p.id_string === portal);
-          if (matchingPortal) {
-            portalName = matchingPortal.name || matchingPortal.portal_name || matchingPortal.id_string;
-          }
-        } catch (e) {
-          // Ignore if we can't get portal name
-        }
-      }
-
-      // Get project to get correct project ID (id_string)
-      let correctProjectId = projectId;
-      try {
-        const project = await this.getProject(userId, projectId, portal);
-        correctProjectId = project.id_string || projectId;
-      } catch (e) {
-        console.warn('Could not fetch project to get id_string, using provided projectId');
-      }
-
-      // Try different endpoint variations for milestones
-      const endpointVariations = [];
-      
-      if (portalName) {
-        endpointVariations.push({
-          name: 'portal name',
-          url: `/restapi/portal/${portalName}/projects/${correctProjectId}/milestones/`
-        });
-      }
-      
-      endpointVariations.push({
-        name: 'portal ID',
-        url: `/restapi/portal/${portal}/projects/${correctProjectId}/milestones/`
-      });
-
-      let milestones: any[] = [];
-      
-      for (const variation of endpointVariations) {
-        try {
-          console.log(`Trying milestones endpoint: ${variation.name} - ${variation.url}`);
-          const response = await client.get(variation.url);
-          
-          // Debug: Log response structure
-          console.log(`📦 Milestones response keys:`, Object.keys(response.data || {}));
-          if (response.data?.response) {
-            console.log(`📦 response.response keys:`, Object.keys(response.data.response));
-            if (response.data.response.result) {
-              console.log(`📦 response.response.result type:`, Array.isArray(response.data.response.result) ? 'Array' : typeof response.data.response.result);
-              if (response.data.response.result.milestones) {
-                console.log(`📦 Found milestones in response.response.result.milestones:`, response.data.response.result.milestones.length);
-              }
-            }
-          }
-          
-          // Try multiple response structures
-          if (response.data?.response?.result?.milestones) {
-            milestones = Array.isArray(response.data.response.result.milestones) 
-              ? response.data.response.result.milestones 
-              : [];
-            console.log(`✅ Extracted ${milestones.length} milestones from response.response.result.milestones`);
-          } else if (response.data?.milestones) {
-            milestones = Array.isArray(response.data.milestones) 
-              ? response.data.milestones 
-              : [];
-            console.log(`✅ Extracted ${milestones.length} milestones from response.milestones`);
-          } else if (Array.isArray(response.data)) {
-            milestones = response.data;
-            console.log(`✅ Extracted ${milestones.length} milestones from response.data (array)`);
-          } else if (response.data?.response?.result && Array.isArray(response.data.response.result)) {
-            milestones = response.data.response.result;
-            console.log(`✅ Extracted ${milestones.length} milestones from response.response.result (array)`);
-          } else if (response.data?.response?.result && typeof response.data.response.result === 'object') {
-            // Sometimes result might be an object with milestones property
-            const result = response.data.response.result;
-            if (result.milestones && Array.isArray(result.milestones)) {
-              milestones = result.milestones;
-              console.log(`✅ Extracted ${milestones.length} milestones from response.response.result.milestones (nested)`);
-            } else if (Array.isArray(result)) {
-              milestones = result;
-              console.log(`✅ Extracted ${milestones.length} milestones from response.response.result (direct array)`);
-            }
-          }
-          
-          if (milestones.length > 0) {
-            console.log(`✅ Found ${milestones.length} milestones via ${variation.name}`);
-            console.log(`📋 Sample milestone:`, JSON.stringify(milestones[0], null, 2).substring(0, 500));
-            break;
-          } else {
-            console.log(`⚠️ No milestones extracted from ${variation.name}, response structure:`, JSON.stringify(response.data).substring(0, 500));
-            // Last resort: try to find any array in the response
-            const findArrayInObject = (obj: any, depth = 0): any[] | null => {
-              if (depth > 3) return null; // Prevent infinite recursion
-              if (Array.isArray(obj) && obj.length > 0) {
-                // Check if it looks like milestones (has name or milestone_name)
-                const firstItem = obj[0];
-                if (firstItem && (firstItem.name || firstItem.milestone_name || firstItem.id || firstItem.id_string)) {
-                  return obj;
-                }
-              }
-              if (typeof obj === 'object' && obj !== null) {
-                for (const key in obj) {
-                  const result = findArrayInObject(obj[key], depth + 1);
-                  if (result) return result;
-                }
-              }
-              return null;
-            };
-            const foundArray = findArrayInObject(response.data);
-            if (foundArray) {
-              milestones = foundArray;
-              console.log(`✅ Found ${milestones.length} milestones using deep search`);
+        // Try to find the portal that contains this project
+        // First, try to get the project to see which portal it's in
+        for (const p of portals) {
+          try {
+            const testResponse = await client.get(`/restapi/portal/${p.id}/projects/${projectId}/`);
+            if (testResponse.status === 200) {
+              portal = p.id;
+              console.log(`[ZohoService] Found project in portal: ${p.id} (${p.name || p.portal_name || p.id_string})`);
               break;
             }
+          } catch (e) {
+            // Try next portal
+            continue;
           }
-        } catch (error: any) {
-          console.log(`❌ ${variation.name} failed:`, error.response?.data?.error?.message || error.message);
-          // Continue to next variation
+        }
+        
+        // If still no portal found, use first portal
+        if (!portal) {
+          portal = portals[0].id;
+          console.log(`[ZohoService] Using first available portal: ${portal}`);
+        }
+      }
+
+      console.log(`[ZohoService] Fetching project members for projectId: ${projectId}, portalId: ${portal}`);
+
+      let response: any = null;
+      let lastError: any = null;
+      
+      // Find the project in portals
+      const portals = await this.getPortals(userId);
+      let foundPortal = portal;
+      let projectFromList: any = null;
+      
+      // Search all portals to find which one contains this project
+      for (const p of portals) {
+        try {
+          const projectsList = await client.get(`/restapi/portal/${p.id}/projects/`);
+          const projects = projectsList.data?.response?.result?.projects || 
+                          projectsList.data?.projects || 
+                          (Array.isArray(projectsList.data) ? projectsList.data : []);
+          
+          // Try multiple ways to match the project ID
+          const foundProject = Array.isArray(projects) 
+            ? projects.find((proj: any) => {
+                const projId = proj.id || proj.id_string;
+                const projIdStr = String(projId || '');
+                const searchIdStr = String(projectId || '');
+                return proj.id === projectId || proj.id_string === projectId || 
+                       projIdStr === searchIdStr ||
+                       (!isNaN(Number(projId)) && !isNaN(Number(projectId)) && Number(projId) === Number(projectId));
+              })
+            : null;
+          
+          if (foundProject) {
+            foundPortal = p.id;
+            projectFromList = foundProject;
+            console.log(`[ZohoService] ✅ Found project "${foundProject.name}" in portal ${p.id}`);
+            
+            // Check if project data already contains users/members
+            if (foundProject.users && Array.isArray(foundProject.users)) {
+              return foundProject.users;
+            }
+            if (foundProject.project_users && Array.isArray(foundProject.project_users)) {
+              return foundProject.project_users;
+            }
+            break;
+          }
+        } catch (e: any) {
+          continue;
         }
       }
       
-      console.log(`📤 Returning ${milestones.length} milestones from getMilestones`);
-      return milestones;
+      if (!projectFromList) {
+        throw new Error(`Project ${projectId} not found in any portal. Please verify the project ID.`);
+      }
+      
+      portal = foundPortal;
+      const projectIdString = projectFromList?.id_string || projectId;
+      
+      // Try fetching project details with V3 API first to check for users
+      const projectDetailEndpoints = [
+        `/api/v3/portal/${portal}/projects/${projectIdString}`,
+        `/api/v3/portal/${portal}/projects/${projectId}`,
+      ];
+      
+      let fullProject: any = null;
+      for (const endpoint of projectDetailEndpoints) {
+        try {
+          const fullProjectResponse = await client.get(endpoint);
+          fullProject = fullProjectResponse.data?.response?.result || fullProjectResponse.data;
+          
+          // Check for users in various possible locations
+          if (fullProject?.users && Array.isArray(fullProject.users)) {
+            console.log(`[ZohoService] ✅ Found ${fullProject.users.length} users in project details`);
+            return fullProject.users;
+          }
+          if (fullProject?.project_users && Array.isArray(fullProject.project_users)) {
+            console.log(`[ZohoService] ✅ Found ${fullProject.project_users.length} project_users in project details`);
+            return fullProject.project_users;
+          }
+          if (fullProject?.members && Array.isArray(fullProject.members)) {
+            console.log(`[ZohoService] ✅ Found ${fullProject.members.length} members in project details`);
+            return fullProject.members;
+          }
+          break; // Successfully fetched, exit loop
+        } catch (projectDetailsError: any) {
+          continue;
+        }
+      }
+      
+      // Try multiple endpoint variations for getting project members
+      // Use id_string for V3 API as it's more reliable
+      const endpointVariations = [
+        `/api/v3/portal/${portal}/projects/${projectIdString}/users`,
+        `/api/v3/portal/${portal}/projects/${projectIdString}/users/`,
+        `/api/v3/portal/${portal}/projects/${projectId}/users`,
+        `/api/v3/portal/${portal}/projects/${projectId}/users/`,
+        `/restapi/portal/${portal}/projects/${projectIdString}/users/`,
+        `/restapi/portal/${portal}/projects/${projectId}/users/`,
+        `/restapi/portal/${portal}/projects/${projectIdString}/people/`,
+        `/restapi/portal/${portal}/projects/${projectId}/people/`,
+      ];
+      
+      for (const endpoint of endpointVariations) {
+        try {
+          response = await client.get(endpoint);
+          console.log(`[ZohoService] ✅ Success with endpoint: ${endpoint}`);
+          
+          // Extract users from response immediately
+          const responseData = response.data?.response?.result || response.data;
+          let members: ZohoProjectMember[] = [];
+          
+          if (responseData?.users && Array.isArray(responseData.users)) {
+            members = responseData.users;
+          } else if (responseData?.project_users && Array.isArray(responseData.project_users)) {
+            members = responseData.project_users;
+          } else if (responseData?.members && Array.isArray(responseData.members)) {
+            members = responseData.members;
+          } else if (responseData?.people && Array.isArray(responseData.people)) {
+            members = responseData.people;
+          } else if (Array.isArray(responseData)) {
+            members = responseData;
+          }
+          
+          if (members.length > 0) {
+            console.log(`[ZohoService] ✅ Found ${members.length} project members from API endpoint`);
+            return members;
+          }
+          
+          // If we got a response but no members, continue to next endpoint
+          break;
+        } catch (error: any) {
+          if (error.response?.status === 404) {
+            lastError = error;
+            continue;
+          } else {
+            lastError = error;
+            continue;
+          }
+        }
+      }
+      
+      // If all direct endpoints failed, try alternative approaches
+      if (!response && lastError) {
+        // Approach 1: Try getting project teams/usergroups
+        try {
+          const usergroupsEndpoints = [
+            `/api/v3/portal/${portal}/projects/${projectId}/usergroups`,
+            `/api/v3/portal/${portal}/projects/${projectId}/teams`,
+            `/restapi/portal/${portal}/projects/${projectId}/usergroups/`,
+          ];
+          
+          let usergroupsResponse: any = null;
+          for (const endpoint of usergroupsEndpoints) {
+            try {
+              usergroupsResponse = await client.get(endpoint);
+              break;
+            } catch (error: any) {
+              continue;
+            }
+          }
+          
+          if (usergroupsResponse) {
+            const usergroups = usergroupsResponse.data?.response?.result?.usergroups || 
+                              usergroupsResponse.data?.response?.result?.teams ||
+                              usergroupsResponse.data?.usergroups || 
+                              usergroupsResponse.data?.teams || 
+                              usergroupsResponse.data || [];
+            
+            if (Array.isArray(usergroups) && usergroups.length > 0) {
+              const allMembers: any[] = [];
+              usergroups.forEach((group: any) => {
+                if (group.users && Array.isArray(group.users)) {
+                  allMembers.push(...group.users);
+                }
+                if (group.members && Array.isArray(group.members)) {
+                  allMembers.push(...group.members);
+                }
+              });
+              
+              const uniqueMembers = allMembers.filter((member, index, self) => 
+                index === self.findIndex((m) => 
+                  (m.id && m.id === member.id) || 
+                  (m.email && m.email === member.email) ||
+                  (m.Email && m.Email === member.Email) || 
+                  (m.user_id && m.user_id === member.user_id)
+                )
+              );
+              
+              if (uniqueMembers.length > 0) {
+                console.log(`[ZohoService] ✅ Found ${uniqueMembers.length} unique members from usergroups/teams`);
+                return uniqueMembers;
+              }
+            }
+          }
+        } catch (usergroupsError: any) {
+          // Continue to next approach
+        }
+        
+        // Approach 2: Try getting tasks and extract assignees
+        try {
+          const tasksEndpoints = [
+            `/api/v3/portal/${portal}/projects/${projectIdString}/tasks`,
+            `/api/v3/portal/${portal}/projects/${projectId}/tasks`,
+            `/restapi/portal/${portal}/projects/${projectIdString}/tasks/`,
+          ];
+          
+          let tasksResponse: any = null;
+          for (const endpoint of tasksEndpoints) {
+            try {
+              tasksResponse = await client.get(endpoint);
+              break;
+            } catch (error: any) {
+              continue;
+            }
+          }
+          
+          if (tasksResponse) {
+            const tasksData = tasksResponse.data?.response?.result || tasksResponse.data;
+            const tasks = tasksData?.tasks || (Array.isArray(tasksData) ? tasksData : []);
+            
+            if (Array.isArray(tasks) && tasks.length > 0) {
+              console.log(`[ZohoService] Found ${tasks.length} tasks, extracting users...`);
+              
+              // Extract unique users from task assignees
+              const allAssignees: any[] = [];
+              tasks.forEach((task: any) => {
+                // Extract from created_by object (V3 API format)
+                if (task.created_by && typeof task.created_by === 'object') {
+                  const createdBy = task.created_by;
+                  if (createdBy.email || createdBy.zpuid || createdBy.zuid) {
+                    allAssignees.push({
+                      id: createdBy.zpuid || createdBy.zuid || createdBy.id,
+                      zuid: createdBy.zuid,
+                      zpuid: createdBy.zpuid,
+                      name: createdBy.name || `${createdBy.first_name || ''} ${createdBy.last_name || ''}`.trim(),
+                      email: createdBy.email,
+                      first_name: createdBy.first_name,
+                      last_name: createdBy.last_name,
+                      role: 'engineer' // Default role, will be updated from project profile if available
+                    });
+                  }
+                }
+                
+                // Extract from owners_and_work field (V3 API format)
+                if (task.owners_and_work) {
+                  if (Array.isArray(task.owners_and_work)) {
+                    task.owners_and_work.forEach((ownerWork: any) => {
+                      const owner = ownerWork?.owner || ownerWork;
+                      if (owner && typeof owner === 'object' && (owner.email || owner.zpuid || owner.zuid)) {
+                        allAssignees.push({
+                          id: owner.zpuid || owner.zuid || owner.id,
+                          zuid: owner.zuid,
+                          zpuid: owner.zpuid,
+                          name: owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim(),
+                          email: owner.email,
+                          first_name: owner.first_name,
+                          last_name: owner.last_name,
+                          role: owner.role || ownerWork?.role || 'engineer'
+                        });
+                      }
+                    });
+                  } else if (typeof task.owners_and_work === 'object') {
+                    // Single owner object or object with owner property
+                    const owner = task.owners_and_work.owner || task.owners_and_work;
+                    if (owner && typeof owner === 'object' && (owner.email || owner.zpuid || owner.zuid)) {
+                      allAssignees.push({
+                        id: owner.zpuid || owner.zuid || owner.id,
+                        zuid: owner.zuid,
+                        zpuid: owner.zpuid,
+                        name: owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim(),
+                        email: owner.email,
+                        first_name: owner.first_name,
+                        last_name: owner.last_name,
+                        role: owner.role || 'engineer'
+                      });
+                    }
+                  }
+                }
+                
+                // Check other possible user fields (fallback)
+                if (task.owner && typeof task.owner === 'object' && (task.owner.id || task.owner.email)) {
+                  allAssignees.push(task.owner);
+                }
+                if (task.owner_id && task.owner_name) {
+                  allAssignees.push({
+                    id: task.owner_id,
+                    name: task.owner_name,
+                    email: task.owner_email || task.owner_email_id,
+                    role: task.owner_role || 'engineer'
+                  });
+                }
+                if (task.assignee && typeof task.assignee === 'object' && (task.assignee.id || task.assignee.email)) {
+                  allAssignees.push(task.assignee);
+                }
+                if (task.assignees && Array.isArray(task.assignees)) {
+                  allAssignees.push(...task.assignees);
+                }
+              });
+              
+              // Also extract from project owner and other project-level users
+              if (projectFromList) {
+                // Add project owner
+                if (projectFromList.owner_email && projectFromList.owner_name) {
+                  allAssignees.push({
+                    id: projectFromList.owner_zpuid || projectFromList.owner_id,
+                    zuid: projectFromList.owner_id,
+                    zpuid: projectFromList.owner_zpuid,
+                    name: projectFromList.owner_name,
+                    email: projectFromList.owner_email,
+                    role: projectFromList.role || 'admin' // Project owner typically has admin role
+                  });
+                }
+                
+                // Add project creator
+                if (projectFromList.created_by_id && projectFromList.created_by) {
+                  allAssignees.push({
+                    id: projectFromList.created_by_zpuid || projectFromList.created_by_id,
+                    zuid: projectFromList.created_by_id,
+                    zpuid: projectFromList.created_by_zpuid,
+                    name: projectFromList.created_by,
+                    email: projectFromList.owner_email, // May not have separate email
+                    role: 'admin'
+                  });
+                }
+              }
+              
+              // Remove duplicates by email, zpuid, or zuid
+              const uniqueAssignees = allAssignees.filter((user, index, self) => 
+                index === self.findIndex((u) => 
+                  (u.email && u.email === user.email) ||
+                  (u.zpuid && u.zpuid === user.zpuid) ||
+                  (u.zuid && u.zuid === user.zuid) ||
+                  (u.id && u.id === user.id) ||
+                  (u.Email && u.Email === user.Email)
+                )
+              );
+              
+              if (uniqueAssignees.length > 0) {
+                console.log(`[ZohoService] ✅ Found ${uniqueAssignees.length} unique users from tasks and project data`);
+                return uniqueAssignees;
+              }
+            }
+          }
+        } catch (tasksError: any) {
+          // Continue to next approach
+        }
+        
+        // If all approaches failed, throw error
+        console.error(`[ZohoService] All endpoint variations failed. Last error:`, lastError.response?.data?.error?.message || lastError.message);
+        throw new Error(
+          `Failed to fetch project members: ${lastError.response?.data?.error?.message || lastError.message}`
+        );
+      }
+
+      // Ensure response is defined before using it
+      if (!response) {
+        throw new Error('Failed to get project members: No response from any endpoint');
+      }
+
+      // Handle different response structures
+      let members: ZohoProjectMember[] = [];
+      
+      if (response.data?.response?.result?.users) {
+        members = response.data.response.result.users;
+      } else if (response.data?.response?.result?.project_users) {
+        members = response.data.response.result.project_users;
+      } else if (response.data?.users) {
+        members = response.data.users;
+      } else if (response.data?.project_users) {
+        members = response.data.project_users;
+      } else if (Array.isArray(response.data)) {
+        members = response.data;
+      }
+
+      if (members.length > 0) {
+        console.log(`[ZohoService] ✅ Found ${members.length} project members from API`);
+        return members;
+      }
+      
+      // If no members found, return empty array (fallback to tasks extraction)
+      return [];
     } catch (error: any) {
-      console.error('Error fetching milestones:', error.response?.data || error.message);
-      throw new Error(`Failed to fetch milestones: ${error.response?.data?.error?.message || error.message}`);
+      console.error('[ZohoService] Error fetching project members:', {
+        projectId,
+        portalId,
+        status: error.response?.status,
+        data: error.response?.data,
+        message: error.message
+      });
+      throw new Error(
+        `Failed to fetch project members: ${error.response?.data?.error?.message || error.message}`
+      );
+    }
+  }
+
+  /**
+   * Map Zoho Project role to ASI app role
+   * @param zohoProjectRole - Role from Zoho Project (e.g., "Admin", "Manager", "Employee")
+   * @returns ASI role: 'admin', 'project_manager', 'lead', 'engineer', 'customer'
+   */
+  mapZohoProjectRoleToAppRole(zohoProjectRole: string | undefined | any): string {
+    // Handle null, undefined, or non-string values
+    if (!zohoProjectRole) {
+      return 'engineer';
+    }
+    
+    // If it's an object, try to extract the role name
+    if (typeof zohoProjectRole === 'object') {
+      const roleName = zohoProjectRole.name || 
+                      zohoProjectRole.role || 
+                      zohoProjectRole.designation || 
+                      zohoProjectRole.value ||
+                      zohoProjectRole.label ||
+                      zohoProjectRole.title;
+      if (roleName && typeof roleName === 'string') {
+        zohoProjectRole = roleName;
+      } else {
+        // If we can't extract a string, default to engineer
+        return 'engineer';
+      }
+    }
+    
+    // Ensure it's a string before calling toLowerCase
+    if (typeof zohoProjectRole !== 'string') {
+      // Try to convert to string as last resort
+      zohoProjectRole = String(zohoProjectRole);
+    }
+
+    const roleLower = zohoProjectRole.toLowerCase().trim();
+    
+    // Admin roles in Zoho Project
+    const adminKeywords = [
+      'admin', 'administrator', 'owner', 'project owner'
+    ];
+    
+    // Project Manager roles
+    const projectManagerKeywords = [
+      'manager', 'project manager', 'pm', 'program manager'
+    ];
+    
+    // Lead roles
+    const leadKeywords = [
+      'lead', 'team lead', 'tech lead', 'architect', 'senior'
+    ];
+    
+    // CAD engineer roles
+    const cadEngineerKeywords = [
+      'cad engineer', 'cad-engineer', 'cad', 'flow engineer'
+    ];
+
+    // Engineer roles
+    const engineerKeywords = [
+      'engineer', 'developer', 'employee', 'member', 'contributor'
+    ];
+    
+    // Customer roles
+    const customerKeywords = [
+      'customer', 'client', 'stakeholder', 'viewer', 'read-only'
+    ];
+
+    if (adminKeywords.some(keyword => roleLower.includes(keyword))) {
+      return 'admin';
+    }
+    
+    if (projectManagerKeywords.some(keyword => roleLower.includes(keyword))) {
+      return 'project_manager';
+    }
+    
+    if (leadKeywords.some(keyword => roleLower.includes(keyword))) {
+      return 'lead';
+    }
+    
+    if (customerKeywords.some(keyword => roleLower.includes(keyword))) {
+      return 'customer';
+    }
+
+    // CAD engineer (check after customer/admin/PM/lead so those override)
+    if (cadEngineerKeywords.some(keyword => roleLower.includes(keyword))) {
+      return 'cad_engineer';
+    }
+    
+    // Default to engineer
+    return 'engineer';
+  }
+
+  /**
+   * Sync Zoho project members to ASI database
+   * - Creates users if they don't exist (Zoho-only users)
+   * - Assigns users to project in user_projects table
+   * - Sets project-specific role from Zoho Project
+   * 
+   * @param asiProjectId - ASI project ID (local database)
+   * @param zohoProjectId - Zoho project ID
+   * @param portalId - Zoho portal ID (optional)
+   * @param syncedByUserId - User ID who initiated the sync
+   * @returns Summary of sync operation
+   */
+  async syncProjectMembers(
+    asiProjectId: number,
+    zohoProjectId: string,
+    portalId: string | undefined,
+    syncedByUserId: number
+  ): Promise<{
+    totalMembers: number;
+    createdUsers: number;
+    updatedAssignments: number;
+    errors: Array<{ email: string; error: string }>;
+  }> {
+    console.log(`[ZohoService] Starting sync for ASI project ${asiProjectId}, Zoho project ${zohoProjectId}`);
+    
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+
+      // Get project members from Zoho
+      console.log(`[ZohoService] Fetching members from Zoho project ${zohoProjectId}...`);
+      const zohoMembers = await this.getProjectMembers(
+        syncedByUserId,
+        zohoProjectId,
+        portalId
+      );
+
+      console.log(`[ZohoService] Found ${zohoMembers.length} members in Zoho project`);
+
+      let createdUsers = 0;
+      let updatedAssignments = 0;
+      const errors: Array<{ email: string; error: string }> = [];
+
+      for (const member of zohoMembers) {
+        try {
+          const email = member.email || member.Email || member.mail;
+          const name = member.name || member.Name || member.full_name || email?.split('@')[0] || 'Unknown';
+          
+          // Get Project Profile role (this is the role in the specific project)
+          // Check multiple possible field names for project-specific role
+          // The role might be an object with a 'name' property, or a string
+          let projectProfileRole: any = member.project_profile || 
+                                      member.project_role || 
+                                      member.role_in_project ||
+                                      member.role || 
+                                      member.Role || 
+                                      member.project_role_name ||
+                                      member.designation;
+          
+          // If role is an object, extract the name/value
+          if (projectProfileRole && typeof projectProfileRole === 'object') {
+            projectProfileRole = projectProfileRole.name || 
+                                projectProfileRole.role || 
+                                projectProfileRole.designation || 
+                                projectProfileRole.value ||
+                                projectProfileRole.label ||
+                                projectProfileRole.title ||
+                                'Employee';
+          }
+          
+          // Default to 'Employee' if no role found
+          if (!projectProfileRole) {
+            projectProfileRole = 'Employee';
+          }
+          
+          if (!email) {
+            errors.push({
+              email: 'N/A',
+              error: 'Member missing email address'
+            });
+            continue;
+          }
+
+          // Use Project Profile role for user_projects.role (project-specific role)
+          // Map Zoho Project role to ASI role
+          const asiRole = this.mapZohoProjectRoleToAppRole(projectProfileRole);
+
+          // Check if user exists
+          const userCheck = await client.query(
+            'SELECT id, role, full_name FROM users WHERE email = $1',
+            [email]
+          );
+
+          let userId: number;
+
+          if (userCheck.rows.length === 0) {
+            // Create new user (Zoho-only user)
+            // Set default role to 'engineer' in users table
+            // Project-specific role will be stored in user_projects.role
+            const insertResult = await client.query(
+              `INSERT INTO users (
+                username, email, password_hash, full_name, role, is_active
+              ) VALUES ($1, $2, $3, $4, $5, $6)
+              RETURNING id`,
+              [
+                email.split('@')[0],
+                email,
+                'zoho_oauth_user',
+                name,
+                'engineer', // Default role - project-specific roles are in user_projects.role
+                true
+              ]
+            );
+            userId = insertResult.rows[0].id;
+            createdUsers++;
+          } else {
+            userId = userCheck.rows[0].id;
+            const existingName = userCheck.rows[0].full_name;
+            
+            // Update name if changed (but don't update global role - it's project-specific)
+            if (name !== existingName) {
+              await client.query(
+                'UPDATE users SET full_name = COALESCE($1, full_name) WHERE id = $2',
+                [name, userId]
+              );
+            }
+            // Note: We don't update users.role here because:
+            // - users.role is a global/default role
+            // - user_projects.role is the project-specific role (handled below)
+          }
+
+          // Assign user to project with project-specific role
+          try {
+            // Check if user is already assigned to this project
+            const existingAssignment = await client.query(
+              'SELECT role FROM user_projects WHERE user_id = $1 AND project_id = $2',
+              [userId, asiProjectId]
+            );
+
+            if (existingAssignment.rows.length > 0) {
+              // User already assigned - check if role needs updating
+              const existingRole = existingAssignment.rows[0].role;
+              
+              if (existingRole !== asiRole) {
+                // Role has changed - update it
+                console.log(`[ZohoService] Updating role for user ${email} in project ${asiProjectId}: ${existingRole} -> ${asiRole}`);
+                await client.query(
+                  `UPDATE user_projects 
+                   SET role = $1
+                   WHERE user_id = $2 AND project_id = $3`,
+                  [asiRole, userId, asiProjectId]
+                );
+                updatedAssignments++;
+              } else {
+                // Role unchanged - no update needed
+                console.log(`[ZohoService] User ${email} already assigned to project ${asiProjectId} with role ${asiRole} (no change)`);
+              }
+            } else {
+              // New assignment - insert
+              console.log(`[ZohoService] Assigning user ${email} to project ${asiProjectId} with role ${asiRole}`);
+              await client.query(
+                `INSERT INTO user_projects (user_id, project_id, role)
+                 VALUES ($1, $2, $3)`,
+                [userId, asiProjectId, asiRole]
+              );
+              updatedAssignments++;
+            }
+          } catch (dbError: any) {
+            // If role column doesn't exist, try without it
+            if (dbError.message?.includes('column "role"') || dbError.message?.includes('does not exist')) {
+              console.log(`[ZohoService] Role column not found, assigning user without role`);
+              const existingCheck = await client.query(
+                'SELECT 1 FROM user_projects WHERE user_id = $1 AND project_id = $2',
+                [userId, asiProjectId]
+              );
+              
+              if (existingCheck.rows.length === 0) {
+                await client.query(
+                  `INSERT INTO user_projects (user_id, project_id)
+                   VALUES ($1, $2)`,
+                  [userId, asiProjectId]
+                );
+                updatedAssignments++;
+              }
+            } else {
+              throw dbError;
+            }
+          }
+
+        } catch (memberError: any) {
+          const errorMsg = memberError.message || 'Unknown error';
+          console.error(`[ZohoService] Error syncing member ${member.email || 'N/A'}:`, errorMsg, memberError);
+          errors.push({
+            email: member.email || member.Email || 'N/A',
+            error: errorMsg
+          });
+        }
+      }
+
+      await client.query('COMMIT');
+
+      console.log(`[ZohoService] Sync completed: ${createdUsers} users created, ${updatedAssignments} assignments updated, ${errors.length} errors`);
+
+      return {
+        totalMembers: zohoMembers.length,
+        createdUsers,
+        updatedAssignments,
+        errors
+      };
+
+    } catch (error: any) {
+      await client.query('ROLLBACK');
+      console.error('[ZohoService] Error in syncProjectMembers, rolling back transaction:', error);
+      throw error;
+    } finally {
+      client.release();
     }
   }
 
@@ -1788,6 +2399,539 @@ class ZohoService {
    */
   async revokeTokens(userId: number): Promise<void> {
     await pool.query('DELETE FROM public.zoho_tokens WHERE user_id = $1', [userId]);
+  }
+
+  /**
+   * Get milestones for a project
+   */
+  async getMilestones(userId: number, projectId: string, portalId?: string): Promise<any[]> {
+    try {
+      const client = await this.getAuthenticatedClient(userId);
+      
+      let portal = portalId;
+      if (!portal) {
+        const portals = await this.getPortals(userId);
+        if (portals.length === 0) {
+          throw new Error('No portals found.');
+        }
+        portal = portals[0].id;
+      }
+
+      // Try different endpoint variations for milestones
+      const endpointVariations = [
+        `/restapi/portal/${portal}/projects/${projectId}/milestones/`,
+        `/restapi/v3/portal/${portal}/projects/${projectId}/milestones/`,
+        `/portal/${portal}/projects/${projectId}/milestones/`,
+      ];
+
+      let milestones: any[] = [];
+      
+      for (const endpoint of endpointVariations) {
+        try {
+          const response = await client.get(endpoint);
+          
+          if (response.data.response?.result?.milestones) {
+            milestones = response.data.response.result.milestones;
+          } else if (response.data.milestones) {
+            milestones = response.data.milestones;
+          } else if (Array.isArray(response.data)) {
+            milestones = response.data;
+          }
+          
+          if (milestones.length > 0) {
+            console.log(`✅ Found ${milestones.length} milestones via ${endpoint}`);
+            break;
+          }
+        } catch (error: any) {
+          // Continue to next variation
+          continue;
+        }
+      }
+
+      return milestones;
+    } catch (error: any) {
+      console.error('Error fetching milestones:', error.response?.data || error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get bugs/tickets for a project
+   */
+  async getBugs(userId: number, projectId: string, portalId?: string): Promise<any[]> {
+    try {
+      const client = await this.getAuthenticatedClient(userId);
+      
+      let portal = portalId;
+      let portalName: string | undefined;
+      if (!portal) {
+        const portals = await this.getPortals(userId);
+        if (portals.length === 0) {
+          throw new Error('No portals found.');
+        }
+        portal = portals[0].id;
+        portalName = portals[0].name || portals[0].portal_name || portals[0].id_string;
+      } else {
+        // If portal ID provided, try to get portal name
+        try {
+          const portals = await this.getPortals(userId);
+          const matchingPortal = portals.find(p => p.id === portal || p.id_string === portal);
+          if (matchingPortal) {
+            portalName = matchingPortal.name || matchingPortal.portal_name || matchingPortal.id_string;
+          }
+        } catch (e) {
+          // Ignore if we can't get portal name
+        }
+      }
+
+      console.log('[getBugs] Using portal:', { id: portal, name: portalName });
+
+      // First, get the project to find the correct project ID (id_string)
+      let correctProjectId = projectId;
+      let project: any = null;
+
+      try {
+        // Try different endpoint formats for getting project
+        const projectEndpointVariations = [];
+        
+        if (portalName) {
+          projectEndpointVariations.push({
+            name: 'portal name',
+            url: `/restapi/portal/${portalName}/projects/${projectId}/`
+          });
+        }
+        
+        projectEndpointVariations.push({
+          name: 'portal ID',
+          url: `/restapi/portal/${portal}/projects/${projectId}/`
+        });
+        
+        if (portalName) {
+          projectEndpointVariations.push({
+            name: 'portal name without /restapi/',
+            url: `/portal/${portalName}/projects/${projectId}/`
+          });
+        }
+        projectEndpointVariations.push({
+          name: 'portal ID without /restapi/',
+          url: `/portal/${portal}/projects/${projectId}/`
+        });
+        
+        let projectFetchSuccess = false;
+        for (const variation of projectEndpointVariations) {
+          try {
+            console.log(`[getBugs] Trying project endpoint: ${variation.name} - ${variation.url}`);
+            const projectResponse = await client.get(variation.url);
+            project = projectResponse.data.response?.result || projectResponse.data;
+            console.log('[getBugs] ✅ Project fetched successfully via', variation.name);
+            projectFetchSuccess = true;
+            break;
+          } catch (projectError: any) {
+            console.log(`[getBugs] ❌ Project endpoint ${variation.name} failed:`, projectError.response?.data?.error?.message || projectError.message);
+            // Continue to next variation
+          }
+        }
+        
+        // If all project endpoints failed, try getting from projects list
+        if (!projectFetchSuccess) {
+          console.log('[getBugs] ⚠️  Single project endpoint failed, trying to get from projects list...');
+          try {
+            const projectsResponse = await client.get(`/restapi/portal/${portal}/projects/`);
+            let projects: any[] = [];
+            
+            if (projectsResponse.data.response?.result?.projects) {
+              projects = projectsResponse.data.response.result.projects;
+            } else if (projectsResponse.data.projects) {
+              projects = projectsResponse.data.projects;
+            } else if (Array.isArray(projectsResponse.data)) {
+              projects = projectsResponse.data;
+            }
+            
+            // Find the project by ID
+            project = projects.find((p: any) => 
+              p.id === projectId || 
+              p.id_string === projectId || 
+              p.id?.toString() === projectId.toString()
+            );
+            
+            if (project) {
+              console.log('[getBugs] ✅ Found project in projects list');
+              projectFetchSuccess = true;
+            }
+          } catch (listError: any) {
+            console.error('[getBugs] ❌ Failed to get projects list:', listError.response?.data?.error?.message || listError.message);
+          }
+        }
+        
+        if (project) {
+          // Use the correct project ID - prefer id_string over id (as seen in link URLs)
+          correctProjectId = project.id_string || projectId;
+          console.log(`[getBugs] 🔑 Using project ID: ${correctProjectId} (original: ${projectId}, id_string: ${project?.id_string})`);
+          
+          // Log project link structure for debugging
+          if (project.link) {
+            console.log(`[getBugs] Project link keys:`, Object.keys(project.link));
+            if (project.link.bug) {
+              console.log(`[getBugs] Project link.bug:`, project.link.bug);
+            } else {
+              console.log(`[getBugs] ⚠️  No 'bug' key in project.link. Available keys:`, Object.keys(project.link));
+            }
+          } else {
+            console.log(`[getBugs] ⚠️  No 'link' object in project`);
+          }
+        }
+      } catch (projectError: any) {
+        console.warn('[getBugs] Could not fetch project, using original projectId:', projectError.message);
+        // Continue with original projectId
+      }
+
+      // Try different endpoint variations for bugs using the correct project ID
+      const endpointVariations = [];
+      
+      // First: Try using the link URL from project object if available (MOST RELIABLE)
+      if (project?.link?.bug?.url) {
+        const bugUrl = project.link.bug.url;
+        // Remove base URL to get just the path
+        const bugPath = bugUrl
+          .replace('https://projectsapi.zoho.in', '')
+          .replace('https://projectsapi.zoho.com', '')
+          .replace('https://projectsapi.zoho.eu', '')
+          .replace('https://projectsapi.zoho.com.au', '');
+        endpointVariations.push({
+          name: 'project.link.bug URL (CORRECT)',
+          url: bugPath
+        });
+        console.log(`[getBugs] Found bug link URL in project: ${bugUrl} -> ${bugPath}`);
+      } else {
+        console.log('[getBugs] ⚠️  No bug link URL found in project.link.bug.url');
+        console.log('[getBugs] Project link keys:', project?.link ? Object.keys(project.link) : 'No link object');
+      }
+      
+      // Try with "issues" instead of "bugs" (some Zoho setups use "issues")
+      if (correctProjectId !== projectId) {
+        endpointVariations.push({
+          name: 'portal ID with id_string (issues)',
+          url: `/restapi/portal/${portal}/projects/${correctProjectId}/issues/`
+        });
+      }
+      
+      // Try with portal name using "issues"
+      if (portalName) {
+        endpointVariations.push({
+          name: 'portal name with /restapi/ (issues)',
+          url: `/restapi/portal/${portalName}/projects/${correctProjectId}/issues/`
+        });
+      }
+      
+      // Try with portal ID using id_string and "issues"
+      endpointVariations.push({
+        name: 'portal ID with /restapi/ (id_string, issues)',
+        url: `/restapi/portal/${portal}/projects/${correctProjectId}/issues/`
+      });
+      
+      // Try with id_string (the correct project ID) - bugs endpoint
+      if (correctProjectId !== projectId) {
+        endpointVariations.push({
+          name: 'portal ID with id_string (bugs)',
+          url: `/restapi/portal/${portal}/projects/${correctProjectId}/bugs/`
+        });
+      }
+      
+      // Try with portal name
+      if (portalName) {
+        endpointVariations.push({
+          name: 'portal name with /restapi/ (bugs)',
+          url: `/restapi/portal/${portalName}/projects/${correctProjectId}/bugs/`
+        });
+        endpointVariations.push({
+          name: 'portal name without /restapi/ (bugs)',
+          url: `/portal/${portalName}/projects/${correctProjectId}/bugs/`
+        });
+      }
+      
+      // Try with portal ID using id_string
+      endpointVariations.push({
+        name: 'portal ID with /restapi/ (id_string, bugs)',
+        url: `/restapi/portal/${portal}/projects/${correctProjectId}/bugs/`
+      });
+      endpointVariations.push({
+        name: 'portal ID without /restapi/ (id_string, bugs)',
+        url: `/portal/${portal}/projects/${correctProjectId}/bugs/`
+      });
+      
+      // Try with original projectId as fallback
+      endpointVariations.push({
+        name: 'portal ID with /restapi/ (original id, bugs)',
+        url: `/restapi/portal/${portal}/projects/${projectId}/bugs/`
+      });
+      
+      // Try with API versions using id_string
+      endpointVariations.push({
+        name: 'v3 API with portal ID (id_string, bugs)',
+        url: `/restapi/v3/portal/${portal}/projects/${correctProjectId}/bugs/`
+      });
+      endpointVariations.push({
+        name: 'v1 API with portal ID (id_string, bugs)',
+        url: `/restapi/v1/portal/${portal}/projects/${correctProjectId}/bugs/`
+      });
+
+      let bugs: any[] = [];
+      
+      for (const variation of endpointVariations) {
+        if (bugs.length > 0) break; // Stop if we found bugs
+        
+        try {
+          console.log(`[getBugs] Trying bugs endpoint: ${variation.name} - ${variation.url}`);
+          const response = await client.get(variation.url);
+          
+          // Try multiple response structures - bugs, issues, tickets
+          if (response.data.response?.result?.bugs) {
+            bugs = response.data.response.result.bugs;
+          } else if (response.data.response?.result?.issues) {
+            bugs = response.data.response.result.issues;
+          } else if (response.data.response?.result?.tickets) {
+            bugs = response.data.response.result.tickets;
+          } else if (response.data.bugs) {
+            bugs = response.data.bugs;
+          } else if (response.data.issues) {
+            bugs = response.data.issues;
+          } else if (response.data.tickets) {
+            bugs = response.data.tickets;
+          } else if (Array.isArray(response.data)) {
+            bugs = response.data;
+          } else if (response.data.response?.result && Array.isArray(response.data.response.result)) {
+            bugs = response.data.response.result;
+          }
+          
+          if (bugs.length > 0) {
+            console.log(`[getBugs] ✅ Found ${bugs.length} bugs/issues/tickets via ${variation.name}`);
+            console.log(`[getBugs] Sample bug data keys:`, bugs[0] ? Object.keys(bugs[0]) : 'No bugs');
+            break;
+          } else {
+            console.log(`[getBugs] ⚠️  ${variation.name} returned empty array. Response structure:`, {
+              hasResponse: !!response.data.response,
+              hasResult: !!response.data.response?.result,
+              resultKeys: response.data.response?.result ? Object.keys(response.data.response.result) : [],
+              topLevelKeys: Object.keys(response.data || {})
+            });
+          }
+        } catch (error: any) {
+          const errorMsg = error.response?.data?.error?.message || error.message;
+          const errorCode = error.response?.data?.error?.code;
+          console.log(`[getBugs] ❌ ${variation.name} failed: ${errorMsg}${errorCode ? ` (code: ${errorCode})` : ''}`);
+          if (error.response?.data) {
+            console.log(`[getBugs] Error response data:`, JSON.stringify(error.response.data).substring(0, 200));
+          }
+          // Continue to next variation
+          continue;
+        }
+      }
+
+      if (bugs.length === 0) {
+        console.warn('[getBugs] ⚠️  No bugs found after trying all endpoint variations');
+      }
+
+      return bugs;
+    } catch (error: any) {
+      console.error('[getBugs] Error fetching bugs/tickets:', error.response?.data || error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get project status for management view
+   * Fetches comprehensive project data from Zoho including milestones, tickets, tasks, and project details
+   */
+  async getProjectManagementStatus(userId: number, zohoProjectId: string, portalId?: string): Promise<{
+    project_details: {
+      name: string;
+      status: string;
+      start_date?: string;
+      end_date?: string;
+      owner_name?: string;
+      progress_percentage?: number;
+      description?: string;
+    };
+    rtl: { current_stage: string; milestone_status: { overdue: number; pending: number; total: number } };
+    dv: { current_stage: string; milestone_status: { overdue: number; pending: number; total: number } };
+    pd: { current_stage: string; milestone_status: { overdue: number; pending: number; total: number } };
+    al: { current_stage: string; milestone_status: { overdue: number; pending: number; total: number } };
+    dft: { current_stage: string; milestone_status: { overdue: number; pending: number; total: number } };
+    tickets: { pending: number; total: number; open: number; closed: number };
+    tasks: { total: number; open: number; closed: number };
+    milestones_by_stage: { [key: string]: { overdue: number; pending: number; total: number } };
+  }> {
+    try {
+      // Get comprehensive project data
+      const project = await this.getProject(userId, zohoProjectId, portalId);
+      const milestones = await this.getMilestones(userId, zohoProjectId, portalId);
+      const bugs = await this.getBugs(userId, zohoProjectId, portalId);
+      const tasks = await this.getTasks(userId, zohoProjectId, portalId);
+
+      // Extract project details
+      const projectDetails = {
+        name: project.name || 'N/A',
+        status: project.status || project.custom_status_name || 'N/A',
+        start_date: project.start_date || project.start_date_format || undefined,
+        end_date: project.end_date || project.end_date_format || undefined,
+        owner_name: project.owner_name || project.owner?.name || undefined,
+        progress_percentage: project.project_percent || 0,
+        description: project.description || undefined,
+      };
+
+      // Calculate milestone status by stage
+      // Group milestones by stage name (RTL, DV, PD, AL, DFT)
+      const now = new Date();
+      const milestonesByStage: { [key: string]: { overdue: number; pending: number; total: number } } = {
+        rtl: { overdue: 0, pending: 0, total: 0 },
+        dv: { overdue: 0, pending: 0, total: 0 },
+        pd: { overdue: 0, pending: 0, total: 0 },
+        al: { overdue: 0, pending: 0, total: 0 },
+        dft: { overdue: 0, pending: 0, total: 0 },
+      };
+
+      milestones.forEach((milestone: any) => {
+        const milestoneName = (milestone.name || milestone.milestone_name || '').toLowerCase();
+        const endDate = milestone.end_date || milestone.due_date || milestone.target_date || milestone.end_date_long;
+        const isCompleted = milestone.status === 'completed' || milestone.status === 'closed' || milestone.completed || milestone.status_name === 'Completed';
+        
+        // Determine stage from milestone name
+        let stage = 'rtl'; // default
+        if (milestoneName.includes('dv') || milestoneName.includes('design verification')) {
+          stage = 'dv';
+        } else if (milestoneName.includes('pd') || milestoneName.includes('physical design')) {
+          stage = 'pd';
+        } else if (milestoneName.includes('al') || milestoneName.includes('analog')) {
+          stage = 'al';
+        } else if (milestoneName.includes('dft') || milestoneName.includes('design for test')) {
+          stage = 'dft';
+        } else if (milestoneName.includes('rtl') || milestoneName.includes('register transfer')) {
+          stage = 'rtl';
+        }
+
+        milestonesByStage[stage].total++;
+        
+        if (!isCompleted) {
+          if (endDate) {
+            let dueDate: Date;
+            if (typeof endDate === 'number') {
+              dueDate = new Date(endDate);
+            } else {
+              dueDate = new Date(endDate);
+            }
+            
+            if (dueDate < now) {
+              milestonesByStage[stage].overdue++;
+            } else {
+              milestonesByStage[stage].pending++;
+            }
+          } else {
+            milestonesByStage[stage].pending++;
+          }
+        }
+      });
+
+      // Get current stage from project custom fields or tasklists
+      // For now, use a placeholder that can be enhanced later
+      const getCurrentStage = (stageName: string): string => {
+        // Try to get from custom fields or tasklists
+        const customFields = project.custom_fields || [];
+        const stageField = customFields.find((field: any) => 
+          field[stageName.toUpperCase()] || field[`${stageName}_stage`]
+        );
+        
+        if (stageField) {
+          return stageField[stageName.toUpperCase()] || stageField[`${stageName}_stage`] || 'bronze/silver/gold';
+        }
+        
+        // Default based on progress
+        const progress = projectDetails.progress_percentage || 0;
+        if (progress < 33) return 'bronze';
+        if (progress < 66) return 'silver';
+        return 'gold';
+      };
+
+      // Count bugs/tickets
+      const totalBugs = bugs.length;
+      const openBugs = bugs.filter((bug: any) => {
+        const status = (bug.status?.toLowerCase() || bug.status_name?.toLowerCase() || '');
+        return status !== 'closed' && status !== 'resolved' && status !== 'fixed';
+      }).length;
+      const closedBugs = totalBugs - openBugs;
+
+      // Count tasks
+      const totalTasks = tasks.length;
+      const openTasks = tasks.filter((task: any) => {
+        const status = (task.status?.toLowerCase() || task.status_name?.toLowerCase() || '');
+        return status !== 'closed' && status !== 'completed';
+      }).length;
+      const closedTasks = totalTasks - openTasks;
+
+      return {
+        project_details: projectDetails,
+        rtl: {
+          current_stage: getCurrentStage('rtl'),
+          milestone_status: milestonesByStage.rtl
+        },
+        dv: {
+          current_stage: getCurrentStage('dv'),
+          milestone_status: milestonesByStage.dv
+        },
+        pd: {
+          current_stage: getCurrentStage('pd'),
+          milestone_status: milestonesByStage.pd
+        },
+        al: {
+          current_stage: getCurrentStage('al'),
+          milestone_status: milestonesByStage.al
+        },
+        dft: {
+          current_stage: getCurrentStage('dft'),
+          milestone_status: milestonesByStage.dft
+        },
+        tickets: {
+          pending: openBugs,
+          total: totalBugs,
+          open: openBugs,
+          closed: closedBugs
+        },
+        tasks: {
+          total: totalTasks,
+          open: openTasks,
+          closed: closedTasks
+        },
+        milestones_by_stage: milestonesByStage
+      };
+    } catch (error: any) {
+      console.error('Error getting project management status:', error);
+      // Return default values on error
+      const defaultStatus = {
+        overdue: 0,
+        pending: 0,
+        total: 0
+      };
+      return {
+        project_details: {
+          name: 'N/A',
+          status: 'N/A',
+          progress_percentage: 0
+        },
+        rtl: { current_stage: 'N/A', milestone_status: defaultStatus },
+        dv: { current_stage: 'N/A', milestone_status: defaultStatus },
+        pd: { current_stage: 'N/A', milestone_status: defaultStatus },
+        al: { current_stage: 'N/A', milestone_status: defaultStatus },
+        dft: { current_stage: 'N/A', milestone_status: defaultStatus },
+        tickets: { pending: 0, total: 0, open: 0, closed: 0 },
+        tasks: { total: 0, open: 0, closed: 0 },
+        milestones_by_stage: {
+          rtl: defaultStatus,
+          dv: defaultStatus,
+          pd: defaultStatus,
+          al: defaultStatus,
+          dft: defaultStatus
+        }
+      };
+    }
   }
 }
 

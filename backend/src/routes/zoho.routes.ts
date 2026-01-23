@@ -726,6 +726,61 @@ router.get('/projects/:projectId', authenticate, async (req, res) => {
 });
 
 /**
+ * GET /api/zoho/projects/:zohoProjectId/members
+ * Get all members for a Zoho project (preview before sync)
+ */
+router.get('/projects/:zohoProjectId/members', authenticate, async (req, res) => {
+  try {
+    const userId = (req as any).user?.id;
+    const { zohoProjectId } = req.params;
+    const { portalId } = req.query;
+
+    console.log(`[API] GET /api/zoho/projects/${zohoProjectId}/members - userId: ${userId}, portalId: ${portalId}`);
+
+    const members = await zohoService.getProjectMembers(
+      userId,
+      zohoProjectId,
+      portalId as string | undefined
+    );
+
+    console.log(`[API] Found ${members.length} members in Zoho project ${zohoProjectId}`);
+
+    // Map roles for preview
+    const mappedMembers = members.map(member => {
+      const email = member.email || member.Email || member.mail || 'N/A';
+      const name = member.name || member.Name || member.full_name || email?.split('@')[0] || 'Unknown';
+      const zohoRole = member.role || member.Role || member.project_role || 'Employee';
+      const asiRole = zohoService.mapZohoProjectRoleToAppRole(zohoRole);
+      
+      console.log(`[API] Member: ${email} (${name}) - Zoho role: ${zohoRole} -> ASI role: ${asiRole}`);
+      
+      return {
+        email,
+        name,
+        zoho_role: zohoRole,
+        asi_role: asiRole,
+        status: member.status || 'active',
+        id: member.id
+      };
+    });
+
+    console.log(`[API] Returning ${mappedMembers.length} mapped members`);
+
+    res.json({
+      success: true,
+      count: mappedMembers.length,
+      members: mappedMembers
+    });
+  } catch (error: any) {
+    console.error('[API] Error fetching project members:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
  * GET /api/zoho/projects/:projectId/tasks
  * Get all tasks for a Zoho project (including subtasks)
  */

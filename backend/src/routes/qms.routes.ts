@@ -98,12 +98,14 @@ router.get('/filters', authenticate, async (req, res) => {
 router.get('/blocks/:blockId/checklists', authenticate, async (req, res) => {
   try {
     const blockId = parseInt(req.params.blockId, 10);
+    const userId = (req as any).user?.id;
+    const userRole = (req as any).user?.role;
     
     if (isNaN(blockId)) {
       return res.status(400).json({ error: 'Invalid block ID' });
     }
 
-    const checklists = await qmsService.getChecklistsForBlock(blockId);
+    const checklists = await qmsService.getChecklistsForBlock(blockId, userId, userRole);
     res.json(checklists);
   } catch (error: any) {
     console.error('Error getting checklists:', error);
@@ -295,7 +297,7 @@ router.put(
 router.post(
   '/check-items/:checkItemId/submit',
   authenticate,
-  authorize('engineer', 'admin', 'lead'),
+  authorize('engineer', 'project_manager', 'admin', 'lead'),
   async (req, res) => {
     try {
       const checkItemId = parseInt(req.params.checkItemId, 10);
@@ -326,7 +328,7 @@ router.post(
 router.put(
   '/check-items/:checkItemId/approve',
   authenticate,
-  authorize('admin', 'project_manager', 'lead'),
+  authorize('engineer', 'admin', 'project_manager', 'lead'),
   async (req, res) => {
     try {
       const checkItemId = parseInt(req.params.checkItemId, 10);
@@ -418,7 +420,7 @@ router.get('/check-items/:checkItemId/history', authenticate, async (req, res) =
 router.post(
   '/checklists/:checklistId/submit',
   authenticate,
-  authorize('engineer', 'admin', 'lead'),
+  authorize('engineer', 'project_manager', 'admin', 'lead'),
   async (req, res) => {
     try {
       const checklistId = parseInt(req.params.checklistId, 10);
@@ -486,7 +488,7 @@ router.put(
 router.post(
   '/check-items/batch-approve-reject',
   authenticate,
-  authorize('admin', 'project_manager', 'lead'),
+  authorize('engineer', 'admin', 'project_manager', 'lead'),
   async (req, res) => {
     try {
       const { check_item_ids, approved, comments } = req.body;

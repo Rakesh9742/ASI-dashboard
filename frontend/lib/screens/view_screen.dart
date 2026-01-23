@@ -42,6 +42,10 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   String _stageFilter = 'all';
   String _viewType = 'engineer'; // Will be set based on user role in initState
   
+  // Project-specific role and available view types
+  List<String> _availableViewTypes = ['engineer']; // Default to engineer only
+  String? _projectRole; // Project-specific role from user_projects
+  
   // Lead View filters
   String _leadStageFilter = ''; // Empty means all stages
   String _leadStatusFilter = ''; // Empty means all statuses
@@ -146,9 +150,14 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       
       // Set default view type based on user role
       String defaultViewType = 'engineer';
-      if (userRole == 'customer') {
+      if (userRole == 'management') {
+        defaultViewType = 'management';
+      } else if (userRole == 'cad_engineer') {
+        defaultViewType = 'cad';
+      } else if (userRole == 'customer') {
         defaultViewType = 'customer';
       } else if (userRole == 'admin' || userRole == 'project_manager') {
+        // Admin and project_manager can see manager view, but default to manager (not management)
         defaultViewType = 'manager';
       } else if (userRole == 'lead') {
         defaultViewType = 'lead';
@@ -156,17 +165,43 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       
       setState(() {
         _projects = projectsData['all'] ?? projectsData['local'] ?? [];
-        // Always set view type based on user role if not explicitly set via parameters
-        // This ensures customers always see customer view, even on refresh
-        if (widget.initialViewType == null) {
-          _viewType = defaultViewType;
-        }
+        // View type will be set based on project-specific role after project is loaded
         _isLoading = false;
       });
       
       // If project is pre-selected (from widget or provider), load domains for it
       final params = ref.read(viewScreenParamsProvider);
       final projectToLoad = widget.initialProject ?? params?.project ?? _selectedProject;
+      
+      // If project is already selected, fetch its role
+      if (projectToLoad != null) {
+        await _fetchProjectRole(projectToLoad);
+        // Set view type based on available views if not explicitly set
+        if (widget.initialViewType == null) {
+          String defaultViewType = 'engineer';
+          if (_availableViewTypes.contains('management')) {
+            defaultViewType = 'management';
+          } else if (_availableViewTypes.contains('manager')) {
+            defaultViewType = 'manager';
+          } else if (_availableViewTypes.contains('lead')) {
+            defaultViewType = 'lead';
+          } else if (_availableViewTypes.contains('engineer')) {
+            defaultViewType = 'engineer';
+          } else if (_availableViewTypes.contains('customer')) {
+            defaultViewType = 'customer';
+          }
+          setState(() {
+            _viewType = defaultViewType;
+          });
+        }
+      } else {
+        // No project selected, use global role default
+        if (widget.initialViewType == null) {
+          setState(() {
+            _viewType = defaultViewType;
+          });
+        }
+      }
       final domainToLoad = widget.initialDomain ?? params?.domain ?? _selectedDomain;
       
       // Set project immediately if provided (important for customer view)
@@ -243,20 +278,19 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       final authState = ref.read(authProvider);
       final token = authState.token;
       
-      // Load EDA files and group them
+      // Load EDA files with backend filtering by project and domain
+      // This reduces data transfer and improves performance
       final filesResponse = await _apiService.getEdaFiles(
         token: token,
-        limit: 1000,
+        projectName: _selectedProject,
+        domainName: _selectedDomain,
+        limit: 500, // Reduced from 1000 for faster initial load
       );
       
       final files = filesResponse['files'] ?? [];
       
-      // Filter files by selected project and domain
-      final filteredFiles = files.where((file) {
-        final projectName = file['project_name'] ?? 'Unknown';
-        final domainName = file['domain_name'] ?? '';
-        return projectName == _selectedProject && domainName == _selectedDomain;
-      }).toList();
+      // Files are already filtered by backend, no need to filter again
+      final filteredFiles = files;
       
       // Group files by project -> block -> rtl_tag -> experiment -> stages
       final Map<String, dynamic> grouped = {};
@@ -586,8 +620,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Hide header for customers - they don't need project/domain selection
-                if (_viewType != 'customer') ...[
+                // Hide header for customers and management - they don't need project/domain selection
+                if (_viewType != 'customer' && _viewType != 'management') ...[
                   _buildHeader(),
                   const SizedBox(height: 24),
                 ],
@@ -613,6 +647,10 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                   _buildManagerView(),
                 ] else if (_viewType == 'customer') ...[
                   _buildCustomerView(),
+                ] else if (_viewType == 'management') ...[
+                  _buildManagementView(),
+                ] else if (_viewType == 'cad') ...[
+                  _buildCadView(),
                 ],
               ],
             ),
@@ -625,6 +663,55 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
 
 
   Widget _buildViewTypeSelector() {
+    // Only show view types that are available for the current project
+    final viewTypeChips = <Widget>[];
+
+    bool viewTypeChandleSpacing(List<Widget> chips) => chips.isNotEmpty;
+    
+    if (_availableViewTypes.contains('engineer')) {
+      viewTypeChips.add(_buildViewTypeChip('Engineer View', 'engineer'));
+    }
+    
+    if (_availableViewTypes.contains('lead')) {
+      if (viewTypeChips.isNotEmpty) {
+        viewTypeChips.add(const SizedBox(width: 8));
+      }
+      viewTypeChips.add(_buildViewTypeChip('Lead View', 'lead'));
+    }
+    
+    if (_availableViewTypes.contains('manager')) {
+      if (viewTypeChips.isNotEmpty) {
+        viewTypeChips.add(const SizedBox(width: 8));
+      }
+      viewTypeChips.add(_buildViewTypeChip('Manager View', 'manager'));
+    }
+    
+    if (_availableViewTypes.contains('customer')) {
+      if (viewTypeChandleSpacing(viewTypeChips)) {
+        viewTypeChips.add(const SizedBox(width: 8));
+      }
+      viewTypeChips.add(_buildViewTypeChip('Customer View', 'customer'));
+    }
+    
+    if (_availableViewTypes.contains('management')) {
+      if (viewTypeChandleSpacing(viewTypeChips)) {
+        viewTypeChips.add(const SizedBox(width: 8));
+      }
+      viewTypeChips.add(_buildViewTypeChip('Management View', 'management'));
+    }
+
+    if (_availableViewTypes.contains('cad')) {
+      if (viewTypeChandleSpacing(viewTypeChips)) {
+        viewTypeChips.add(const SizedBox(width: 8));
+      }
+      viewTypeChips.add(_buildViewTypeChip('CAD View', 'cad'));
+    }
+    
+    // If no view types available, show engineer as fallback
+    if (viewTypeChips.isEmpty) {
+      viewTypeChips.add(_buildViewTypeChip('Engineer View', 'engineer'));
+    }
+    
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -644,11 +731,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             ),
           ),
           const SizedBox(width: 16),
-          _buildViewTypeChip('Engineer View', 'engineer'),
-          const SizedBox(width: 8),
-          _buildViewTypeChip('Lead View', 'lead'),
-          const SizedBox(width: 8),
-          _buildViewTypeChip('Manager View', 'manager'),
+          ...viewTypeChips,
         ],
       ),
     );
@@ -656,8 +739,18 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
 
   Widget _buildViewTypeChip(String label, String value) {
     final isSelected = _viewType == value;
+    final isAvailable = _availableViewTypes.contains(value);
     return GestureDetector(
-      onTap: () => setState(() => _viewType = value),
+      onTap: isAvailable
+          ? () {
+              setState(() {
+                _viewType = value;
+              });
+              if (value == 'cad' && _selectedProject != null) {
+                _loadCadStatusForProject(_selectedProject!);
+              }
+            }
+          : null,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
@@ -787,6 +880,53 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                 if (userRole == 'customer') {
                   return const SizedBox.shrink();
                 }
+                // Only show view types that are available for the current project
+                final viewTypeChipsInline = <Widget>[];
+                
+                if (_availableViewTypes.contains('engineer')) {
+                  viewTypeChipsInline.add(_buildViewTypeChip('Engineer View', 'engineer'));
+                }
+                
+                if (_availableViewTypes.contains('lead')) {
+                  if (viewTypeChipsInline.isNotEmpty) {
+                    viewTypeChipsInline.add(const SizedBox(width: 8));
+                  }
+                  viewTypeChipsInline.add(_buildViewTypeChip('Lead View', 'lead'));
+                }
+                
+                if (_availableViewTypes.contains('manager')) {
+                  if (viewTypeChipsInline.isNotEmpty) {
+                    viewTypeChipsInline.add(const SizedBox(width: 8));
+                  }
+                  viewTypeChipsInline.add(_buildViewTypeChip('Manager View', 'manager'));
+                }
+                
+                if (_availableViewTypes.contains('customer')) {
+                  if (viewTypeChipsInline.isNotEmpty) {
+                    viewTypeChipsInline.add(const SizedBox(width: 8));
+                  }
+                  viewTypeChipsInline.add(_buildViewTypeChip('Customer View', 'customer'));
+                }
+                
+                if (_availableViewTypes.contains('management')) {
+                  if (viewTypeChipsInline.isNotEmpty) {
+                    viewTypeChipsInline.add(const SizedBox(width: 8));
+                  }
+                  viewTypeChipsInline.add(_buildViewTypeChip('Management View', 'management'));
+                }
+
+                if (_availableViewTypes.contains('cad')) {
+                  if (viewTypeChipsInline.isNotEmpty) {
+                    viewTypeChipsInline.add(const SizedBox(width: 8));
+                  }
+                  viewTypeChipsInline.add(_buildViewTypeChip('CAD View', 'cad'));
+                }
+                
+                // If no view types available, show engineer as fallback
+                if (viewTypeChipsInline.isEmpty) {
+                  viewTypeChipsInline.add(_buildViewTypeChip('Engineer View', 'engineer'));
+                }
+                
                 return Row(
                   children: [
                     const Text(
@@ -799,11 +939,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                       ),
                     ),
                     const SizedBox(width: 16),
-                    _buildViewTypeChip('Engineer View', 'engineer'),
-                    const SizedBox(width: 8),
-                    _buildViewTypeChip('Lead View', 'lead'),
-                    const SizedBox(width: 8),
-                    _buildViewTypeChip('Manager View', 'manager'),
+                    ...viewTypeChipsInline,
                   ],
                 );
               },
@@ -885,6 +1021,57 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     }
   }
 
+  // Fetch project-specific role and update available view types
+  Future<void> _fetchProjectRole(String projectIdentifier) async {
+    try {
+      final authState = ref.read(authProvider);
+      final token = authState.token;
+      
+      final roleResponse = await _apiService.getUserProjectRole(
+        projectIdentifier: projectIdentifier,
+        token: token,
+      );
+      
+      if (roleResponse['success'] == true) {
+        final availableViewTypes = List<String>.from(roleResponse['availableViewTypes'] ?? ['engineer']);
+        final effectiveRole = roleResponse['effectiveRole'] ?? 'engineer';
+        final projectRole = roleResponse['projectRole'];
+        
+        // Set default view type to the highest available view
+        String defaultViewType = 'engineer';
+      if (availableViewTypes.contains('cad')) {
+        defaultViewType = 'cad';
+      } else if (availableViewTypes.contains('manager')) {
+          defaultViewType = 'manager';
+        } else if (availableViewTypes.contains('lead')) {
+          defaultViewType = 'lead';
+        } else if (availableViewTypes.contains('engineer')) {
+          defaultViewType = 'engineer';
+        } else if (availableViewTypes.contains('customer')) {
+          defaultViewType = 'customer';
+        }
+        
+        setState(() {
+          _availableViewTypes = availableViewTypes;
+          _projectRole = projectRole;
+          // Only update view type if current one is not available
+          if (!availableViewTypes.contains(_viewType)) {
+            _viewType = defaultViewType;
+          }
+        });
+      }
+    } catch (e) {
+      // If fetching project role fails, default to engineer view
+      setState(() {
+        _availableViewTypes = ['engineer'];
+        _projectRole = null;
+        if (_viewType != 'engineer' && _viewType != 'customer') {
+          _viewType = 'engineer';
+        }
+      });
+    }
+  }
+
   void _updateProject(String? projectName) async {
     if (projectName == null || projectName.isEmpty) {
       setState(() {
@@ -895,6 +1082,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         _selectedBlock = null;
         _selectedTag = null;
         _selectedExperiment = null;
+        _availableViewTypes = ['engineer'];
+        _projectRole = null;
       });
       return;
     }
@@ -909,6 +1098,9 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       _selectedTag = null;
       _selectedExperiment = null;
     });
+
+    // Fetch project-specific role first
+    await _fetchProjectRole(projectName);
 
     // Get domains for this project
     try {
@@ -4777,7 +4969,11 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     
     // Load QMS data if not already loaded (async, will update UI when ready)
     if (_blockNameToId.isEmpty && _selectedProject != null) {
-      _loadQmsDataForBlocks(blockSummaryData);
+      // Load QMS data asynchronously without blocking UI
+      _loadQmsDataForBlocks(blockSummaryData).catchError((error) {
+        // Silently fail - QMS data won't be available but UI still works
+        print('Failed to load QMS data: $error');
+      });
     }
     
     // Apply filters
@@ -6740,6 +6936,1025 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           ),
         ],
       ],
+    );
+  }
+
+  // Management view state
+  bool _isLoadingManagementData = false;
+  List<dynamic> _managementProjects = [];
+
+  // CAD engineer view state
+  bool _isLoadingCadStatus = false;
+  Map<String, dynamic>? _cadStatus;
+  String? _cadStatusProject;
+  int _cadTabIndex = 0; // 0 for Tasks, 1 for Issues
+
+  Future<void> _loadManagementData() async {
+    setState(() {
+      _isLoadingManagementData = true;
+    });
+
+    try {
+      final authState = ref.read(authProvider);
+      final token = authState.token;
+      
+      final response = await _apiService.getManagementStatus(token: token);
+      
+      if (response['success'] == true) {
+        setState(() {
+          _managementProjects = List<dynamic>.from(response['projects'] ?? []);
+          _isLoadingManagementData = false;
+        });
+      } else {
+        setState(() {
+          _isLoadingManagementData = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isLoadingManagementData = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading management data: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Widget _buildManagementView() {
+    // Load data on first view
+    if (_managementProjects.isEmpty && !_isLoadingManagementData) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _loadManagementData();
+      });
+    }
+
+    if (_isLoadingManagementData) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Column(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text(
+                'Loading project status...',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_managementProjects.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text(
+            'No projects found',
+            style: TextStyle(color: Colors.grey, fontSize: 16),
+          ),
+        ),
+      );
+    }
+
+    return SingleChildScrollView(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Wrap(
+          spacing: 24,
+          runSpacing: 24,
+          children: _managementProjects.map<Widget>((project) {
+            return _buildProjectCard(project as Map<String, dynamic>);
+          }).toList(),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _loadCadStatusForProject(String projectIdentifier) async {
+    setState(() {
+      _isLoadingCadStatus = true;
+      _cadStatusProject = projectIdentifier;
+    });
+
+    try {
+      final authState = ref.read(authProvider);
+      final token = authState.token;
+
+      final response = await _apiService.getCadStatus(
+        projectIdentifier: projectIdentifier,
+        token: token,
+      );
+
+      if (response['success'] == true) {
+        setState(() {
+          _cadStatus = Map<String, dynamic>.from(response['data'] ?? {});
+          _isLoadingCadStatus = false;
+        });
+      } else {
+        setState(() {
+          _isLoadingCadStatus = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isLoadingCadStatus = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading CAD status: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Widget _buildCadView() {
+    if (_selectedProject == null) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Text(
+            'Please select a project to view CAD status.',
+            style: TextStyle(color: Colors.grey, fontSize: 16),
+          ),
+        ),
+      );
+    }
+
+    // Auto-load CAD status for the selected project
+    if (!_isLoadingCadStatus &&
+        (_cadStatus == null || _cadStatusProject != _selectedProject)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _selectedProject != null) {
+          _loadCadStatusForProject(_selectedProject!);
+        }
+      });
+    }
+
+    if (_isLoadingCadStatus || _cadStatus == null) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32.0),
+          child: Column(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text(
+                'Loading CAD status...',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final tasks = _cadStatus?['tasks'] as Map<String, dynamic>? ?? {};
+    final issues = _cadStatus?['issues'] as Map<String, dynamic>? ?? {};
+    final tasksList = _cadStatus?['tasksList'] as List<dynamic>? ?? [];
+    final issuesList = _cadStatus?['issuesList'] as List<dynamic>? ?? [];
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'CAD Engineer View - ${_cadStatus?['projectName'] ?? _selectedProject}',
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildCadSummaryCard(
+                  title: 'Tasks',
+                  total: tasks['total'] ?? 0,
+                  todo: tasks['todo'] ?? 0,
+                  inProgress: tasks['in_progress'] ?? 0,
+                  completed: tasks['completed'] ?? 0,
+                  color: Colors.blue,
+                ),
+              ),
+              const SizedBox(width: 24),
+              Expanded(
+                child: _buildCadSummaryCard(
+                  title: 'Issues',
+                  total: issues['total'] ?? 0,
+                  todo: issues['todo'] ?? 0,
+                  inProgress: issues['in_progress'] ?? 0,
+                  completed: issues['completed'] ?? 0,
+                  color: Colors.deepOrange,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 32),
+          // Tabs for Tasks and Issues
+          DefaultTabController(
+            length: 2,
+            initialIndex: _cadTabIndex,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TabBar(
+                  onTap: (index) {
+                    setState(() {
+                      _cadTabIndex = index;
+                    });
+                  },
+                  tabs: [
+                    Tab(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.task, size: 18),
+                          const SizedBox(width: 4),
+                          Text('Tasks (${tasksList.length})'),
+                        ],
+                      ),
+                    ),
+                    Tab(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.bug_report, size: 18),
+                          const SizedBox(width: 4),
+                          Text('Issues (${issuesList.length})'),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  height: 500,
+                  child: TabBarView(
+                    children: [
+                      // Tasks Tab
+                      tasksList.isEmpty
+                          ? const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(32.0),
+                                child: Text(
+                                  'No tasks found.',
+                                  style: TextStyle(color: Colors.grey, fontSize: 16),
+                                ),
+                              ),
+                            )
+                          : _buildCadTaskList(tasksList, Colors.blue),
+                      // Issues Tab
+                      issuesList.isEmpty
+                          ? const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(32.0),
+                                child: Text(
+                                  'No issues found.',
+                                  style: TextStyle(color: Colors.grey, fontSize: 16),
+                                ),
+                              ),
+                            )
+                          : _buildCadTaskList(issuesList, Colors.deepOrange),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCadSummaryCard({
+    required String title,
+    required int total,
+    required int todo,
+    required int inProgress,
+    required int completed,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.shade200,
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Total: $total',
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'To Do: $todo',
+            style: const TextStyle(fontSize: 13),
+          ),
+          Text(
+            'In Progress: $inProgress',
+            style: const TextStyle(fontSize: 13),
+          ),
+          Text(
+            'Completed: $completed',
+            style: const TextStyle(fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCadTaskList(List<dynamic> items, Color color) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.shade200,
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ListView.builder(
+        shrinkWrap: true,
+        itemCount: items.length,
+        itemBuilder: (context, index) {
+          final item = items[index] as Map<String, dynamic>;
+          
+          // Safely convert all values to strings with null checks
+          final nameValue = item['name'];
+          final name = (nameValue != null) ? nameValue.toString() : 'Untitled';
+          
+          final statusValue = item['status'];
+          final status = (statusValue != null) ? statusValue.toString() : 'Unknown';
+          
+          final ownerValue = item['owner'];
+          final owner = (ownerValue != null) ? ownerValue.toString() : 'Unassigned';
+          
+          final idValue = item['id'];
+          final id = (idValue != null) ? idValue.toString() : '';
+          
+          final keyValue = item['key'];
+          final key = (keyValue != null) ? keyValue.toString() : '';
+          
+          final startDateValue = item['start_date'];
+          final startDate = (startDateValue != null) ? startDateValue.toString() : null;
+          
+          final dueDateValue = item['due_date'];
+          final dueDate = (dueDateValue != null) ? dueDateValue.toString() : null;
+          
+          final createdDateValue = item['created_date'];
+          final createdDate = (createdDateValue != null) ? createdDateValue.toString() : null;
+          
+          final createdByValue = item['created_by'];
+          final createdBy = (createdByValue != null) ? createdByValue.toString() : null;
+          
+          final tasklistNameValue = item['tasklist_name'];
+          final tasklistName = (tasklistNameValue != null) ? tasklistNameValue.toString() : '';
+          
+          final priorityValue = item['priority'];
+          final priority = (priorityValue != null) ? priorityValue.toString() : '';
+
+          // Determine status color
+          Color statusColor = Colors.grey;
+          final statusLower = status.toLowerCase();
+          if (statusLower.contains('completed') ||
+              statusLower.contains('closed') ||
+              statusLower.contains('done')) {
+            statusColor = Colors.green;
+          } else if (statusLower.contains('progress') ||
+              statusLower.contains('review')) {
+            statusColor = Colors.orange;
+          } else if (statusLower.contains('open') ||
+              statusLower.contains('todo')) {
+            statusColor = Colors.blue;
+          }
+
+          return Container(
+            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade50,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Title and Status
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            name,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          if (key.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              key,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade600,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: statusColor.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: statusColor),
+                      ),
+                      child: Text(
+                        status,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: statusColor,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                // Details Grid
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 8,
+                  children: [
+                    if (owner != 'Unassigned') ...[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.person, size: 16, color: Colors.grey.shade600),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Assignee: $owner',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (createdBy != null) ...[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.person_add, size: 16, color: Colors.grey.shade600),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Created by: $createdBy',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (tasklistName.isNotEmpty) ...[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.folder, size: 16, color: Colors.grey.shade600),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Tasklist: $tasklistName',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (priority.isNotEmpty && priority != 'None') ...[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.flag, size: 16, color: Colors.grey.shade600),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Priority: $priority',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 8),
+                // Dates Row
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 8,
+                  children: [
+                    if (startDate != null && startDate.isNotEmpty) ...[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.play_circle_outline, size: 16, color: Colors.grey.shade600),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Start: $startDate',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (dueDate != null && dueDate.isNotEmpty) ...[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.calendar_today, size: 16, color: Colors.grey.shade600),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Due: $dueDate',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (createdDate != null && createdDate.isNotEmpty) ...[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.access_time, size: 16, color: Colors.grey.shade600),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Created: $createdDate',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildProjectCard(Map<String, dynamic> project) {
+    final projectDetails = project['project_details'] as Map<String, dynamic>?;
+    final projectName = projectDetails?['name'] ?? project['project_name'] ?? 'N/A';
+    final projectStatus = projectDetails?['status'] ?? 'N/A';
+    final progressPercentage = projectDetails?['progress_percentage'] ?? 0;
+    final ownerName = projectDetails?['owner_name'] ?? 'N/A';
+    final startDate = projectDetails?['start_date'] ?? '';
+    final endDate = projectDetails?['end_date'] ?? '';
+    final tickets = project['tickets'] as Map<String, dynamic>?;
+    final tasks = project['tasks'] as Map<String, dynamic>?;
+    
+    final stages = ['rtl', 'dv', 'pd', 'al', 'dft'];
+    final stageLabels = {
+      'rtl': 'RTL',
+      'dv': 'DV',
+      'pd': 'PD',
+      'al': 'AL',
+      'dft': 'DFT',
+    };
+    final stageColors = {
+      'rtl': const Color(0xFFE53935), // Red
+      'dv': const Color(0xFF43A047), // Green
+      'pd': const Color(0xFF1E88E5), // Blue
+      'al': const Color(0xFF7B1FA2), // Purple
+      'dft': const Color(0xFFF57C00), // Orange
+    };
+
+    // Theme colors for headers
+    final headerGradient = LinearGradient(
+      colors: [
+        const Color(0xFF667EEA), // Indigo
+        const Color(0xFF764BA2), // Purple
+      ],
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+    );
+
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade300, width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.shade300.withOpacity(0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Project Name Header with Gradient
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              gradient: headerGradient,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(16),
+                topRight: Radius.circular(16),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            projectName,
+                            style: const TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.2),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  projectStatus,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                              if (ownerName != 'N/A') ...[
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Owner: $ownerName',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.white.withOpacity(0.9),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    // Stats badges
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        _buildStatBadge(
+                          'Tickets',
+                          '${tickets?['pending'] ?? 0}/${tickets?['total'] ?? 0}',
+                          Colors.orange.shade300,
+                        ),
+                        const SizedBox(height: 6),
+                        _buildStatBadge(
+                          'Tasks',
+                          '${tasks?['open'] ?? 0}/${tasks?['total'] ?? 0}',
+                          Colors.cyan.shade300,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                if (progressPercentage > 0) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(
+                            value: progressPercentage / 100,
+                            backgroundColor: Colors.white.withOpacity(0.3),
+                            valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                            minHeight: 6,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        '$progressPercentage%',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                if (startDate.isNotEmpty || endDate.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      if (startDate.isNotEmpty)
+                        Text(
+                          'Start: $startDate',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.white.withOpacity(0.8),
+                          ),
+                        ),
+                      if (startDate.isNotEmpty && endDate.isNotEmpty)
+                        const SizedBox(width: 16),
+                      if (endDate.isNotEmpty)
+                        Text(
+                          'End: $endDate',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.white.withOpacity(0.8),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+          // Current Stages Header with Theme Color
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Colors.blue.shade50,
+                  Colors.purple.shade50,
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              border: Border(
+                bottom: BorderSide(color: Colors.grey.shade300, width: 1),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.timeline,
+                  size: 18,
+                  color: Colors.blue.shade700,
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'Current Stages',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Stages Grid
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Row(
+              children: stages.map<Widget>((stage) {
+                final stageData = project[stage] as Map<String, dynamic>?;
+                final currentStage = stageData?['current_stage'] ?? 'N/A';
+                final milestoneStatus = stageData?['milestone_status'] as Map<String, dynamic>?;
+                final overdue = milestoneStatus?['overdue'] ?? 0;
+                final pending = milestoneStatus?['pending'] ?? 0;
+                final total = milestoneStatus?['total'] ?? 0;
+                final color = stageColors[stage] ?? Colors.black87;
+                final label = stageLabels[stage] ?? stage.toUpperCase();
+
+                return Expanded(
+                  child: Container(
+                    margin: EdgeInsets.only(right: stage == stages.last ? 0 : 12),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          color.withOpacity(0.1),
+                          color.withOpacity(0.05),
+                        ],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: color.withOpacity(0.3),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Stage Label with icon
+                        Row(
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: color,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              label,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: color,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        // Current Stage Value
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: color.withOpacity(0.2)),
+                          ),
+                          child: Text(
+                            currentStage,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: color,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        // Milestone Status
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Milestone Status',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey.shade700,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                '$overdue/$pending/$total',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: overdue > 0 ? Colors.red.shade700 : Colors.black87,
+                                ),
+                              ),
+                              Text(
+                                'overdue/pending/total',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatBadge(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withOpacity(0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: Colors.white.withOpacity(0.9),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -9233,3 +10448,4 @@ class _ScrollControllerProviderState extends State<_ScrollControllerProvider> {
     return widget.builder(_hResult, _vResult);
   }
 }
+
