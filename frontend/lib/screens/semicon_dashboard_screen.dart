@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 import '../services/qms_service.dart';
+import '../widgets/qms_history_dialog.dart';
 import '../widgets/qms_status_badge.dart';
 import 'qms_dashboard_screen.dart';
 import 'qms_checklist_detail_screen.dart';
@@ -2143,28 +2144,51 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                 color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
-            ElevatedButton.icon(
-              onPressed: () {
-                final blockId = _blockNameToId[_selectedBlock];
-                if (blockId != null) {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => QmsDashboardScreen(blockId: blockId),
+            Row(
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () {
+                    final blockId = _blockNameToId[_selectedBlock];
+                    if (blockId != null) {
+                      _showQmsHistoryDialog(blockId);
+                    }
+                  },
+                  icon: const Icon(Icons.history, size: 18),
+                  label: const Text('History'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF14B8A6),
+                    side: const BorderSide(color: Color(0xFF14B8A6)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                  );
-                }
-              },
-              icon: const Icon(Icons.dashboard, size: 18),
-              label: const Text('View QMS Dashboard'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF14B8A6),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+                  ),
                 ),
-              ),
+                const SizedBox(width: 12),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    final blockId = _blockNameToId[_selectedBlock];
+                    if (blockId != null) {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => QmsDashboardScreen(blockId: blockId),
+                        ),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.dashboard, size: 18),
+                  label: const Text('View QMS Dashboard'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF14B8A6),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -2618,6 +2642,13 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             ),
         ],
       ),
+    );
+  }
+
+  void _showQmsHistoryDialog(int blockId) {
+    showDialog(
+      context: context,
+      builder: (context) => QmsHistoryDialog(blockId: blockId),
     );
   }
 }

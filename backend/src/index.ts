@@ -10,8 +10,12 @@ import authRoutes from './routes/auth.routes';
 import domainRoutes from './routes/domain.routes';
 import zohoRoutes from './routes/zoho.routes';
 import edaFilesRoutes from './routes/edaFiles.routes';
+<<<<<<< HEAD
 import sshRoutes from './routes/ssh.routes';
 import terminalRoutes, { initializeTerminalWebSocket } from './routes/terminal.routes';
+=======
+import qmsRoutes from './routes/qms.routes';
+>>>>>>> 4ec03a836b080c691cad6161b0c3e23a67ca8eb3
 import fileWatcherService from './services/fileWatcher.service';
 import { authenticate } from './middleware/auth.middleware';
 import { createServer } from 'http';
@@ -105,7 +109,7 @@ app.get('/', (req, res) => {
     message: 'ASI Dashboard API',
     version: '1.0.0',
     status: 'running',
-    endpoints: {
+      endpoints: {
       health: '/health',
       auth: '/api/auth',
       zoho: '/api/zoho',
@@ -113,6 +117,7 @@ app.get('/', (req, res) => {
       domains: '/api/domains',
       dashboard: '/api/dashboard',
       edaFiles: '/api/eda-files',
+      qms: '/api/qms',
     },
     documentation: 'See API documentation for details'
   });
@@ -144,8 +149,12 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/domains', domainRoutes);
 app.use('/api/zoho', zohoRoutes);
 app.use('/api/eda-files', edaFilesRoutes);
+<<<<<<< HEAD
 app.use('/api/ssh', sshRoutes);
 app.use('/api/terminal', terminalRoutes);
+=======
+app.use('/api/qms', qmsRoutes);
+>>>>>>> 4ec03a836b080c691cad6161b0c3e23a67ca8eb3
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

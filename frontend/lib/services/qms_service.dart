@@ -452,5 +452,44 @@ class QmsService {
       throw Exception('Error uploading template: $e');
     }
   }
+
+  // Get checklist version history (snapshots)
+  Future<List<dynamic>> getChecklistHistory(int checklistId, {String? token}) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiService.baseUrl}/qms/checklists/$checklistId/history'),
+        headers: _getHeaders(token: token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data is List ? data : [];
+      } else {
+        final error = json.decode(response.body);
+        throw Exception(error['error'] ?? 'Failed to load checklist history');
+      }
+    } catch (e) {
+      throw Exception('Error getting checklist history: $e');
+    }
+  }
+
+  // Get a specific checklist version snapshot
+  Future<Map<String, dynamic>> getChecklistVersion(int versionId, {String? token}) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiService.baseUrl}/qms/versions/$versionId'),
+        headers: _getHeaders(token: token),
+      );
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        final error = json.decode(response.body);
+        throw Exception(error['error'] ?? 'Failed to load checklist version');
+      }
+    } catch (e) {
+      throw Exception('Error getting checklist version: $e');
+    }
+  }
 }
 

@@ -4,9 +4,7 @@ import path from 'path';
 // @ts-ignore - csv-parser doesn't have types
 import csv from 'csv-parser';
 // @ts-ignore - xlsx doesn't have types
-const XLSX = require('xlsx');
-// @ts-ignore - xlsx doesn't have types
-import XLSX from 'xlsx';
+import * as XLSX from 'xlsx';
 
 interface FilterOptions {
   projects: Array<{ id: number; name: string; domains: Array<{ id: number; name: string; code: string }> }>;
@@ -765,15 +763,63 @@ class QmsService {
   /**
    * Execute Fill Action - fetch and parse CSV report
    */
-  async executeFillAction(checkItemId: number, reportPath: string, userId: number): Promise<any> {
+  /**
+   * Execute Fill Action - fetch and parse CSV/JSON report
+   */
+  async executeFillAction(
+    checkItemId: number, 
+    reportPath: string, 
+    userId: number,
+    additionalData?: {
+      signoff_status?: string | null;
+      result_value?: string | null;
+      engineer_comments?: string | null;
+    }
+  ): Promise<any> {
     try {
       // Validate file exists
       if (!fs.existsSync(reportPath)) {
         throw new Error(`Report file not found: ${reportPath}`);
       }
 
-      // Parse CSV file
-      const csvData = await this.parseCSVFile(reportPath);
+      // Parse file based on extension
+      const ext = path.extname(reportPath).toLowerCase();
+      let reportData: any[];
+      
+      if (ext === '.json') {
+        const rawJson = await this.parseJSONFile(reportPath);
+        
+        // If it's an object (hash), extract metadata
+        if (!Array.isArray(rawJson) && typeof rawJson === 'object' && rawJson !== null) {
+          if (!additionalData) additionalData = {};
+          
+          const jsonSignoff = rawJson.signoff || rawJson.signoff_status;
+          const jsonResultValue = rawJson.result || rawJson.result_value;
+          const jsonComments = rawJson.comments || rawJson.engineer_comments;
+          const jsonRepoPath = rawJson.report_path || rawJson.repo_path;
+
+          if (jsonSignoff) additionalData.signoff_status = jsonSignoff;
+          if (jsonResultValue) additionalData.result_value = jsonResultValue;
+          if (jsonComments) additionalData.engineer_comments = jsonComments;
+          if (jsonRepoPath) reportPath = jsonRepoPath;
+
+          // Data rows might be in 'data', 'items', 'rows' or it's the object itself
+          const possibleData = rawJson.data || rawJson.items || rawJson.rows;
+          if (Array.isArray(possibleData)) {
+            reportData = possibleData;
+          } else if (possibleData && typeof possibleData === 'object') {
+            reportData = [possibleData];
+          } else {
+            // If no clear data array/object, use the whole thing as one row if it's not the metadata itself
+            reportData = [rawJson];
+          }
+        } else {
+          reportData = Array.isArray(rawJson) ? rawJson : [rawJson];
+        }
+      } else {
+        // Default to CSV for backward compatibility or explicit .csv
+        reportData = await this.parseCSVFile(reportPath);
+      }
 
       // Update or create report data
       const client = await pool.connect();
@@ -782,7 +828,7 @@ class QmsService {
 
         // Check if report data exists
         const existingResult = await client.query(
-          'SELECT id FROM c_report_data WHERE check_item_id = $1',
+          'SELECT id, status FROM c_report_data WHERE check_item_id = $1',
           [checkItemId]
         );
 
@@ -795,48 +841,109 @@ class QmsService {
                 report_path = $1,
                 csv_data = $2,
                 status = CASE WHEN status = 'pending' THEN 'in_review' ELSE status END,
+                signoff_status = COALESCE($4, signoff_status),
+                result_value = COALESCE($5, result_value),
+                engineer_comments = COALESCE($6, engineer_comments),
                 updated_at = CURRENT_TIMESTAMP
               WHERE check_item_id = $3
             `,
-            [reportPath, JSON.stringify(csvData), checkItemId]
+            [
+              reportPath, 
+              JSON.stringify(reportData), 
+              checkItemId,
+              additionalData?.signoff_status ?? null,
+              additionalData?.result_value ?? null,
+              additionalData?.engineer_comments ?? null
+            ]
           );
         } else {
           // Create new
           await client.query(
             `
               INSERT INTO c_report_data 
-                (check_item_id, report_path, csv_data, status)
-              VALUES ($1, $2, $3, 'in_review')
+                (check_item_id, report_path, csv_data, status, signoff_status, result_value, engineer_comments)
+              VALUES ($1, $2, $3, 'in_review', $4, $5, $6)
             `,
-            [checkItemId, reportPath, JSON.stringify(csvData)]
+            [
+              checkItemId, 
+              reportPath, 
+              JSON.stringify(reportData),
+              additionalData?.signoff_status ?? null,
+              additionalData?.result_value ?? null,
+              additionalData?.engineer_comments ?? null
+            ]
           );
         }
 
-        // Log audit action
+        // Reset check item approval status completely when external update is pushed
+        // This allows the item to be selected again in the next approval cycle
+        // regardless of whether it was previously approved or rejected
+        await client.query(
+          `
+            UPDATE check_item_approvals 
+            SET 
+              status = 'pending',
+              comments = NULL,
+              approved_at = NULL,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE check_item_id = $1
+          `,
+          [checkItemId]
+        );
+
+        // Get checklist and block info
         const checklistResult = await client.query(
           'SELECT checklist_id FROM check_items WHERE id = $1',
           [checkItemId]
         );
         const checklistId = checklistResult.rows[0]?.checklist_id;
         
-        const blockResult = await client.query(
-          'SELECT block_id FROM checklists WHERE id = $1',
-          [checklistId]
-        );
-        const blockId = blockResult.rows[0]?.block_id;
+        if (checklistId) {
+          const checklistInfo = await client.query(
+            'SELECT block_id, status FROM checklists WHERE id = $1',
+            [checklistId]
+          );
+          const blockId = checklistInfo.rows[0]?.block_id;
+          const checklistStatus = checklistInfo.rows[0]?.status;
 
-        await this.logAuditAction(
-          client,
-          checkItemId,
-          checklistId,
-          blockId,
-          userId,
-          'fill_action',
-          { report_path: reportPath, rows_count: csvData.length }
-        );
+          // AUTOMATIC STATUS RECOVERY:
+          // If the checklist was rejected, move it back to draft
+          // Engineer will then resubmit for approval, and lead can select/approve the fixed items
+          if (checklistStatus === 'rejected') {
+            await client.query(
+              'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+              ['draft', checklistId]
+            );
+            
+            await this.logAuditAction(
+              client,
+              null,
+              checklistId,
+              blockId,
+              userId,
+              'checklist_recovered',
+              { reason: 'External report update triggered status reset from rejected to draft' }
+            );
+          }
+
+          // Log audit action for fill_action
+          await this.logAuditAction(
+            client,
+            checkItemId,
+            checklistId,
+            blockId,
+            userId,
+            'fill_action',
+            { 
+              report_path: reportPath, 
+              rows_count: reportData.length,
+              external_update: !!additionalData
+            }
+          );
+        }
 
         await client.query('COMMIT');
-        return csvData;
+        return reportData;
       } catch (error) {
         await client.query('ROLLBACK');
         throw error;
@@ -846,6 +953,19 @@ class QmsService {
     } catch (error: any) {
       console.error('Error executing fill action:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Parse JSON file and return data
+   */
+  private async parseJSONFile(filePath: string): Promise<any> {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      return JSON.parse(content);
+    } catch (error: any) {
+      console.error('Error parsing JSON file:', error);
+      throw new Error(`Failed to parse JSON report: ${error.message}`);
     }
   }
 
@@ -1034,10 +1154,18 @@ class QmsService {
             [checkItemId]
           );
         } else {
+          // Only reset status to 'pending' if the item was previously rejected or already pending
+          // Preserve 'approved' status for items that were already approved
           await client.query(
             `
               UPDATE check_item_approvals 
-              SET status = 'pending', submitted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+              SET 
+                status = CASE 
+                  WHEN status = 'approved' THEN 'approved'
+                  ELSE 'pending'
+                END,
+                submitted_at = CURRENT_TIMESTAMP, 
+                updated_at = CURRENT_TIMESTAMP
               WHERE check_item_id = $1
             `,
             [checkItemId]
@@ -1249,6 +1377,10 @@ class QmsService {
               'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
               ['rejected', checklistId]
             );
+            // Create a snapshot of the checklist state for history
+            if (checklistId) {
+              await this.createChecklistSnapshot(client, checklistId, userId, comments);
+            }
             await this.logAuditAction(
               client,
               null,
@@ -1548,16 +1680,23 @@ class QmsService {
           }
         });
 
-        // Update checklist status if all items are reviewed
+        // Update checklist status if any item is rejected OR all items are approved
         const allReviewed = pendingCount === 0 && (approvedCount + rejectedCount) === totalItems;
 
-        if (allReviewed) {
-          if (rejectedCount > 0) {
-            // Any item rejected - checklist is rejected
+        if (rejectedCount > 0) {
+          // Any item rejected - checklist is rejected
+          // Only update if not already rejected (to avoid redundant snapshots/audit logs if this was ever called twice)
+          const currentChecklistStatus = await client.query('SELECT status FROM checklists WHERE id = $1', [checklistId]);
+          if (currentChecklistStatus.rows[0]?.status === 'submitted_for_approval') {
             await client.query(
               'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
               ['rejected', checklistId]
             );
+            
+            // Create a snapshot of the checklist state for history
+            if (checklistId) {
+              await this.createChecklistSnapshot(client, checklistId, userId, comments || null);
+            }
             await this.logAuditAction(
               client,
               null,
@@ -1567,22 +1706,22 @@ class QmsService {
               'checklist_rejected',
               { reason: 'One or more check items were rejected', item_count: checkItemIds.length }
             );
-          } else if (approvedCount === totalItems) {
-            // All items approved - checklist is approved
-            await client.query(
-              'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-              ['approved', checklistId]
-            );
-            await this.logAuditAction(
-              client,
-              null,
-              checklistId,
-              blockId,
-              userId,
-              'checklist_approved',
-              { reason: 'All check items were approved', item_count: checkItemIds.length }
-            );
           }
+        } else if (allReviewed && approvedCount === totalItems) {
+          // All items approved - checklist is approved
+          await client.query(
+            'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+            ['approved', checklistId]
+          );
+          await this.logAuditAction(
+            client,
+            null,
+            checklistId,
+            blockId,
+            userId,
+            'checklist_approved',
+            { reason: 'All check items were approved', item_count: checkItemIds.length }
+          );
         }
 
         await client.query('COMMIT');
@@ -1876,12 +2015,17 @@ class QmsService {
 
           if (approvalCheck.rows.length > 0) {
             // Update existing approval record
+            // Preserve 'approved' status for items already approved
+            // Only reset rejected/pending items to 'pending'
             await client.query(
               `
                 UPDATE check_item_approvals 
                 SET 
                   default_approver_id = $1,
-                  status = 'pending',
+                  status = CASE 
+                    WHEN status = 'approved' THEN 'approved'
+                    ELSE 'pending'
+                  END,
                   submitted_at = CURRENT_TIMESTAMP,
                   updated_at = CURRENT_TIMESTAMP
                 WHERE check_item_id = $2
@@ -2284,7 +2428,7 @@ class QmsService {
         console.log('========================================');
         console.log('Has merged header:', hasMergedHeader);
         console.log('Total data rows:', data.length);
-        console.log('Excel columns found:', Object.keys(data[0]));
+        console.log('Excel columns found:', Object.keys(data[0] as any));
         console.log('First row sample:', JSON.stringify(data[0], null, 2));
         console.log('First row raw object:', data[0]);
         console.log('========================================');
@@ -2819,23 +2963,187 @@ class QmsService {
       ...(blockId ? { block_id: blockId } : {})
     };
 
+    // Build description text from actionDetails
+    let descriptionText = '';
+    if (actionDetails && typeof actionDetails === 'object') {
+      const detailKeys = Object.keys(actionDetails);
+      if (detailKeys.length > 0) {
+        descriptionText = JSON.stringify(actionDetails);
+      }
+    } else if (actionDetails) {
+      descriptionText = String(actionDetails);
+    }
+
     await client.query(
       `
         INSERT INTO qms_audit_log 
-          (check_item_id, checklist_id, block_id, user_id, action_type, action_details)
-        VALUES ($1, $2, $3, $4, $5, $6)
+          (check_item_id, checklist_id, user_id, action, entity_type, new_value, description)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
       `,
       [
         checkItemId, 
         checklistId, 
-        blockId,
         userId, 
         actionType,
-        JSON.stringify(detailsWithBlock)
+        entityType,
+        JSON.stringify(detailsWithBlock),
+        descriptionText || null
       ]
     );
   }
+  /**
+   * Create a snapshot of a checklist state (usually on rejection)
+   */
+  private async createChecklistSnapshot(
+    client: any,
+    checklistId: number,
+    userId: number,
+    comments: string | null
+  ): Promise<void> {
+    try {
+      // 1. Fetch current checklist data
+      const hasMilestonesTable = await this.milestonesTableExists();
+      const milestoneJoin = hasMilestonesTable 
+        ? 'LEFT JOIN milestones m ON m.id = cl.milestone_id'
+        : '';
+      const milestoneSelect = hasMilestonesTable 
+        ? 'm.name as milestone_name,'
+        : 'NULL as milestone_name,';
+
+      const checklistResult = await client.query(
+        `
+          SELECT 
+            cl.*, 
+            b.block_name,
+            ${milestoneSelect}
+            u_submitted.full_name as submitted_by_name,
+            u_approver.full_name as approver_name,
+            u_approver.role as approver_role
+          FROM checklists cl 
+          LEFT JOIN blocks b ON b.id = cl.block_id 
+          ${milestoneJoin}
+          LEFT JOIN users u_submitted ON u_submitted.id = cl.submitted_by
+          LEFT JOIN users u_approver ON u_approver.id = $2
+          WHERE cl.id = $1
+        `,
+        [checklistId, userId]
+      );
+      
+      if (checklistResult.rows.length === 0) return;
+      const checklist = checklistResult.rows[0];
+      
+      // 2. Fetch all check items with report data and approvals
+      const itemsResult = await client.query(
+        `
+          SELECT 
+            ci.*,
+            crd.report_path, 
+            crd.status as report_status, 
+            crd.description as report_description,
+            crd.fix_details, 
+            crd.engineer_comments, 
+            crd.lead_comments, 
+            crd.result_value,
+            crd.signoff_status, 
+            crd.signoff_by, 
+            crd.signoff_at,
+            us.full_name as signoff_by_name,
+            crd.csv_data,
+            cia.status as approval_status, 
+            cia.comments as approval_comments,
+            cia.submitted_at as approval_submitted_at, 
+            cia.approved_at as approval_approved_at
+          FROM check_items ci
+          LEFT JOIN c_report_data crd ON crd.check_item_id = ci.id
+          LEFT JOIN check_item_approvals cia ON cia.check_item_id = ci.id
+          LEFT JOIN users us ON us.id = crd.signoff_by
+          WHERE ci.checklist_id = $1
+          ORDER BY ci.display_order ASC
+        `,
+        [checklistId]
+      );
+      
+      const snapshot = {
+        ...checklist,
+        check_items: itemsResult.rows
+      };
+      
+      // 3. Get latest version number
+      const versionResult = await client.query(
+        'SELECT COALESCE(MAX(version_number), 0) + 1 as next_version FROM qms_checklist_versions WHERE checklist_id = $1',
+        [checklistId]
+      );
+      const nextVersion = versionResult.rows[0].next_version;
+      
+      // 4. Insert snapshot
+      await client.query(
+        `
+          INSERT INTO qms_checklist_versions 
+          (checklist_id, version_number, checklist_snapshot, rejected_by, rejection_comments)
+          VALUES ($1, $2, $3, $4, $5)
+        `,
+        [checklistId, nextVersion, JSON.stringify(snapshot), userId, comments]
+      );
+      
+      console.log(`Created QMS history snapshot for checklist ${checklistId}, version ${nextVersion}`);
+    } catch (error) {
+      console.error('Error creating checklist snapshot:', error);
+      // In Postgres, a failed query poisons the transaction, so we must rethrow
+      // so the main transaction can be rolled back properly.
+      throw error;
+    }
+  }
+
+  /**
+   * Get checklist version history (snapshots)
+   */
+  async getChecklistHistory(checklistId: number): Promise<any[]> {
+    try {
+      const result = await pool.query(
+        `
+          SELECT 
+            cv.id, 
+            cv.checklist_id, 
+            cv.version_number, 
+            cv.created_at, 
+            cv.rejection_comments,
+            u.full_name as rejected_by_name,
+            u.username as rejected_by_username
+          FROM qms_checklist_versions cv
+          LEFT JOIN users u ON u.id = cv.rejected_by
+          WHERE cv.checklist_id = $1
+          ORDER BY cv.version_number DESC
+        `,
+        [checklistId]
+      );
+      return result.rows;
+    } catch (error) {
+      console.error('Error getting checklist history:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get a specific snapshot version of a checklist
+   */
+  async getChecklistVersion(versionId: number): Promise<any> {
+    try {
+      const result = await pool.query(
+        'SELECT * FROM qms_checklist_versions WHERE id = $1',
+        [versionId]
+      );
+      
+      if (result.rows.length === 0) return null;
+      
+      const version = result.rows[0];
+      // Note: checklist_snapshot is already a JSONB object from Postgres
+      return version;
+    } catch (error) {
+      console.error('Error getting checklist version:', error);
+      throw error;
+    }
+  }
 }
 
-export default new QmsService();
-
+export const qmsService = new QmsService();
+export default qmsService;

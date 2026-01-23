@@ -654,7 +654,7 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                         // Define explicit column widths to ensure perfect alignment
                         const double colSNo = 60;
                         const double colName = 250;
-                        const double colStatus = 200;
+                        const double colStatus = 260;
                         const double colMilestone = 150;
                         const double colCount = 150;
                         const double colApproverName = 180;
