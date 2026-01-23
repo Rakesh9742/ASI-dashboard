@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: root
-      POSTGRES_DB: asi
+      POSTGRES_DB: ASI
     ports:
       - "5432:5432"
     volumes:
@@ -33,7 +33,7 @@ services:
     environment:
       PORT: 3000
       NODE_ENV: production
-      DATABASE_URL: postgresql://postgres:root@postgres:5432/asi
+      DATABASE_URL: postgresql://postgres:root@postgres:5432/ASI
       JWT_SECRET: your-secret-key-change-in-production
       JWT_EXPIRES_IN: 7d
       BACKEND_URL: ${BACKEND_URL:-http://localhost:3000}

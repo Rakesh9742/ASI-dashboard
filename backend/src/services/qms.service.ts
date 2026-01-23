@@ -104,6 +104,24 @@ class QmsService {
   async getFilterOptions(userId?: number, userRole?: string): Promise<FilterOptions> {
     try {
       // Get projects with domains
+      const queryParams: any[] = [];
+      let joinClause = '';
+      let whereClause = '';
+      
+      // Build join and filter based on user role
+      if (userRole === 'customer') {
+        // Customers see projects assigned via user_projects table
+        joinClause = 'INNER JOIN user_projects up ON p.id = up.project_id';
+        whereClause = 'WHERE up.user_id = $1';
+        queryParams.push(userId);
+      } else if (userRole === 'engineer') {
+        // Engineers see projects they created OR projects assigned via user_projects
+        joinClause = 'LEFT JOIN user_projects up ON p.id = up.project_id';
+        whereClause = 'WHERE (p.created_by = $1 AND p.created_by IS NOT NULL) OR up.user_id = $1';
+        queryParams.push(userId);
+      }
+      // Admin, project_manager, and lead see all projects (no filter)
+      
       let projectQuery = `
         SELECT 
           p.id,
@@ -119,19 +137,12 @@ class QmsService {
             '[]'
           ) as domains
         FROM projects p
+        ${joinClause}
         LEFT JOIN project_domains pd ON pd.project_id = p.id
         LEFT JOIN domains d ON d.id = pd.domain_id AND d.is_active = true
+        ${whereClause}
+        GROUP BY p.id ORDER BY p.name
       `;
-
-      const queryParams: any[] = [];
-      
-      // Filter projects based on user role
-      if (userRole === 'engineer' || userRole === 'customer') {
-        projectQuery += ' WHERE p.created_by = $1 AND p.created_by IS NOT NULL';
-        queryParams.push(userId);
-      }
-      
-      projectQuery += ' GROUP BY p.id ORDER BY p.name';
 
       const projectsResult = await pool.query(projectQuery, queryParams);
       const projects = projectsResult.rows.map((row: any) => {
@@ -151,15 +162,28 @@ class QmsService {
       let milestones: any[] = [];
       try {
         // Try to query milestones table - if it doesn't exist, catch the error
-        let milestoneQuery = 'SELECT id, name, project_id FROM milestones';
+      let milestoneQuery = 'SELECT id, name, project_id FROM milestones';
         const milestoneParams: any[] = [];
         
-        if (userRole === 'engineer' || userRole === 'customer') {
-          milestoneQuery += ' WHERE project_id IN (SELECT id FROM projects WHERE created_by = $1)';
+        if (userRole === 'customer') {
+          // Customers see milestones from projects assigned via user_projects
+          milestoneQuery += ` WHERE project_id IN (
+            SELECT project_id FROM user_projects WHERE user_id = $1
+          )`;
           milestoneParams.push(userId);
-        }
-        milestoneQuery += ' ORDER BY name';
+        } else if (userRole === 'engineer') {
+          // Engineers see milestones from projects they created OR projects assigned via user_projects
+          milestoneQuery += ` WHERE project_id IN (
+            SELECT id FROM projects WHERE created_by = $1 AND created_by IS NOT NULL
+            UNION
+            SELECT project_id FROM user_projects WHERE user_id = $1
+          )`;
+          milestoneParams.push(userId);
+      }
+        // Admin, project_manager, and lead see all milestones (no filter)
         
+      milestoneQuery += ' ORDER BY name';
+      
         const milestonesResult = await pool.query(milestoneQuery, milestoneParams);
         milestones = milestonesResult.rows;
       } catch (error: any) {
@@ -173,18 +197,46 @@ class QmsService {
       }
 
       // Get blocks
+      // Important: Check project-specific roles from user_projects table
+      // A user might have global role 'engineer' but be 'lead' in a specific project
       let blockQuery = `
         SELECT DISTINCT b.id, b.block_name, b.project_id
         FROM blocks b
       `;
-      if (userRole === 'engineer' || userRole === 'customer') {
-        blockQuery += ' WHERE b.project_id IN (SELECT id FROM projects WHERE created_by = $1)';
+      
+      const blockQueryParams: any[] = [];
+      
+      if (userRole === 'customer') {
+        // Customers see blocks from projects assigned via user_projects
+        blockQuery += ` WHERE b.project_id IN (
+          SELECT project_id FROM user_projects WHERE user_id = $1
+        )`;
+        blockQueryParams.push(userId);
+      } else if (userRole === 'engineer' || userRole === 'lead' || userRole === 'project_manager' || userRole === 'admin') {
+        // For engineers and elevated roles, check both:
+        // 1. Projects they created
+        // 2. Projects assigned via user_projects (regardless of role in user_projects)
+        // This ensures users with project-specific roles see blocks for those projects
+        blockQuery += ` WHERE b.project_id IN (
+          SELECT id FROM projects WHERE created_by = $1 AND created_by IS NOT NULL
+          UNION
+          SELECT project_id FROM user_projects WHERE user_id = $1
+        )`;
+        blockQueryParams.push(userId);
+        
+        // Additionally, if user has global elevated role (admin, project_manager, lead),
+        // they should see ALL blocks (no filter needed - already handled above)
+        // But if their global role is 'engineer' but they have elevated role in a project,
+        // the UNION above already includes those projects via user_projects
       }
+      // Note: If userRole is admin/project_manager/lead globally, they see all blocks
+      // But we still check user_projects to ensure project-specific access works
+      
       blockQuery += ' ORDER BY b.block_name';
       
       const blocksResult = await pool.query(
         blockQuery,
-        userRole === 'engineer' || userRole === 'customer' ? [userId] : []
+        blockQueryParams.length > 0 ? blockQueryParams : []
       );
       const blocks = blocksResult.rows;
 
@@ -197,8 +249,13 @@ class QmsService {
 
   /**
    * Get all checklists for a block
+   *
+   * Visibility rules:
+   * - Admin / project_manager / lead / engineer: can see all checklists for any block
+   *   they have access to (block access is enforced when loading filters/blocks).
+   * - Customer: can only see checklists for projects explicitly assigned to them.
    */
-  async getChecklistsForBlock(blockId: number): Promise<ChecklistData[]> {
+  async getChecklistsForBlock(blockId: number, userId?: number, userRole?: string): Promise<ChecklistData[]> {
     try {
       const hasMilestonesTable = await this.milestonesTableExists();
       const milestoneJoin = hasMilestonesTable 
@@ -207,6 +264,24 @@ class QmsService {
       const milestoneSelect = hasMilestonesTable 
         ? 'm.name as milestone_name,'
         : 'NULL as milestone_name,';
+      
+      // Base WHERE clause: scoped to a single block
+      let whereClause = 'WHERE cl.block_id = $1';
+      const queryParams: any[] = [blockId];
+
+      // Additional restriction only for customers
+      if (userRole === 'customer' && userId) {
+        // Customers see checklists for projects assigned to them
+        whereClause += ` AND EXISTS (
+          SELECT 1
+          FROM blocks b
+          JOIN user_projects up ON up.project_id = b.project_id
+          WHERE b.id = cl.block_id
+            AND up.user_id = $2
+        )`;
+        queryParams.push(userId);
+      }
+      // Admin, project_manager, and lead see all checklists (no additional filter)
       
       const result = await pool.query(
         `
@@ -230,12 +305,14 @@ class QmsService {
                 cia.approved_at DESC NULLS LAST
               LIMIT 1
             ) as approver_name,
-            -- Current approver role
+            -- Current approver role (use project-specific role if available)
             (
-              SELECT u.role
+              SELECT COALESCE(up.role, u.role::text)
               FROM check_items ci
               JOIN check_item_approvals cia ON cia.check_item_id = ci.id
               JOIN users u ON u.id = COALESCE(cia.assigned_approver_id, cia.default_approver_id)
+              LEFT JOIN blocks b_checklist ON b_checklist.id = cl.block_id
+              LEFT JOIN user_projects up ON up.user_id = u.id AND up.project_id = b_checklist.project_id
               WHERE ci.checklist_id = cl.id
                 AND u.id IS NOT NULL
               ORDER BY 
@@ -276,10 +353,10 @@ class QmsService {
           FROM checklists cl
           ${milestoneJoin}
           LEFT JOIN users u_submitted ON u_submitted.id = cl.submitted_by
-          WHERE cl.block_id = $1
+          ${whereClause}
           ORDER BY cl.created_at ASC
         `,
-        [blockId]
+        queryParams
       );
 
       return result.rows;
@@ -901,8 +978,8 @@ class QmsService {
         if (checklistId) {
           const checklistInfo = await client.query(
             'SELECT block_id, status FROM checklists WHERE id = $1',
-            [checklistId]
-          );
+          [checklistId]
+        );
           const blockId = checklistInfo.rows[0]?.block_id;
           const checklistStatus = checklistInfo.rows[0]?.status;
 
@@ -927,19 +1004,19 @@ class QmsService {
           }
 
           // Log audit action for fill_action
-          await this.logAuditAction(
-            client,
-            checkItemId,
-            checklistId,
-            blockId,
-            userId,
-            'fill_action',
+        await this.logAuditAction(
+          client,
+          checkItemId,
+          checklistId,
+          blockId,
+          userId,
+          'fill_action',
             { 
               report_path: reportPath, 
               rows_count: reportData.length,
               external_update: !!additionalData
             }
-          );
+        );
         }
 
         await client.query('COMMIT');
@@ -1314,16 +1391,16 @@ class QmsService {
           `,
           [checklistId]
         );
-        
+
         // Get total count of ALL check items in the checklist
         const totalItems = allItemsResult.rows.length;
 
-        // Get checklist status
-        const checklistStatusResult = await client.query(
-          'SELECT status FROM checklists WHERE id = $1',
-          [checklistId]
-        );
-        const currentStatus = checklistStatusResult.rows[0]?.status;
+          // Get checklist status
+          const checklistStatusResult = await client.query(
+            'SELECT status FROM checklists WHERE id = $1',
+            [checklistId]
+          );
+          const currentStatus = checklistStatusResult.rows[0]?.status;
 
         // Check if all items are approved (only check when checklist is submitted_for_approval)
         if (currentStatus === 'submitted_for_approval' && totalItems > 0) {
@@ -1362,34 +1439,34 @@ class QmsService {
                 ['approved', checklistId]
               );
             }
-            await this.logAuditAction(
-              client,
-              null,
-              checklistId,
-              blockId,
-              userId,
-              'checklist_approved',
+              await this.logAuditAction(
+                client,
+                null,
+                checklistId,
+                blockId,
+                userId,
+                'checklist_approved',
               { reason: 'All check items approved - checklist auto-approved' }
-            );
+              );
           } else if (rejectedCount > 0) {
             // Any item rejected - checklist is rejected
-            await client.query(
-              'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+              await client.query(
+                'UPDATE checklists SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
               ['rejected', checklistId]
-            );
+              );
             // Create a snapshot of the checklist state for history
             if (checklistId) {
               await this.createChecklistSnapshot(client, checklistId, userId, comments);
             }
-            await this.logAuditAction(
-              client,
-              null,
-              checklistId,
-              blockId,
-              userId,
-              'checklist_rejected',
+              await this.logAuditAction(
+                client,
+                null,
+                checklistId,
+                blockId,
+                userId,
+                'checklist_rejected',
               { reason: 'One or more check items were rejected' }
-            );
+              );
           }
         }
 
@@ -1554,17 +1631,14 @@ class QmsService {
       try {
         await client.query('BEGIN');
 
-        // Check if user is admin, project_manager, or lead
+        // Check user role
         const userCheck = await client.query(
           'SELECT role FROM users WHERE id = $1',
           [userId]
         );
         const userRole = userCheck.rows[0]?.role;
-        const isAdminOrPMOrLead = userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
-
-        if (!isAdminOrPMOrLead) {
-          throw new Error('Only admin, project manager, or lead can approve/reject check items.');
-        }
+        const isAdminOrPMOrLead =
+          userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
 
         const status = approved ? 'approved' : 'not_approved';
         const reportStatus = approved ? 'approved' : 'not_approved';
@@ -1576,7 +1650,11 @@ class QmsService {
           // Get checklist and block info
           const itemResult = await client.query(
             `
-              SELECT ci.checklist_id, cl.block_id, cl.status as checklist_status
+              SELECT 
+                ci.checklist_id, 
+                cl.block_id, 
+                cl.status as checklist_status,
+                cl.submitted_by
               FROM check_items ci
               JOIN checklists cl ON cl.id = ci.checklist_id
               WHERE ci.id = $1
@@ -1601,7 +1679,7 @@ class QmsService {
 
           // Check approval record
           const approvalResult = await client.query(
-            'SELECT id, status FROM check_item_approvals WHERE check_item_id = $1',
+            'SELECT id, status, assigned_approver_id, default_approver_id FROM check_item_approvals WHERE check_item_id = $1',
             [checkItemId]
           );
 
@@ -1614,7 +1692,32 @@ class QmsService {
 
           // Only allow approving/rejecting pending or submitted items
           if (currentStatus !== 'pending' && currentStatus !== 'submitted') {
-            throw new Error(`Check item ${checkItemId} is already ${currentStatus}. Cannot change status.`);
+            throw new Error(
+              `Check item ${checkItemId} is already ${currentStatus}. Cannot change status.`
+            );
+          }
+
+          // Permission checks:
+          // - Admin / PM / Lead can act on any items
+          // - Engineer can only act if they are the assigned/default approver
+          // - Submitting engineer cannot approve their own checklist
+          const approverId =
+            approvalRecord.assigned_approver_id ?? approvalRecord.default_approver_id;
+
+          if (!isAdminOrPMOrLead) {
+            // For engineers: must be the assigned approver
+            if (approverId != null && approverId !== userId) {
+              throw new Error(
+                'You are not the assigned approver for one or more selected check items.'
+              );
+            }
+
+            // Prevent submitting engineer from approving their own checklist
+            if (item.submitted_by && item.submitted_by === userId) {
+              throw new Error(
+                'Submitting engineer cannot approve their own checklist.'
+              );
+            }
           }
 
           // Update approval status
@@ -2139,20 +2242,65 @@ class QmsService {
    */
   async getApproversForChecklist(checklistId: number, excludeUserId?: number): Promise<any[]> {
     try {
+      // First, get the block_id from the checklist
+      const checklistResult = await pool.query(
+        'SELECT block_id FROM checklists WHERE id = $1',
+        [checklistId]
+      );
+
+      if (checklistResult.rows.length === 0) {
+        throw new Error('Checklist not found');
+      }
+
+      const blockId = checklistResult.rows[0].block_id;
+
+      // Get the project_id from the block
+      const blockResult = await pool.query(
+        'SELECT project_id FROM blocks WHERE id = $1',
+        [blockId]
+      );
+
+      if (blockResult.rows.length === 0) {
+        throw new Error('Block not found');
+      }
+
+      const projectId = blockResult.rows[0].project_id;
+
+      // Build query to get users assigned to this project
+      // Include users who:
+      // 1. Are assigned to the project via user_projects table, OR
+      // 2. Created the project (created_by), OR
+      // 3. Are admin (admins can approve any project)
+      // Use project-specific role (up.role) if available, otherwise use global role (u.role)
+      // Cast both to text to handle type mismatch (up.role is VARCHAR, u.role is ENUM)
       let query = `
-        SELECT u.id, u.username, u.full_name, u.role, u.email
+        SELECT DISTINCT 
+          u.id, 
+          u.username, 
+          u.full_name, 
+          COALESCE(up.role, u.role::text) as role,
+          u.email
         FROM users u
-        WHERE u.role IN ('lead', 'engineer', 'admin', 'project_manager')
-          AND u.is_active = true
+        LEFT JOIN user_projects up ON u.id = up.user_id AND up.project_id = $1
+        LEFT JOIN projects p ON p.id = $1 AND p.created_by = u.id
+        WHERE u.is_active = true
+          AND (
+            up.user_id IS NOT NULL
+            OR p.created_by = u.id
+            OR u.role = 'admin'
+          )
+          AND (
+            COALESCE(up.role, u.role::text) IN ('lead', 'engineer', 'admin', 'project_manager')
+          )
       `;
-      const params: any[] = [];
+      const params: any[] = [projectId];
 
       if (excludeUserId) {
-        query += ` AND u.id != $1`;
+        query += ` AND u.id != $2`;
         params.push(excludeUserId);
       }
 
-      query += ` ORDER BY u.role, u.full_name ASC`;
+      query += ` ORDER BY COALESCE(up.role, u.role::text), u.full_name ASC`;
 
       const result = await pool.query(query, params);
       return result.rows;
@@ -2963,31 +3111,19 @@ class QmsService {
       ...(blockId ? { block_id: blockId } : {})
     };
 
-    // Build description text from actionDetails
-    let descriptionText = '';
-    if (actionDetails && typeof actionDetails === 'object') {
-      const detailKeys = Object.keys(actionDetails);
-      if (detailKeys.length > 0) {
-        descriptionText = JSON.stringify(actionDetails);
-      }
-    } else if (actionDetails) {
-      descriptionText = String(actionDetails);
-    }
-
     await client.query(
       `
         INSERT INTO qms_audit_log 
-          (check_item_id, checklist_id, user_id, action, entity_type, new_value, description)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+          (check_item_id, checklist_id, block_id, user_id, action_type, action_details)
+        VALUES ($1, $2, $3, $4, $5, $6)
       `,
       [
         checkItemId, 
         checklistId, 
+        blockId,
         userId, 
         actionType,
-        entityType,
-        JSON.stringify(detailsWithBlock),
-        descriptionText || null
+        JSON.stringify(detailsWithBlock)
       ]
     );
   }
@@ -3018,12 +3154,13 @@ class QmsService {
             ${milestoneSelect}
             u_submitted.full_name as submitted_by_name,
             u_approver.full_name as approver_name,
-            u_approver.role as approver_role
+            COALESCE(up_approver.role, u_approver.role::text) as approver_role
           FROM checklists cl 
           LEFT JOIN blocks b ON b.id = cl.block_id 
           ${milestoneJoin}
           LEFT JOIN users u_submitted ON u_submitted.id = cl.submitted_by
           LEFT JOIN users u_approver ON u_approver.id = $2
+          LEFT JOIN user_projects up_approver ON up_approver.user_id = u_approver.id AND up_approver.project_id = b.project_id
           WHERE cl.id = $1
         `,
         [checklistId, userId]
@@ -3115,7 +3252,7 @@ class QmsService {
           ORDER BY cv.version_number DESC
         `,
         [checklistId]
-      );
+    );
       return result.rows;
     } catch (error) {
       console.error('Error getting checklist history:', error);

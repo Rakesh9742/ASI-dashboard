@@ -28,7 +28,7 @@ router.post('/register', authenticate, async (req, res) => {
     }
 
     // Validate role
-    const validRoles = ['admin', 'project_manager', 'lead', 'engineer', 'customer'];
+    const validRoles = ['admin', 'project_manager', 'lead', 'engineer', 'customer', 'cad_engineer'];
     if (role && !validRoles.includes(role)) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Invalid role' });
@@ -357,19 +357,36 @@ router.get('/users', authenticate, authorize('admin', 'project_manager', 'lead',
     const currentUser = (req as any).user;
     const isAdmin = currentUser?.role === 'admin';
 
-    // Include SSH fields only for admin
-    const query = isAdmin
-      ? `SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.domain_id, 
-                u.created_at, u.last_login, d.name as domain_name, d.code as domain_code,
-                u.ipaddress, u.port, u.ssh_user
-         FROM users u
-         LEFT JOIN domains d ON u.domain_id = d.id
-         ORDER BY u.created_at DESC`
-      : `SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.domain_id, 
-                u.created_at, u.last_login, d.name as domain_name, d.code as domain_code
-         FROM users u
-         LEFT JOIN domains d ON u.domain_id = d.id
-         ORDER BY u.created_at DESC`;
+    // Check if SSH columns exist in the database
+    const columnCheck = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_schema = 'public' 
+        AND table_name = 'users' 
+        AND column_name IN ('ipaddress', 'port', 'ssh_user')
+    `);
+    
+    const existingColumns = columnCheck.rows.map((row: any) => row.column_name);
+    const hasIpaddress = existingColumns.includes('ipaddress');
+    const hasPort = existingColumns.includes('port');
+    const hasSshUser = existingColumns.includes('ssh_user');
+
+    // Build query based on available columns
+    let sshFields = '';
+    if (isAdmin && (hasIpaddress || hasPort || hasSshUser)) {
+      const fields = [];
+      if (hasIpaddress) fields.push('u.ipaddress');
+      if (hasPort) fields.push('u.port');
+      if (hasSshUser) fields.push('u.ssh_user');
+      sshFields = ', ' + fields.join(', ');
+    }
+
+    const query = `SELECT u.id, u.username, u.email, u.full_name, u.role, u.is_active, u.domain_id, 
+                          u.created_at, u.last_login, d.name as domain_name, d.code as domain_code
+                          ${sshFields}
+                   FROM users u
+                   LEFT JOIN domains d ON u.domain_id = d.id
+                   ORDER BY u.created_at DESC`;
 
     const result = await pool.query(query);
 

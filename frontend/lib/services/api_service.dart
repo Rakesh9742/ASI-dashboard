@@ -546,6 +546,53 @@ class ApiService {
     }
   }
 
+  // Get Zoho project members (preview)
+  Future<Map<String, dynamic>> getZohoProjectMembers({
+    required String zohoProjectId,
+    String? portalId,
+    String? token,
+  }) async {
+    final uri = portalId != null
+        ? Uri.parse('$baseUrl/zoho/projects/$zohoProjectId/members?portalId=$portalId')
+        : Uri.parse('$baseUrl/zoho/projects/$zohoProjectId/members');
+    
+    final response = await http.get(
+      uri,
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get Zoho project members');
+    }
+  }
+
+  // Sync Zoho project members to ASI project
+  Future<Map<String, dynamic>> syncZohoProjectMembers({
+    required int asiProjectId,
+    required String zohoProjectId,
+    String? portalId,
+    String? token,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/projects/$asiProjectId/sync-zoho-members'),
+      headers: _getHeaders(token: token),
+      body: json.encode({
+        'zohoProjectId': zohoProjectId,
+        'portalId': portalId,
+      }),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to sync Zoho project members');
+    }
+  }
+
   // Get projects with Zoho integration option
   Future<Map<String, dynamic>> getProjectsWithZoho({String? token, bool includeZoho = false}) async {
     final uri = includeZoho
@@ -695,6 +742,84 @@ class ApiService {
     }
     
     return json.decode(response.body);
+  }
+
+  // Get user's role for a specific project (project-specific or global)
+  Future<Map<String, dynamic>> getUserProjectRole({
+    required String projectIdentifier,
+    String? token,
+  }) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/projects/$projectIdentifier/user-role'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get user project role');
+    }
+  }
+
+  // Get management view status for all projects
+  Future<Map<String, dynamic>> getManagementStatus({String? token}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/projects/management/status'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get management status');
+    }
+  }
+
+  // Get CAD engineer status (tasks and issues) for a single project
+  Future<Map<String, dynamic>> getCadStatus({
+    required String projectIdentifier,
+    String? token,
+  }) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/projects/$projectIdentifier/cad-status'),
+      headers: _getHeaders(token: token),
+    );
+
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get CAD status');
+    }
+  }
+
+  // Map a Zoho project to an ASI project
+  Future<Map<String, dynamic>> mapZohoProject({
+    required String zohoProjectId,
+    required int asiProjectId,
+    String? portalId,
+    String? zohoProjectName,
+    String? token,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/projects/map-zoho-project'),
+      headers: _getHeaders(token: token),
+      body: json.encode({
+        'zohoProjectId': zohoProjectId,
+        'asiProjectId': asiProjectId,
+        'portalId': portalId,
+        'zohoProjectName': zohoProjectName,
+      }),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to map Zoho project');
+    }
   }
 
   // Get run history for a project

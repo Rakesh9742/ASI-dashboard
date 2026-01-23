@@ -218,52 +218,59 @@ router.get('/', authenticate, async (req, res) => {
       )`;
       params.push(userId);
       console.log(`Filtering EDA files for customer - only projects assigned via user_projects: ${userId}`);
-    } else if (userRole === 'engineer') {
-      // Engineers see runs where user_name matches their username
+    } else if (userRole === 'engineer' || userRole === 'lead' || userRole === 'project_manager') {
+      // Engineers, leads, and project managers see:
+      // 1. Runs where user_name matches their username
+      // 2. Projects assigned via user_projects table (regardless of user_name)
+      // This ensures users with project-specific roles see all blocks/files for those projects
+      const conditions: string[] = [];
+      
+      // Condition 1: Direct username match (if username available)
       if (extractedUsername || username) {
-        // Build condition: user_name matches extracted username OR
-        // (project_name matches Zoho project AND user_name matches extracted username)
-        const conditions: string[] = [];
-        
-        // Condition 1: Direct username match
-        if (extractedUsername) {
+        const usernameToMatch = extractedUsername || username;
+        paramCount++;
+        conditions.push(`LOWER(r.user_name) = LOWER($${paramCount})`);
+        params.push(usernameToMatch);
+      }
+      
+      // Condition 2: Projects assigned via user_projects table
+      // This allows users with project-specific roles to see all files/blocks for those projects
+      paramCount++;
+      conditions.push(`EXISTS (
+        SELECT 1 FROM public.user_projects up 
+        WHERE up.user_id = $${paramCount} AND up.project_id = p.id
+      )`);
+      params.push(userId);
+      
+      // Condition 3: Zoho project match (if user has Zoho projects and username)
+      if (zohoProjectNames.length > 0 && extractedUsername) {
+        // Create array of project names for IN clause
+        const projectNamePlaceholders: string[] = [];
+        zohoProjectNames.forEach((projectName) => {
           paramCount++;
-          conditions.push(`LOWER(r.user_name) = LOWER($${paramCount})`);
-          params.push(extractedUsername);
-        } else if (username) {
-          paramCount++;
-          conditions.push(`LOWER(r.user_name) = LOWER($${paramCount})`);
-          params.push(username);
-        }
+          projectNamePlaceholders.push(`LOWER($${paramCount})`);
+          params.push(projectName);
+        });
         
-        // Condition 2: Zoho project match (if user has Zoho projects)
-        if (zohoProjectNames.length > 0 && extractedUsername) {
-          // Create array of project names for IN clause
-          const projectNamePlaceholders: string[] = [];
-          zohoProjectNames.forEach((projectName) => {
-            paramCount++;
-            projectNamePlaceholders.push(`LOWER($${paramCount})`);
-            params.push(projectName);
-          });
-          
-          // Match if project name is in Zoho projects AND user_name matches
-          paramCount++;
-          conditions.push(
-            `(LOWER(p.name) IN (${projectNamePlaceholders.join(', ')}) AND LOWER(r.user_name) = LOWER($${paramCount}))`
-          );
-          params.push(extractedUsername);
-        }
-        
-        if (conditions.length > 0) {
-          query += ` AND (${conditions.join(' OR ')})`;
-          console.log(`Filtering EDA files for engineer:`);
-          console.log(`  - Extracted username: ${extractedUsername}`);
-          console.log(`  - Zoho projects: ${zohoProjectNames.length} projects`);
-          console.log(`  - Conditions: ${conditions.length} condition(s)`);
-        }
+        // Match if project name is in Zoho projects AND user_name matches
+        paramCount++;
+        conditions.push(
+          `(LOWER(p.name) IN (${projectNamePlaceholders.join(', ')}) AND LOWER(r.user_name) = LOWER($${paramCount}))`
+        );
+        params.push(extractedUsername);
+      }
+      
+      if (conditions.length > 0) {
+        query += ` AND (${conditions.join(' OR ')})`;
+        console.log(`Filtering EDA files for ${userRole}:`);
+        console.log(`  - User ID: ${userId}`);
+        console.log(`  - Extracted username: ${extractedUsername}`);
+        console.log(`  - Zoho projects: ${zohoProjectNames.length} projects`);
+        console.log(`  - Conditions: ${conditions.length} condition(s)`);
+        console.log(`  - Including user_projects check for project access`);
       }
     }
-    // Admin, project_manager, and lead see all runs (no filter)
+    // Admin sees all runs (no filter)
 
     if (project_name) {
       paramCount++;

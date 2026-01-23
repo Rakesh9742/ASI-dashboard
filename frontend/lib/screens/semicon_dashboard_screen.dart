@@ -503,41 +503,40 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   
   Future<void> _openQMSInNewWindow() async {
     try {
-      final projectName = widget.project['name'] ?? '';
-      if (projectName.isEmpty) {
+      // Check if a block is selected
+      final blockId = _blockNameToId[_selectedBlock];
+      if (blockId == null || _selectedBlock == null || _selectedBlock == 'Select a block') {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Project name not available'),
-              backgroundColor: Colors.red,
+              content: Text('Please select a block to view QMS dashboard'),
+              backgroundColor: Colors.orange,
             ),
           );
         }
         return;
       }
 
-      // Store project data in localStorage for the new window
-      html.window.localStorage['standalone_project'] = jsonEncode(widget.project);
-      html.window.localStorage['standalone_tab'] = 'QMS';
+      // Store blockId in localStorage for the new window
+      html.window.localStorage['standalone_qms_blockId'] = blockId.toString();
       
       // Get current URL and construct new window URL
       final currentUrl = html.window.location.href;
       final baseUrl = currentUrl.split('?')[0].split('#')[0];
-      final projectNameEncoded = Uri.encodeComponent(projectName);
       
-      // Open new window with project route and QMS tab
-      String newWindowUrl = '$baseUrl#/project?projectName=$projectNameEncoded&tab=QMS';
+      // Open new window with QMS dashboard route
+      String newWindowUrl = '$baseUrl#/qms-dashboard?blockId=$blockId';
       
       html.window.open(
         newWindowUrl,
-        'qms_${projectName.replaceAll(' ', '_')}',
+        'qms_dashboard_$blockId',
         'width=1600,height=1000,scrollbars=yes,resizable=yes',
       );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to open QMS window: $e'),
+            content: Text('Failed to open QMS dashboard: $e'),
             backgroundColor: Colors.red.shade600,
           ),
         );
@@ -1563,7 +1562,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Header with View QMS Dashboard button
+        // Header with QMS Dashboard title
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
@@ -1574,52 +1573,6 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                 fontWeight: FontWeight.bold,
                 color: Theme.of(context).colorScheme.onSurface,
               ),
-            ),
-            Row(
-              children: [
-                OutlinedButton.icon(
-                  onPressed: () {
-                    final blockId = _blockNameToId[_selectedBlock];
-                    if (blockId != null) {
-                      _showQmsHistoryDialog(blockId);
-                    }
-                  },
-                  icon: const Icon(Icons.history, size: 18),
-                  label: const Text('History'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF14B8A6),
-                    side: const BorderSide(color: Color(0xFF14B8A6)),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    final blockId = _blockNameToId[_selectedBlock];
-                    if (blockId != null) {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => QmsDashboardScreen(blockId: blockId),
-                        ),
-                      );
-                    }
-                  },
-                  icon: const Icon(Icons.dashboard, size: 18),
-                  label: const Text('View QMS Dashboard'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF14B8A6),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                ),
-              ],
             ),
           ],
         ),
