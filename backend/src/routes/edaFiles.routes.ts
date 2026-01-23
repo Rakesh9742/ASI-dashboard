@@ -95,6 +95,22 @@ router.get('/', authenticate, async (req, res) => {
     const userId = (req as any).user?.id;
     const userRole = (req as any).user?.role;
     const username = (req as any).user?.username;
+    
+    // Check if user_projects table exists (for graceful degradation)
+    let userProjectsTableExists = false;
+    try {
+      const tableCheck = await pool.query(`
+        SELECT EXISTS (
+          SELECT FROM information_schema.tables 
+          WHERE table_schema = 'public' 
+          AND table_name = 'user_projects'
+        )
+      `);
+      userProjectsTableExists = tableCheck.rows[0]?.exists || false;
+    } catch (checkError: any) {
+      console.warn('Could not check if user_projects table exists:', checkError.message);
+      userProjectsTableExists = false;
+    }
 
     // Get user email to extract username for matching
     let userEmail: string | null = null;
@@ -212,12 +228,27 @@ router.get('/', authenticate, async (req, res) => {
     // OR runs where project name matches their Zoho projects
     if (userRole === 'customer') {
       // For customers, show all EDA files for projects assigned to them via user_projects table
-      query += ` AND EXISTS (
-        SELECT 1 FROM public.user_projects up 
-        WHERE up.user_id = $${++paramCount} AND up.project_id = p.id
-      )`;
-      params.push(userId);
-      console.log(`Filtering EDA files for customer - only projects assigned via user_projects: ${userId}`);
+      if (userProjectsTableExists) {
+        query += ` AND EXISTS (
+          SELECT 1 FROM public.user_projects up 
+          WHERE up.user_id = $${++paramCount} AND up.project_id = p.id
+        )`;
+        params.push(userId);
+        console.log(`Filtering EDA files for customer - only projects assigned via user_projects: ${userId}`);
+      } else {
+        // If user_projects table doesn't exist, fall back to username matching
+        if (extractedUsername || username) {
+          const usernameToMatch = extractedUsername || username;
+          paramCount++;
+          query += ` AND LOWER(r.user_name) = LOWER($${paramCount})`;
+          params.push(usernameToMatch);
+          console.log(`Filtering EDA files for customer - using username match (user_projects table not found): ${usernameToMatch}`);
+        } else {
+          // No username available, return empty result
+          query += ` AND 1=0`; // Always false condition
+          console.log(`Filtering EDA files for customer - no username available and user_projects table not found`);
+        }
+      }
     } else if (userRole === 'engineer' || userRole === 'lead' || userRole === 'project_manager') {
       // Engineers, leads, and project managers see:
       // 1. Runs where user_name matches their username
@@ -233,14 +264,16 @@ router.get('/', authenticate, async (req, res) => {
         params.push(usernameToMatch);
       }
       
-      // Condition 2: Projects assigned via user_projects table
+      // Condition 2: Projects assigned via user_projects table (if table exists)
       // This allows users with project-specific roles to see all files/blocks for those projects
-      paramCount++;
-      conditions.push(`EXISTS (
-        SELECT 1 FROM public.user_projects up 
-        WHERE up.user_id = $${paramCount} AND up.project_id = p.id
-      )`);
-      params.push(userId);
+      if (userProjectsTableExists) {
+        paramCount++;
+        conditions.push(`EXISTS (
+          SELECT 1 FROM public.user_projects up 
+          WHERE up.user_id = $${paramCount} AND up.project_id = p.id
+        )`);
+        params.push(userId);
+      }
       
       // Condition 3: Zoho project match (if user has Zoho projects and username)
       if (zohoProjectNames.length > 0 && extractedUsername) {
@@ -326,43 +359,75 @@ router.get('/', authenticate, async (req, res) => {
     const countParams: any[] = [];
     let countParamCount = 0;
 
-    // Apply same user filtering to count query
-    if (userRole === 'engineer' || userRole === 'customer') {
-      if (extractedUsername || username) {
-        const conditions: string[] = [];
-        
-        // Condition 1: Direct username match
-        if (extractedUsername) {
+    // Apply same user filtering to count query (must match main query logic)
+    if (userRole === 'customer') {
+      // For customers, show all EDA files for projects assigned to them via user_projects table
+      if (userProjectsTableExists) {
+        countParamCount++;
+        countQuery += ` AND EXISTS (
+          SELECT 1 FROM public.user_projects up 
+          WHERE up.user_id = $${countParamCount} AND up.project_id = p.id
+        )`;
+        countParams.push(userId);
+      } else {
+        // If user_projects table doesn't exist, fall back to username matching
+        if (extractedUsername || username) {
+          const usernameToMatch = extractedUsername || username;
           countParamCount++;
-          conditions.push(`LOWER(r.user_name) = LOWER($${countParamCount})`);
-          countParams.push(extractedUsername);
-        } else if (username) {
-          countParamCount++;
-          conditions.push(`LOWER(r.user_name) = LOWER($${countParamCount})`);
-          countParams.push(username);
-        }
-        
-        // Condition 2: Zoho project match (if user has Zoho projects)
-        if (zohoProjectNames.length > 0 && extractedUsername) {
-          const projectNamePlaceholders: string[] = [];
-          zohoProjectNames.forEach((projectName) => {
-            countParamCount++;
-            projectNamePlaceholders.push(`LOWER($${countParamCount})`);
-            countParams.push(projectName);
-          });
-          
-          countParamCount++;
-          conditions.push(
-            `(LOWER(p.name) IN (${projectNamePlaceholders.join(', ')}) AND LOWER(r.user_name) = LOWER($${countParamCount}))`
-          );
-          countParams.push(extractedUsername);
-        }
-        
-        if (conditions.length > 0) {
-          countQuery += ` AND (${conditions.join(' OR ')})`;
+          countQuery += ` AND LOWER(r.user_name) = LOWER($${countParamCount})`;
+          countParams.push(usernameToMatch);
+        } else {
+          countQuery += ` AND 1=0`; // Always false condition
         }
       }
+    } else if (userRole === 'engineer' || userRole === 'lead' || userRole === 'project_manager') {
+      // Engineers, leads, and project managers see:
+      // 1. Runs where user_name matches their username
+      // 2. Projects assigned via user_projects table (regardless of user_name)
+      // This ensures users with project-specific roles see all blocks/files for those projects
+      const conditions: string[] = [];
+      
+      // Condition 1: Direct username match (if username available)
+      if (extractedUsername || username) {
+        const usernameToMatch = extractedUsername || username;
+        countParamCount++;
+        conditions.push(`LOWER(r.user_name) = LOWER($${countParamCount})`);
+        countParams.push(usernameToMatch);
+      }
+      
+      // Condition 2: Projects assigned via user_projects table (if table exists)
+      // This allows users with project-specific roles to see all files/blocks for those projects
+      if (userProjectsTableExists) {
+        countParamCount++;
+        conditions.push(`EXISTS (
+          SELECT 1 FROM public.user_projects up 
+          WHERE up.user_id = $${countParamCount} AND up.project_id = p.id
+        )`);
+        countParams.push(userId);
+      }
+      
+      // Condition 3: Zoho project match (if user has Zoho projects and username)
+      if (zohoProjectNames.length > 0 && extractedUsername) {
+        const projectNamePlaceholders: string[] = [];
+        zohoProjectNames.forEach((projectName) => {
+          countParamCount++;
+          projectNamePlaceholders.push(`LOWER($${countParamCount})`);
+          countParams.push(projectName);
+        });
+        
+        // Match if project name is in Zoho projects AND user_name matches
+        countParamCount++;
+        conditions.push(
+          `(LOWER(p.name) IN (${projectNamePlaceholders.join(', ')}) AND LOWER(r.user_name) = LOWER($${countParamCount}))`
+        );
+        countParams.push(extractedUsername);
+      }
+      
+      if (conditions.length > 0) {
+        countQuery += ` AND (${conditions.join(' OR ')})`;
+      }
     }
+    // Admin sees all runs (no filter)
 
     if (project_name) {
       countParamCount++;
@@ -474,7 +539,36 @@ router.get('/', authenticate, async (req, res) => {
     });
   } catch (error: any) {
     console.error('Error fetching EDA files:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error stack:', error.stack);
+    
+    // Check if it's a missing table error
+    if (error.code === '42P01') {
+      // Table does not exist
+      const missingTable = error.message.match(/relation "([^"]+)" does not exist/);
+      if (missingTable) {
+        console.error(`Missing table: ${missingTable[1]}`);
+        return res.status(500).json({ 
+          error: 'Database schema error',
+          message: `Required table "${missingTable[1]}" does not exist. Please run database migrations.`,
+          code: 'MISSING_TABLE'
+        });
+      }
+    }
+    
+    // Check if it's a syntax error
+    if (error.code === '42601' || error.code === '42883') {
+      console.error('SQL syntax error:', error.message);
+      return res.status(500).json({ 
+        error: 'Database query error',
+        message: 'There was a problem executing the database query. Please check server logs.',
+        code: 'QUERY_ERROR'
+      });
+    }
+    
+    res.status(500).json({ 
+      error: error.message || 'Internal server error',
+      code: error.code || 'UNKNOWN_ERROR'
+    });
   }
 });
 
@@ -1274,10 +1368,38 @@ router.get('/watcher/status', authenticate, async (req, res) => {
  */
 router.post('/process/:filename', authenticate, async (req, res) => {
   try {
-    // TODO: Update to use new Physical Design schema
-    return res.status(503).json({
-      error: 'Endpoint temporarily unavailable - new schema migration in progress',
-      message: 'File processing is disabled until the new Physical Design schema is implemented.'
+    const filename = decodeURIComponent(req.params.filename);
+    const outputFolder = fileProcessorService.getOutputFolder();
+    const filePath = path.join(outputFolder, filename);
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        error: 'File not found',
+        message: `File "${filename}" not found in output folder`,
+        path: filePath
+      });
+    }
+    
+    console.log(`📄 [PROCESS ENDPOINT] Processing file: ${filename}`);
+    
+    // Get user ID from authentication
+    const userId = (req as any).user?.id;
+    
+    // Process the file
+    const fileId = await fileProcessorService.processFile(filePath, userId);
+    
+    console.log(`✅ [PROCESS ENDPOINT] Successfully processed file: ${filename} (Stage ID: ${fileId})`);
+    
+    res.json({
+      success: true,
+      message: 'File processed successfully',
+      data: {
+        filename,
+        filePath,
+        stageId: fileId,
+        processedAt: new Date().toISOString()
+      }
     });
   } catch (error: any) {
     console.error('Error processing file:', error);
@@ -1287,7 +1409,10 @@ router.post('/process/:filename', authenticate, async (req, res) => {
         message: 'The eda_output_files table has been replaced. Please update the API to use the new Physical Design schema.'
       });
     }
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: error.message || 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
