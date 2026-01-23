@@ -95,10 +95,23 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   Future<void> logout() async {
+    // Close SSH connection before logging out
+    try {
+      final token = state.token;
+      if (token != null) {
+        await _apiService.disconnectSSH(token: token);
+      }
+    } catch (e) {
+      // Log error but don't prevent logout
+      print('Error disconnecting SSH during logout: $e');
+    }
+
+    // Clear local storage
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
     await prefs.remove(_userKey);
 
+    // Clear auth state
     state = AuthState(isAuthenticated: false);
   }
 

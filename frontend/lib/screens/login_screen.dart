@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:html' as html;
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
-import 'projects_screen.dart';
+import 'main_navigation_screen.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -138,8 +138,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
           );
 
       if (result && mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const ProjectsScreen()),
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const MainNavigationScreen()),
+          (route) => false,
         );
       }
     } catch (e) {
@@ -279,10 +280,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
             ),
           );
 
-          // Navigate to Projects screen after Zoho login
-          print('Navigating to ProjectsScreen...');
+          // Navigate to main dashboard after Zoho login
+          print('Navigating to MainNavigationScreen...');
           Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (_) => const ProjectsScreen()),
+            MaterialPageRoute(builder: (_) => const MainNavigationScreen()),
             (route) => false, // Remove all previous routes
           );
           print('Navigation completed');

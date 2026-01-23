@@ -22,15 +22,15 @@ class FileWatcherService {
    */
   async startWatching(): Promise<void> {
     if (this.isWatching) {
-      console.log('📁 File watcher is already running');
+      // console.log('📁 File watcher is already running');
       return;
     }
 
     const chokidar = await this.getChokidar();
     const outputFolder = fileProcessorService.getOutputFolder();
     
-    console.log(`📁 Starting file watcher for folder: ${outputFolder}`);
-    console.log(`📁 Watching for CSV and JSON files...`);
+    // console.log(`📁 Starting file watcher for folder: ${outputFolder}`);
+    // console.log(`📁 Watching for CSV and JSON files...`);
 
     this.watcher = chokidar.watch(outputFolder, {
       ignored: /(^|[\/\\])\../, // Ignore dotfiles
@@ -53,10 +53,10 @@ class FileWatcherService {
         }
       })
       .on('error', (error: Error) => {
-        console.error('File watcher error:', error);
+        // console.error('File watcher error:', error);
       })
       .on('ready', () => {
-        console.log(`✅ File watcher is ready and monitoring: ${outputFolder}`);
+        // console.log(`✅ File watcher is ready and monitoring: ${outputFolder}`);
         this.isWatching = true;
       });
 
@@ -72,7 +72,7 @@ class FileWatcherService {
       this.watcher.close();
       this.watcher = null;
       this.isWatching = false;
-      console.log('File watcher stopped');
+      // console.log('File watcher stopped');
     }
   }
 
@@ -90,11 +90,11 @@ class FileWatcherService {
 
     // Only process CSV and JSON files
     if (fileExt !== 'csv' && fileExt !== 'json') {
-      console.log(`⏭️  [FILE WATCHER] Skipping file ${fileName} - unsupported type: ${fileExt}`);
+      // console.log(`⏭️  [FILE WATCHER] Skipping file ${fileName} - unsupported type: ${fileExt}`);
       return;
     }
     
-    console.log(`🔍 [FILE WATCHER] Detected new file: ${fileName} (${fileExt.toUpperCase()})`);
+    // console.log(`🔍 [FILE WATCHER] Detected new file: ${fileName} (${fileExt.toUpperCase()})`);
 
     // Check if file already processed by checking runs table
     // We can check by run_directory or by processing the file and checking for existing run
@@ -104,14 +104,14 @@ class FileWatcherService {
     this.processingFiles.add(filePath);
 
     try {
-      console.log(`\n📄 [FILE WATCHER] Processing new file: ${fileName}`);
-      console.log(`📄 [FILE WATCHER] File path: ${filePath}`);
+      // console.log(`\n📄 [FILE WATCHER] Processing new file: ${fileName}`);
+      // console.log(`📄 [FILE WATCHER] File path: ${filePath}`);
       const fileId = await fileProcessorService.processFile(filePath);
-      console.log(`✅ [FILE WATCHER] Successfully processed file: ${fileName} (ID: ${fileId})`);
-      console.log(`✅ [FILE WATCHER] File data saved to new Physical Design schema\n`);
+      // console.log(`✅ [FILE WATCHER] Successfully processed file: ${fileName} (ID: ${fileId})`);
+      // console.log(`✅ [FILE WATCHER] File data saved to new Physical Design schema\n`);
     } catch (error: any) {
-      console.error(`❌ [FILE WATCHER] Error processing file ${fileName}:`, error.message);
-      console.error(`❌ [FILE WATCHER] Error details:`, error);
+      // console.error(`❌ [FILE WATCHER] Error processing file ${fileName}:`, error.message);
+      // console.error(`❌ [FILE WATCHER] Error details:`, error);
     } finally {
       // Remove from processing set after a delay to prevent immediate re-processing
       setTimeout(() => {
@@ -148,17 +148,17 @@ class FileWatcherService {
               );
 
               if (result.rows.length === 0) {
-                console.log(`📄 [FILE WATCHER] Found unprocessed file: ${file}`);
+                // console.log(`📄 [FILE WATCHER] Found unprocessed file: ${file}`);
                 // Process after a short delay to avoid race conditions
                 setTimeout(() => {
                   this.handleNewFile(filePath);
                 }, 1000);
               } else {
-                console.log(`⏭️  [FILE WATCHER] File ${file} already processed (ID: ${result.rows[0].id})`);
+                // console.log(`⏭️  [FILE WATCHER] File ${file} already processed (ID: ${result.rows[0].id})`);
               }
             } catch (error: any) {
               // Error checking - just process the file anyway
-              console.log(`⚠️  [FILE WATCHER] Error checking file ${file}, will process anyway: ${error.message}`);
+              // console.log(`⚠️  [FILE WATCHER] Error checking file ${file}, will process anyway: ${error.message}`);
               // Process the file
               setTimeout(() => {
                 this.handleNewFile(filePath);
@@ -168,7 +168,7 @@ class FileWatcherService {
         }
       }
     } catch (error: any) {
-      console.error('Error processing existing files:', error.message);
+      // console.error('Error processing existing files:', error.message);
     }
   }
 

@@ -336,6 +336,16 @@ router.get('/callback', async (req, res) => {
           { expiresIn: jwtExpiresIn } as SignOptions
         );
 
+        // Establish SSH connection at login time (only once per login)
+        try {
+          const { getSSHConnection } = await import('../services/ssh.service');
+          await getSSHConnection(user.id);
+          console.log(`SSH connection established for user ${user.id} during Zoho login`);
+        } catch (err: any) {
+          console.error(`Failed to establish SSH connection for user ${user.id} during Zoho login:`, err);
+          // Don't fail login if SSH connection fails
+        }
+
         // Return success page with token (for frontend to capture)
         return res.send(`
           <html>
@@ -752,6 +762,46 @@ router.get('/projects/:projectId/tasks', authenticate, async (req, res) => {
     });
   } catch (error: any) {
     console.error('Error fetching Zoho tasks:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+/**
+ * GET /api/zoho/projects/:projectId/milestones
+ * Get all milestones for a Zoho project
+ */
+router.get('/projects/:projectId/milestones', authenticate, async (req, res) => {
+  try {
+    const userId = (req as any).user?.id;
+    const { projectId } = req.params;
+    const { portalId } = req.query;
+    
+    // Extract actual project ID if it's prefixed with "zoho_"
+    const actualProjectId = projectId.startsWith('zoho_') 
+      ? projectId.replace('zoho_', '') 
+      : projectId;
+    
+    const milestones = await zohoService.getMilestones(
+      userId,
+      actualProjectId,
+      portalId as string | undefined
+    );
+    
+    console.log(`📤 Route: Returning ${milestones.length} milestones to frontend`);
+    if (milestones.length > 0) {
+      console.log(`📋 Route: Sample milestone keys:`, Object.keys(milestones[0]));
+    }
+    
+    res.json({
+      success: true,
+      count: milestones.length,
+      milestones: milestones
+    });
+  } catch (error: any) {
+    console.error('Error fetching Zoho milestones:', error);
     res.status(500).json({ 
       success: false,
       error: error.message 

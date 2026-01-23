@@ -10,13 +10,19 @@ import authRoutes from './routes/auth.routes';
 import domainRoutes from './routes/domain.routes';
 import zohoRoutes from './routes/zoho.routes';
 import edaFilesRoutes from './routes/edaFiles.routes';
+import sshRoutes from './routes/ssh.routes';
+import terminalRoutes, { initializeTerminalWebSocket } from './routes/terminal.routes';
 import fileWatcherService from './services/fileWatcher.service';
 import { authenticate } from './middleware/auth.middleware';
+import { createServer } from 'http';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Create HTTP server for WebSocket support
+const server = createServer(app);
 
 // Middleware
 // Configure CORS to allow frontend URL from environment
@@ -138,6 +144,8 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/domains', domainRoutes);
 app.use('/api/zoho', zohoRoutes);
 app.use('/api/eda-files', edaFilesRoutes);
+app.use('/api/ssh', sshRoutes);
+app.use('/api/terminal', terminalRoutes);
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -148,8 +156,11 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   });
 });
 
+// Initialize WebSocket server for terminal
+initializeTerminalWebSocket(server);
+
 // Start server
-app.listen(PORT, async () => {
+server.listen(PORT, async () => {
   console.log(`🚀 ASI Dashboard API server running on port ${PORT}`);
   
   // Start file watcher for EDA output files

@@ -92,6 +92,7 @@ class ZohoService {
       'ZohoProjects.portals.READ',
       'ZohoProjects.tasks.READ',  // Required for reading tasks and subtasks
       'ZohoProjects.tasklists.READ',  // Required for reading tasklists
+      'ZohoProjects.milestones.READ',  // Required for reading milestones
       'ZOHOPEOPLE.forms.ALL',  // Required for accessing employee forms/records
       'ZOHOPEOPLE.employee.ALL',  // Also include employee scope
     ].join(' ');
@@ -664,11 +665,157 @@ class ZohoService {
   }
 
   /**
+   * Get milestones for a project
+   */
+  async getMilestones(userId: number, projectId: string, portalId?: string): Promise<any[]> {
+    try {
+      const client = await this.getAuthenticatedClient(userId);
+      
+      let portal = portalId;
+      let portalName: string | undefined;
+      if (!portal) {
+        const portals = await this.getPortals(userId);
+        if (portals.length === 0) {
+          throw new Error('No portals found.');
+        }
+        portal = portals[0].id;
+        portalName = portals[0].name || portals[0].portal_name || portals[0].id_string;
+      } else {
+        try {
+          const portals = await this.getPortals(userId);
+          const matchingPortal = portals.find(p => p.id === portal || p.id_string === portal);
+          if (matchingPortal) {
+            portalName = matchingPortal.name || matchingPortal.portal_name || matchingPortal.id_string;
+          }
+        } catch (e) {
+          // Ignore if we can't get portal name
+        }
+      }
+
+      // Get project to get correct project ID (id_string)
+      let correctProjectId = projectId;
+      try {
+        const project = await this.getProject(userId, projectId, portal);
+        correctProjectId = project.id_string || projectId;
+      } catch (e) {
+        console.warn('Could not fetch project to get id_string, using provided projectId');
+      }
+
+      // Try different endpoint variations for milestones
+      const endpointVariations = [];
+      
+      if (portalName) {
+        endpointVariations.push({
+          name: 'portal name',
+          url: `/restapi/portal/${portalName}/projects/${correctProjectId}/milestones/`
+        });
+      }
+      
+      endpointVariations.push({
+        name: 'portal ID',
+        url: `/restapi/portal/${portal}/projects/${correctProjectId}/milestones/`
+      });
+
+      let milestones: any[] = [];
+      
+      for (const variation of endpointVariations) {
+        try {
+          console.log(`Trying milestones endpoint: ${variation.name} - ${variation.url}`);
+          const response = await client.get(variation.url);
+          
+          // Debug: Log response structure
+          console.log(`📦 Milestones response keys:`, Object.keys(response.data || {}));
+          if (response.data?.response) {
+            console.log(`📦 response.response keys:`, Object.keys(response.data.response));
+            if (response.data.response.result) {
+              console.log(`📦 response.response.result type:`, Array.isArray(response.data.response.result) ? 'Array' : typeof response.data.response.result);
+              if (response.data.response.result.milestones) {
+                console.log(`📦 Found milestones in response.response.result.milestones:`, response.data.response.result.milestones.length);
+              }
+            }
+          }
+          
+          // Try multiple response structures
+          if (response.data?.response?.result?.milestones) {
+            milestones = Array.isArray(response.data.response.result.milestones) 
+              ? response.data.response.result.milestones 
+              : [];
+            console.log(`✅ Extracted ${milestones.length} milestones from response.response.result.milestones`);
+          } else if (response.data?.milestones) {
+            milestones = Array.isArray(response.data.milestones) 
+              ? response.data.milestones 
+              : [];
+            console.log(`✅ Extracted ${milestones.length} milestones from response.milestones`);
+          } else if (Array.isArray(response.data)) {
+            milestones = response.data;
+            console.log(`✅ Extracted ${milestones.length} milestones from response.data (array)`);
+          } else if (response.data?.response?.result && Array.isArray(response.data.response.result)) {
+            milestones = response.data.response.result;
+            console.log(`✅ Extracted ${milestones.length} milestones from response.response.result (array)`);
+          } else if (response.data?.response?.result && typeof response.data.response.result === 'object') {
+            // Sometimes result might be an object with milestones property
+            const result = response.data.response.result;
+            if (result.milestones && Array.isArray(result.milestones)) {
+              milestones = result.milestones;
+              console.log(`✅ Extracted ${milestones.length} milestones from response.response.result.milestones (nested)`);
+            } else if (Array.isArray(result)) {
+              milestones = result;
+              console.log(`✅ Extracted ${milestones.length} milestones from response.response.result (direct array)`);
+            }
+          }
+          
+          if (milestones.length > 0) {
+            console.log(`✅ Found ${milestones.length} milestones via ${variation.name}`);
+            console.log(`📋 Sample milestone:`, JSON.stringify(milestones[0], null, 2).substring(0, 500));
+            break;
+          } else {
+            console.log(`⚠️ No milestones extracted from ${variation.name}, response structure:`, JSON.stringify(response.data).substring(0, 500));
+            // Last resort: try to find any array in the response
+            const findArrayInObject = (obj: any, depth = 0): any[] | null => {
+              if (depth > 3) return null; // Prevent infinite recursion
+              if (Array.isArray(obj) && obj.length > 0) {
+                // Check if it looks like milestones (has name or milestone_name)
+                const firstItem = obj[0];
+                if (firstItem && (firstItem.name || firstItem.milestone_name || firstItem.id || firstItem.id_string)) {
+                  return obj;
+                }
+              }
+              if (typeof obj === 'object' && obj !== null) {
+                for (const key in obj) {
+                  const result = findArrayInObject(obj[key], depth + 1);
+                  if (result) return result;
+                }
+              }
+              return null;
+            };
+            const foundArray = findArrayInObject(response.data);
+            if (foundArray) {
+              milestones = foundArray;
+              console.log(`✅ Found ${milestones.length} milestones using deep search`);
+              break;
+            }
+          }
+        } catch (error: any) {
+          console.log(`❌ ${variation.name} failed:`, error.response?.data?.error?.message || error.message);
+          // Continue to next variation
+        }
+      }
+      
+      console.log(`📤 Returning ${milestones.length} milestones from getMilestones`);
+      return milestones;
+    } catch (error: any) {
+      console.error('Error fetching milestones:', error.response?.data || error.message);
+      throw new Error(`Failed to fetch milestones: ${error.response?.data?.error?.message || error.message}`);
+    }
+  }
+
+  /**
    * Get tasks for a project
    * Zoho Projects organizes tasks under tasklists, so we need to:
    * 1. Get all tasklists for the project
    * 2. Get tasks from each tasklist
    * 3. Get subtasks for each task
+   * 4. Include milestone information for tasklists
    */
   async getTasks(userId: number, projectId: string, portalId?: string): Promise<any[]> {
     try {
@@ -1006,6 +1153,30 @@ class ZohoService {
         
         console.log(`Found ${tasklists.length} tasklists for project ${projectId}`);
         
+        // Fetch milestones to get milestone information for tasklists
+        let milestones: any[] = [];
+        const milestoneMap: Map<string, any> = new Map();
+        try {
+          milestones = await this.getMilestones(userId, correctProjectId, portal);
+          console.log(`Found ${milestones.length} milestones for project ${projectId}`);
+          
+          // Create a map of milestone_id to milestone data for quick lookup
+          for (const milestone of milestones) {
+            const milestoneId = milestone.id_string || milestone.id;
+            if (milestoneId) {
+              milestoneMap.set(milestoneId.toString(), {
+                id: milestoneId,
+                name: milestone.name || milestone.milestone_name || 'Unnamed Milestone',
+                start_date: milestone.start_date || milestone.start_date_format,
+                end_date: milestone.end_date || milestone.end_date_format,
+                status: milestone.status
+              });
+            }
+          }
+        } catch (milestoneError: any) {
+          console.warn('Could not fetch milestones, continuing without milestone info:', milestoneError.message);
+        }
+        
         // Get tasks from each tasklist
         for (const tasklist of tasklists) {
           const tasklistId = tasklist.id_string || tasklist.id;
@@ -1014,6 +1185,27 @@ class ZohoService {
           if (!tasklistId) {
             console.warn('Tasklist missing ID, skipping:', tasklist);
             continue;
+          }
+          
+          // Get milestone info for this tasklist
+          // Try multiple sources: tasklist.milestone object, tasklist.milestone_id, or from milestoneMap
+          const tasklistMilestoneId = tasklist.milestone_id || tasklist.milestone?.id_string || tasklist.milestone?.id;
+          let milestoneInfo = tasklistMilestoneId ? milestoneMap.get(tasklistMilestoneId.toString()) : null;
+          
+          // If milestone info not in map, try to get from tasklist.milestone object directly
+          if (!milestoneInfo && tasklist.milestone) {
+            const tasklistMilestone = tasklist.milestone;
+            milestoneInfo = {
+              id: tasklistMilestone.id_string || tasklistMilestone.id || tasklistMilestoneId,
+              name: tasklistMilestone.name || tasklistMilestone.milestone_name || 'Unnamed Milestone',
+              start_date: tasklistMilestone.start_date || tasklistMilestone.start_date_format,
+              end_date: tasklistMilestone.end_date || tasklistMilestone.end_date_format,
+              status: tasklistMilestone.status
+            };
+            // Also add to map for future use
+            if (tasklistMilestoneId) {
+              milestoneMap.set(tasklistMilestoneId.toString(), milestoneInfo);
+            }
           }
           
           try {
@@ -1133,12 +1325,46 @@ class ZohoService {
               console.log(`📋 Task names in "${tasklistName}": ${taskNames}`);
             }
             
-            // Add tasklist info to each task
-            tasks = tasks.map(task => ({
-              ...task,
-              tasklist_id: tasklistId,
-              tasklist_name: tasklistName
-            }));
+            // Add tasklist info and milestone info to each task
+            // Try to get milestone info from task itself if milestone API failed
+            tasks = tasks.map(task => {
+              // Get milestone ID from task if tasklist doesn't have it
+              const taskMilestoneId = task.milestone_id || tasklistMilestoneId;
+              let finalMilestoneInfo = milestoneInfo;
+              
+              // If we don't have milestone info from API but task has milestone_id, try to get from map
+              if (!finalMilestoneInfo && taskMilestoneId) {
+                finalMilestoneInfo = milestoneMap.get(taskMilestoneId.toString());
+              }
+              
+              // If still no milestone info, check if task has milestone data embedded
+              if (!finalMilestoneInfo && task.milestone) {
+                const taskMilestone = task.milestone;
+                finalMilestoneInfo = {
+                  id: taskMilestone.id_string || taskMilestone.id || taskMilestoneId,
+                  name: taskMilestone.name || taskMilestone.milestone_name || 'Unnamed Milestone',
+                  start_date: taskMilestone.start_date || taskMilestone.start_date_format,
+                  end_date: taskMilestone.end_date || taskMilestone.end_date_format
+                };
+              }
+              
+              return {
+                ...task,
+                tasklist_id: tasklistId,
+                tasklist_name: tasklistName,
+                milestone_id: taskMilestoneId || null,
+                milestone_name: finalMilestoneInfo?.name || null,
+                milestone_start_date: finalMilestoneInfo?.start_date || null,
+                milestone_end_date: finalMilestoneInfo?.end_date || null,
+                // Also add milestone info at tasklist level for easier grouping
+                tasklist_milestone: finalMilestoneInfo ? {
+                  id: finalMilestoneInfo.id,
+                  name: finalMilestoneInfo.name,
+                  start_date: finalMilestoneInfo.start_date,
+                  end_date: finalMilestoneInfo.end_date
+                } : null
+              };
+            });
             
             allTasks = allTasks.concat(tasks);
           } catch (tasklistError: any) {

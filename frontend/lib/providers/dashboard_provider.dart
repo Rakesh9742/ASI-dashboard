@@ -8,7 +8,10 @@ final dashboardProvider = StateNotifierProvider<DashboardNotifier, AsyncValue<Ma
   (ref) {
     final apiService = ref.read(apiServiceProvider);
     final authState = ref.watch(authProvider);
-    return DashboardNotifier(apiService, token: authState.token);
+    final notifier = DashboardNotifier(apiService, token: authState.token);
+    // Keep the provider alive to cache data
+    ref.keepAlive();
+    return notifier;
   },
 );
 
@@ -170,29 +173,65 @@ final dashboardChartDataProvider = FutureProvider<Map<String, dynamic>>((ref) as
   }
   
   try {
-    final projects = await apiService.getProjects(token: token);
-    final domains = await apiService.getDomains(token: token);
+    // Fetch projects and domains in parallel
+    final results = await Future.wait([
+      apiService.getProjects(token: token),
+      apiService.getDomains(token: token),
+    ]);
     
-    // Also fetch EDA files to get domain distribution from actual file data
+    final projects = results[0] as List<dynamic>;
+    final domains = results[1] as List<dynamic>;
+    
+    // Only fetch EDA files if domain distribution from projects is empty
+    // This significantly reduces load time by avoiding unnecessary large fetches
     Map<String, int> edaDomainCounts = <String, int>{};
-    try {
-      final edaFilesResponse = await apiService.getEdaFiles(token: token, limit: 1000);
-      final edaFiles = edaFilesResponse['files'] ?? [];
-      
-      // Count domains from EDA files (will be normalized in _calculateChartData)
-      for (var file in edaFiles) {
-        final domainName = file['domain_name'] as String?;
-        if (domainName != null && domainName.isNotEmpty) {
-          // Store original name, normalization will happen in _calculateChartData
-          edaDomainCounts[domainName] = (edaDomainCounts[domainName] ?? 0) + 1;
+    
+    // First, try to calculate domain distribution from projects
+    final domainCountsFromProjects = <String, int>{};
+    final domainNames = {for (var d in domains) d['id']: d['name']};
+    
+    for (var p in projects) {
+      final pDomains = p['domain_ids'];
+      if (pDomains is List && pDomains.isNotEmpty) {
+        for (var id in pDomains) {
+          final name = domainNames[id] ?? '';
+          if (name.isNotEmpty) {
+            domainCountsFromProjects[name] = (domainCountsFromProjects[name] ?? 0) + 1;
+          }
+        }
+      } else if (p['domains'] is List && (p['domains'] as List).isNotEmpty) {
+        for (var d in p['domains']) {
+          final name = d['name']?.toString() ?? '';
+          if (name.isNotEmpty) {
+            domainCountsFromProjects[name] = (domainCountsFromProjects[name] ?? 0) + 1;
+          }
         }
       }
-      
-      if (edaDomainCounts.isNotEmpty) {
-        print('✅ [DOMAIN CHART] Found ${edaDomainCounts.length} domains from EDA files: $edaDomainCounts');
+    }
+    
+    // Only fetch EDA files if we don't have enough domain data from projects
+    // Use a much smaller limit (100 instead of 1000) for faster loading
+    if (domainCountsFromProjects.isEmpty) {
+      try {
+        final edaFilesResponse = await apiService.getEdaFiles(token: token, limit: 100);
+        final edaFiles = edaFilesResponse['files'] ?? [];
+        
+        // Count domains from EDA files (will be normalized in _calculateChartData)
+        for (var file in edaFiles) {
+          final domainName = file['domain_name'] as String?;
+          if (domainName != null && domainName.isNotEmpty) {
+            edaDomainCounts[domainName] = (edaDomainCounts[domainName] ?? 0) + 1;
+          }
+        }
+        
+        if (edaDomainCounts.isNotEmpty) {
+          print('✅ [DOMAIN CHART] Found ${edaDomainCounts.length} domains from EDA files: $edaDomainCounts');
+        }
+      } catch (e) {
+        print('⚠️ [DOMAIN CHART] Could not fetch EDA files for domain distribution: $e');
       }
-    } catch (e) {
-      print('⚠️ [DOMAIN CHART] Could not fetch EDA files for domain distribution: $e');
+    } else {
+      print('✅ [DOMAIN CHART] Using domain data from projects (${domainCountsFromProjects.length} domains)');
     }
     
     return _calculateChartData(projects, domains, edaDomainCounts);
@@ -204,7 +243,7 @@ final dashboardChartDataProvider = FutureProvider<Map<String, dynamic>>((ref) as
       'projectTrend': <Map<String, dynamic>>[],
     };
   }
-});
+}, dependencies: [authProvider]); // Cache automatically by Riverpod, only refetch when auth changes
 
 // Map normalized domain names to standard domain names
 String _mapToStandardDomain(String normalized) {

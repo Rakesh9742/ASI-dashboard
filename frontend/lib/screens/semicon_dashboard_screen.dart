@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:html' as html;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
@@ -29,6 +30,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   final _apiService = ApiService();
   String _selectedBlock = 'Select a block';
   String _selectedExperiment = 'Select an experiment';
+  String? _currentRunDirectory;
   final TextEditingController _commandController = TextEditingController();
   final List<Map<String, dynamic>> _activityLog = [];
   late String _selectedTab;
@@ -39,6 +41,12 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   
   // Store block data with IDs for QMS navigation
   Map<String, int> _blockNameToId = {};
+  
+  // Command output storage
+  String? _lastCommandOutput;
+  String? _lastCommandError;
+  String? _lastCommand;
+  bool _isExecutingCommand = false;
   
   // Metrics data
   Map<String, dynamic>? _metricsData;
@@ -90,11 +98,12 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         return;
       }
 
-      // Load EDA files for this project
+      // Load EDA files for this project - use smaller limit for faster loading
+      // We only need unique block and experiment names, not all file data
       final filesResponse = await _apiService.getEdaFiles(
         token: token,
         projectName: projectName,
-        limit: 1000,
+        limit: 200, // Reduced from 1000 to 200 for faster loading
       );
 
       final files = filesResponse['files'] ?? [];
@@ -272,6 +281,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       _selectedBlock = value ?? 'Select a block';
       _selectedExperiment = 'Select an experiment'; // Reset experiment when block changes
       _metricsData = null; // Reset metrics when block changes
+      _currentRunDirectory = null; // Reset run directory when block changes
       _qmsChecklists = [];
       _qmsBlockStatus = null;
     });
@@ -297,15 +307,64 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   void _onExperimentChanged(String? value) {
     setState(() {
       _selectedExperiment = value ?? 'Select an experiment';
+      _currentRunDirectory = null; // Reset run directory when experiment changes
     });
     
-    // Load metrics when experiment is selected
+    // Load metrics and run directory when experiment is selected
     if (_selectedBlock != 'Select a block' && _selectedExperiment != 'Select an experiment') {
-      _loadMetricsData();
+      _loadMetricsData(); // This will also load the run directory
+      _loadRunDirectory(); // Also try to load it directly
     }
     
     // Reload run history with new experiment filter
     _loadRunHistory();
+  }
+
+  Future<void> _loadRunDirectory() async {
+    if (_selectedBlock == 'Select a block' || _selectedExperiment == 'Select an experiment') {
+      return;
+    }
+
+    try {
+      final token = ref.read(authProvider).token;
+      if (token == null) {
+        return;
+      }
+
+      final projectName = widget.project['name'] ?? '';
+      if (projectName.isEmpty) {
+        return;
+      }
+
+      // Load EDA files to get run directory
+      final filesResponse = await _apiService.getEdaFiles(
+        token: token,
+        projectName: projectName,
+        limit: 100,
+      );
+
+      final files = filesResponse['files'] ?? [];
+      
+      // Find first matching file for this block and experiment
+      final matchingFile = files.firstWhere(
+        (file) {
+          final fileBlock = file['block_name']?.toString();
+          final fileExperiment = file['experiment']?.toString();
+          return fileBlock == _selectedBlock && fileExperiment == _selectedExperiment;
+        },
+        orElse: () => null,
+      );
+
+      if (matchingFile != null && mounted) {
+        final runDirectory = matchingFile['run_directory']?.toString();
+        setState(() {
+          _currentRunDirectory = runDirectory;
+        });
+      }
+    } catch (e) {
+      // Silently fail - run directory will remain null
+      print('Error loading run directory: $e');
+    }
   }
   
   Future<void> _loadMetricsData() async {
@@ -332,10 +391,11 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       }
 
       // Load EDA files for this project, block, and experiment
+      // Use smaller limit since we're filtering by block and experiment anyway
       final filesResponse = await _apiService.getEdaFiles(
         token: token,
         projectName: projectName,
-        limit: 1000,
+        limit: 200, // Reduced from 1000 to 200 for faster loading
       );
 
       final files = filesResponse['files'] ?? [];
@@ -350,10 +410,17 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       if (matchingFiles.isEmpty) {
         setState(() {
           _metricsData = null;
+          _currentRunDirectory = null;
           _isLoadingMetrics = false;
         });
         return;
       }
+
+      // Extract run directory from the first matching file
+      final runDirectory = matchingFiles.first['run_directory']?.toString();
+      setState(() {
+        _currentRunDirectory = runDirectory;
+      });
 
       // Get the latest stage (by timestamp or stage order)
       final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
@@ -544,6 +611,53 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     }
   }
 
+  Future<void> _openTerminalInNewWindow() async {
+    try {
+      final token = ref.read(authProvider).token;
+      final user = ref.read(authProvider).user;
+      
+      if (token == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Not authenticated. Please login again.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      // Store auth data in localStorage for the new window
+      html.window.localStorage['terminal_auth_token'] = token;
+      if (user != null) {
+        html.window.localStorage['terminal_auth_user'] = jsonEncode(user);
+      }
+      
+      // Get current URL and construct new window URL
+      final currentUrl = html.window.location.href;
+      final baseUrl = currentUrl.split('?')[0].split('#')[0];
+      
+      // Open new window with terminal route
+      String newWindowUrl = '$baseUrl#/terminal';
+      
+      html.window.open(
+        newWindowUrl,
+        'terminal',
+        'width=1200,height=800,scrollbars=no,resizable=yes',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to open terminal: $e'),
+            backgroundColor: Colors.red.shade600,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _openViewScreenInNewWindow() async {
     try {
       final projectName = widget.project['name'] ?? '';
@@ -560,6 +674,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       }
 
       // Get first domain for the project (if available)
+      // Use minimal limit since we only need one file to get domain name
       String? domainName;
       try {
         final token = ref.read(authProvider).token;
@@ -567,7 +682,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
           final filesResponse = await _apiService.getEdaFiles(
             token: token,
             projectName: projectName,
-            limit: 100,
+            limit: 10, // Reduced from 100 to 10 - we only need first file for domain name
           );
           final files = filesResponse['files'] ?? [];
           if (files.isNotEmpty) {
@@ -576,7 +691,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
           }
         }
       } catch (e) {
-        // Ignore domain loading errors
+        // Ignore domain loading errors - domain is optional
       }
 
       // Determine view type based on user role
@@ -645,10 +760,16 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                     children: [
                       // Block and Experiment Selectors
                       _buildSelectionSection(),
+                      _buildRunDirectoryInfo(),
                       const SizedBox(height: 24),
                       // Command Console
                       _buildCommandConsole(),
                       const SizedBox(height: 24),
+                      // Command Output (if available)
+                      if (_lastCommand != null || _isExecutingCommand)
+                        _buildCommandOutput(),
+                      if (_lastCommand != null || _isExecutingCommand)
+                        const SizedBox(height: 24),
                       // Activity Log
                       _buildActivityLog(),
                     ],
@@ -804,6 +925,73 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     );
   }
 
+  Widget _buildRunDirectoryInfo() {
+    if (_selectedBlock == 'Select a block' || _selectedExperiment == 'Select an experiment') {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Theme.of(context).dividerColor),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.folder_open,
+            size: 18,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Run Directory',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                SelectableText(
+                  _currentRunDirectory ?? 'Loading...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurface,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_currentRunDirectory != null)
+            IconButton(
+              icon: const Icon(Icons.copy, size: 18),
+              onPressed: () {
+                // Copy to clipboard
+                Clipboard.setData(ClipboardData(text: _currentRunDirectory!));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Run directory copied to clipboard'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              },
+              tooltip: 'Copy path',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildCommandConsole() {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -853,15 +1041,21 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                 style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4)),
               ),
               ElevatedButton.icon(
-                onPressed: () {
+                onPressed: _isExecutingCommand ? null : () {
                   if (_commandController.text.isNotEmpty) {
                     _executeCommand(_commandController.text);
                     _commandController.clear();
                     setState(() {}); // Update counter
                   }
                 },
-                icon: const Icon(Icons.play_arrow, size: 16),
-                label: const Text('Execute'),
+                icon: _isExecutingCommand 
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.play_arrow, size: 16),
+                label: Text(_isExecutingCommand ? 'Executing...' : 'Execute'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF5CCBDB), // Light cyan from image
                   foregroundColor: Colors.white,
@@ -879,9 +1073,9 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     );
   }
 
-  Widget _buildActivityLog() {
+  Widget _buildCommandOutput() {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(12),
@@ -893,42 +1087,255 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'Activity Log',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: Theme.of(context).colorScheme.onSurface,
+              Row(
+                children: [
+                  Icon(
+                    Icons.terminal,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Command Output',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                ],
+              ),
+              if (_lastCommand != null)
+                TextButton.icon(
+                  icon: const Icon(Icons.close, size: 16),
+                  label: const Text('Clear'),
+                  onPressed: () {
+                    setState(() {
+                      _lastCommand = null;
+                      _lastCommandOutput = null;
+                      _lastCommandError = null;
+                    });
+                  },
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+            ],
+          ),
+          if (_lastCommand != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.5),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: Theme.of(context).dividerColor.withOpacity(0.5),
                 ),
               ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '\$ ',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.primary,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                  Expanded(
+                    child: SelectableText(
+                      _lastCommand!,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(context).colorScheme.onSurface,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (_isExecutingCommand) ...[
+            const SizedBox(height: 16),
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16.0),
+                child: CircularProgressIndicator(),
+              ),
+            ),
+          ] else if (_lastCommandOutput != null && _lastCommandOutput!.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Container(
+              constraints: const BoxConstraints(maxHeight: 300),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.black87,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade700),
+              ),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  _lastCommandOutput!,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Colors.white,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ),
+            ),
+          ],
+          if (_lastCommandError != null && _lastCommandError!.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Container(
+              constraints: const BoxConstraints(maxHeight: 200),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.shade900.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.red.shade700),
+              ),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  _lastCommandError!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.red.shade200,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ),
+            ),
+          ],
+          if (!_isExecutingCommand && 
+              (_lastCommandOutput == null || _lastCommandOutput!.isEmpty) &&
+              (_lastCommandError == null || _lastCommandError!.isEmpty) &&
+              _lastCommand != null) ...[
+            const SizedBox(height: 16),
+            Center(
+              child: Text(
+                'Command executed successfully (no output)',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActivityLog() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: Theme.of(context).dividerColor.withOpacity(0.5),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.history,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Command History',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurface,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ],
+              ),
               TextButton.icon(
-                icon: Icon(Icons.delete_outline, size: 16, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)),
-                label: Text('Clear Log', style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6))),
+                icon: Icon(
+                  Icons.delete_outline,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                ),
+                label: Text(
+                  'Clear',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                  ),
+                ),
                 onPressed: () {
                   setState(() {
                     _activityLog.clear();
                   });
                 },
-                style: TextButton.styleFrom(padding: EdgeInsets.zero),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          // Log List Container
-          SizedBox(
-            height: 300, // Fixed height for log content
+          const SizedBox(height: 12),
+          // Log List Container with better styling
+          Container(
+            height: 300,
+            decoration: BoxDecoration(
+              color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.5),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: Theme.of(context).dividerColor.withOpacity(0.3),
+              ),
+            ),
             child: _activityLog.isEmpty
                 ? Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
+                        Icon(
+                          Icons.terminal_outlined,
+                          size: 48,
+                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3),
+                        ),
+                        const SizedBox(height: 12),
                         Text(
-                          'No logs yet',
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6)),
+                          'No commands executed',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                          ),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'Execute a command to see activity here',
+                          'Command output will appear in the terminal',
                           style: TextStyle(
                             fontSize: 12,
                             color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
@@ -938,35 +1345,86 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                     ),
                   )
                 : ListView.builder(
-                    padding: EdgeInsets.zero,
+                    padding: const EdgeInsets.all(12),
                     itemCount: _activityLog.length,
                     itemBuilder: (context, index) {
                       final log = _activityLog[index];
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
+                      final isSuccess = log['status'] == 'success';
+                      final isError = log['status'] == 'error';
+                      
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: isSuccess
+                              ? Colors.green.withOpacity(0.1)
+                              : isError
+                                  ? Colors.red.withOpacity(0.1)
+                                  : Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: isSuccess
+                                ? Colors.green.withOpacity(0.3)
+                                : isError
+                                    ? Colors.red.withOpacity(0.3)
+                                    : Theme.of(context).colorScheme.primary.withOpacity(0.3),
+                            width: 1,
+                          ),
+                        ),
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Padding(
-                              padding: const EdgeInsets.only(top: 2),
+                            Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                color: isSuccess
+                                    ? Colors.green.withOpacity(0.2)
+                                    : isError
+                                        ? Colors.red.withOpacity(0.2)
+                                        : Theme.of(context).colorScheme.primary.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
                               child: Icon(
-                                log['status'] == 'success'
+                                isSuccess
                                     ? Icons.check_circle
-                                    : Icons.error,
-                                size: 14,
-                                color: log['status'] == 'success'
-                                    ? Colors.green
-                                    : Colors.red,
+                                    : isError
+                                        ? Icons.error
+                                        : Icons.play_arrow,
+                                size: 16,
+                                color: isSuccess
+                                    ? Colors.green.shade700
+                                    : isError
+                                        ? Colors.red.shade700
+                                        : Theme.of(context).colorScheme.primary,
                               ),
                             ),
-                            const SizedBox(width: 8),
+                            const SizedBox(width: 12),
                             Expanded(
-                              child: Text(
-                                log['message'],
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.8),
-                                ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    log['message'].toString(),
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w500,
+                                      color: isSuccess
+                                          ? Colors.green.shade700
+                                          : isError
+                                              ? Colors.red.shade700
+                                              : Theme.of(context).colorScheme.onSurface.withOpacity(0.9),
+                                      fontFamily: 'monospace',
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _formatTimestamp(log['timestamp'] as DateTime),
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
@@ -978,6 +1436,21 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         ],
       ),
     );
+  }
+
+  String _formatTimestamp(DateTime timestamp) {
+    final now = DateTime.now();
+    final difference = now.difference(timestamp);
+    
+    if (difference.inSeconds < 60) {
+      return '${difference.inSeconds}s ago';
+    } else if (difference.inMinutes < 60) {
+      return '${difference.inMinutes}m ago';
+    } else if (difference.inHours < 24) {
+      return '${difference.inHours}h ago';
+    } else {
+      return '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    }
   }
 
   Widget _buildMainHeader() {
@@ -1511,27 +1984,123 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     );
   }
 
-  void _executeCommand(String command) {
+  Future<void> _executeCommand(String command) async {
+    // Store the command and clear previous output
     setState(() {
+      _lastCommand = command;
+      _lastCommandOutput = null;
+      _lastCommandError = null;
+      _isExecutingCommand = true;
+      
+      // Show command with directory info if available
+      String logMessage = '→ $command';
+      if (_currentRunDirectory != null && _currentRunDirectory!.isNotEmpty) {
+        logMessage += ' (in: $_currentRunDirectory)';
+      }
       _activityLog.add({
         'timestamp': DateTime.now(),
-        'message': 'Executing: $command',
-        'status': 'success',
+        'message': logMessage,
+        'status': 'info',
       });
     });
 
-    // Simulate command execution
-    Future.delayed(const Duration(seconds: 1), () {
+    try {
+      final token = ref.read(authProvider).token;
+      if (token == null) {
+        throw Exception('Not authenticated');
+      }
+
+      // Check if we have a run directory and block/experiment selected
+      String? workingDirectory;
+      if (_currentRunDirectory != null && 
+          _currentRunDirectory!.isNotEmpty &&
+          _selectedBlock != 'Select a block' &&
+          _selectedExperiment != 'Select an experiment') {
+        workingDirectory = _currentRunDirectory;
+      }
+
+      final result = await _apiService.executeSSHCommand(
+        command: command,
+        token: token,
+        workingDirectory: workingDirectory,
+      );
+
       if (mounted) {
         setState(() {
-          _activityLog.add({
-            'timestamp': DateTime.now(),
-            'message': 'Command completed successfully',
-            'status': 'success',
-          });
+          _isExecutingCommand = false;
+          
+          // Store output for display
+          _lastCommandOutput = result['stdout']?.toString();
+          _lastCommandError = result['stderr']?.toString();
+          
+          // Check if error is about directory not existing
+          final errorText = _lastCommandError?.toLowerCase() ?? '';
+          if (errorText.contains('directory') && errorText.contains('does not exist')) {
+            // Show specific error for missing directory
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Error: Run directory not found on server: $_currentRunDirectory'),
+                backgroundColor: Colors.red.shade600,
+                duration: const Duration(seconds: 5),
+              ),
+            );
+          }
+          
+          // Only log command completion status in activity log
+          final exitCode = result['exitCode'];
+          if (exitCode != null && exitCode != 0) {
+            String errorMsg = '✗ Command failed (exit code: $exitCode)';
+            if (errorText.contains('directory') && errorText.contains('does not exist')) {
+              errorMsg = '✗ Directory not found';
+            }
+            _activityLog.add({
+              'timestamp': DateTime.now(),
+              'message': errorMsg,
+              'status': 'error',
+            });
+          } else {
+            // Update the last log entry to show success
+            if (_activityLog.isNotEmpty) {
+              final lastIndex = _activityLog.length - 1;
+              _activityLog[lastIndex] = {
+                'timestamp': _activityLog[lastIndex]['timestamp'],
+                'message': '✓ ${_activityLog[lastIndex]['message'].toString().replaceFirst('→ ', '')}',
+                'status': 'success',
+              };
+            }
+          }
         });
       }
-    });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isExecutingCommand = false;
+          _lastCommandError = e.toString();
+          
+          // Check if error mentions directory
+          final errorText = e.toString().toLowerCase();
+          if (errorText.contains('directory') || errorText.contains('not found')) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Error: ${e.toString()}'),
+                backgroundColor: Colors.red.shade600,
+                duration: const Duration(seconds: 5),
+              ),
+            );
+          }
+          
+          // Update the last log entry to show error
+          if (_activityLog.isNotEmpty) {
+            final lastIndex = _activityLog.length - 1;
+            _activityLog[lastIndex] = {
+              'timestamp': _activityLog[lastIndex]['timestamp'],
+              'message': '✗ ${_activityLog[lastIndex]['message'].toString().replaceFirst('→ ', '')}',
+              'status': 'error',
+            };
+          }
+        });
+      }
+    }
   }
 
   Widget _buildQmsContent() {
@@ -1886,13 +2455,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                 iconColor: const Color(0xFF14B8A6),
                 buttonText: 'Click to open',
                 onPressed: () {
-                  // TODO: Open terminal
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Opening terminal...'),
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
+                  _openTerminalInNewWindow();
                 },
               ),
             ),
@@ -2058,4 +2621,5 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     );
   }
 }
+
 

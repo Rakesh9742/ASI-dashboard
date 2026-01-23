@@ -3,6 +3,8 @@ import bcrypt from 'bcryptjs';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { pool } from '../config/database';
 import { authenticate, authorize } from '../middleware/auth.middleware';
+import { decryptNumber, encrypt } from '../utils/encryption';
+import { getSSHConnection } from '../services/ssh.service';
 
 const router = express.Router();
 
@@ -12,7 +14,7 @@ router.post('/register', authenticate, async (req, res) => {
   try {
     await client.query('BEGIN');
     
-    const { username, email, password, full_name, role, domain_id, ipaddress, port, ssh_user, sshpassword, project_ids } = req.body;
+    const { username, email, password, full_name, role, domain_id, ssh_user, sshpassword, project_ids } = req.body;
     const currentUser = (req as any).user;
 
     // Only admins can create users
@@ -25,6 +27,18 @@ router.post('/register', authenticate, async (req, res) => {
     if (!username || !email || !password) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Username, email, and password are required' });
+    }
+
+    // Get IP and port from environment variables (hardcoded)
+    const ipaddress = process.env.SSH_IP || null;
+    let port = null;
+    if (process.env.SSH_PORT) {
+      try {
+        port = decryptNumber(process.env.SSH_PORT);
+      } catch (error) {
+        console.error('Error decrypting SSH_PORT:', error);
+        port = null;
+      }
     }
 
     // Validate role
@@ -68,13 +82,10 @@ router.post('/register', authenticate, async (req, res) => {
       }
     }
 
-    // Validate port if provided
-    if (port !== undefined && port !== null) {
-      const portNum = parseInt(port);
-      if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+    // Validate port from environment
+    if (port !== null && (port < 1 || port > 65535)) {
         await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Port must be a number between 1 and 65535' });
-      }
+      return res.status(500).json({ error: 'Invalid SSH port configuration' });
     }
 
     // Check if user already exists
@@ -91,10 +102,11 @@ router.post('/register', authenticate, async (req, res) => {
     // Hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // Hash SSH password if provided
+    // Encrypt SSH password if provided
     let sshpasswordHash = null;
     if (sshpassword) {
-      sshpasswordHash = await bcrypt.hash(sshpassword, 10);
+      // Encrypt the SSH password instead of hashing (so it can be decrypted when needed)
+      sshpasswordHash = encrypt(sshpassword);
     }
 
     // Insert user
@@ -110,7 +122,7 @@ router.post('/register', authenticate, async (req, res) => {
         role || 'engineer', 
         domain_id || null,
         ipaddress || null,
-        port ? parseInt(port) : null,
+        port,
         ssh_user || null,
         sshpasswordHash
       ]
@@ -205,6 +217,17 @@ router.post('/login', async (req, res) => {
       jwtSecret,
       { expiresIn: jwtExpiresIn } as SignOptions
     );
+
+    // Establish SSH connection at login time (only once per login)
+    // Check if connection already exists, if not create it
+    try {
+      await getSSHConnection(user.id);
+      console.log(`SSH connection established for user ${user.id} during login`);
+    } catch (err: any) {
+      console.error(`Failed to establish SSH connection for user ${user.id} during login:`, err);
+      // Don't fail login if SSH connection fails, but log the error
+      // User can still use the app, but SSH commands won't work until connection is established
+    }
 
     res.json({
       message: 'Login successful',
@@ -391,13 +414,17 @@ router.put('/users/:id', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'Only admins can update users' });
     }
 
-    const { ipaddress, port, ssh_user, sshpassword, full_name, role, domain_id, is_active } = req.body;
+    const { ssh_user, sshpassword, full_name, role, domain_id, is_active } = req.body;
 
-    // Validate port if provided
-    if (port !== undefined && port !== null) {
-      const portNum = parseInt(port);
-      if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
-        return res.status(400).json({ error: 'Port must be a number between 1 and 65535' });
+    // Get IP and port from environment variables (hardcoded)
+    const ipaddress = process.env.SSH_IP || null;
+    let port = null;
+    if (process.env.SSH_PORT) {
+      try {
+        port = decryptNumber(process.env.SSH_PORT);
+      } catch (error) {
+        console.error('Error decrypting SSH_PORT:', error);
+        port = null;
       }
     }
 
@@ -444,22 +471,20 @@ router.put('/users/:id', authenticate, async (req, res) => {
       updates.push(`is_active = $${paramCount++}`);
       values.push(is_active);
     }
-    if (ipaddress !== undefined) {
+    // Always update IP and port from environment (hardcoded)
       updates.push(`ipaddress = $${paramCount++}`);
       values.push(ipaddress || null);
-    }
-    if (port !== undefined) {
       updates.push(`port = $${paramCount++}`);
-      values.push(port ? parseInt(port) : null);
-    }
+    values.push(port || null);
+    
     if (ssh_user !== undefined) {
       updates.push(`ssh_user = $${paramCount++}`);
       values.push(ssh_user || null);
     }
     if (sshpassword !== undefined) {
-      // Hash SSH password if provided
+      // Encrypt SSH password if provided
       if (sshpassword) {
-        const sshpasswordHash = await bcrypt.hash(sshpassword, 10);
+        const sshpasswordHash = encrypt(sshpassword);
         updates.push(`sshpassword_hash = $${paramCount++}`);
         values.push(sshpasswordHash);
       } else {
@@ -479,9 +504,23 @@ router.put('/users/:id', authenticate, async (req, res) => {
 
     const result = await pool.query(query, values);
 
+    // If SSH password was updated, close any existing SSH connections for this user
+    // so they will be re-established with the new password on next login
+    if (sshpassword !== undefined) {
+      try {
+        const { closeSSHConnection } = await import('../services/ssh.service');
+        closeSSHConnection(userId);
+        console.log(`Closed existing SSH connection for user ${userId} after password update`);
+      } catch (err) {
+        console.error(`Error closing SSH connection for user ${userId}:`, err);
+        // Don't fail the update if closing connection fails
+      }
+    }
+
     res.json({
       message: 'User updated successfully',
-      user: result.rows[0]
+      user: result.rows[0],
+      sshConnectionClosed: sshpassword !== undefined // Indicate if SSH connection was closed
     });
   } catch (error: any) {
     console.error('Error updating user:', error);

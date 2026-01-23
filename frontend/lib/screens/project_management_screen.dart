@@ -1665,31 +1665,92 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
       final portalId = zohoData?['portal_id']?.toString() ?? 
                       zohoData?['portal']?.toString();
       
-      final response = await _apiService.getZohoTasks(
+      // Load both tasks and milestones in parallel
+      final tasksFuture = _apiService.getZohoTasks(
         projectId: actualProjectId,
         token: token,
         portalId: portalId,
       );
       
-      final tasks = response['tasks'] ?? [];
+      // Load milestones with error handling - don't fail if milestones fail
+      List<dynamic> milestones = [];
+      try {
+        final milestonesResponse = await _apiService.getZohoMilestones(
+          projectId: actualProjectId,
+          token: token,
+          portalId: portalId,
+        );
+        milestones = milestonesResponse['milestones'] ?? [];
+        print('🎯 Loaded ${milestones.length} milestones for Project Plan');
+        print('🎯 Milestones response structure: ${milestonesResponse.keys.toList()}');
+        if (milestones.isEmpty) {
+          print('⚠️ Milestones array is empty - project may not have milestones in Zoho');
+          print('⚠️ Full response: $milestonesResponse');
+        } else {
+          print('✅ First milestone sample: ${milestones[0]}');
+        }
+      } catch (milestoneError) {
+        print('⚠️ Failed to load milestones (non-critical): $milestoneError');
+        print('⚠️ Error details: ${milestoneError.toString()}');
+        // Continue without milestones - don't block the UI
+      }
+      
+      // Wait for tasks
+      final tasksResponse = await tasksFuture;
+      final tasks = tasksResponse['tasks'] ?? [];
+      
+      // If milestones API returned empty, try to extract milestones from tasks
+      if (milestones.isEmpty && tasks.isNotEmpty) {
+        print('🔄 Extracting milestones from tasks...');
+        milestones = _extractMilestonesFromTasks(tasks);
+        print('✅ Extracted ${milestones.length} unique milestones from tasks');
+      }
 
       if (mounted) {
         Navigator.of(context).pop(); // Close loading dialog
         
-        // Show tasks and subtasks dialog
-        _showTasksDialog(project, tasks);
+        // Show tasks and milestones dialog
+        _showTasksDialog(project, tasks, milestones: milestones);
       }
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop(); // Close loading dialog
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error loading tasks: $e'),
+            content: Text('Error loading project plan: $e'),
             backgroundColor: Colors.red,
           ),
         );
       }
     }
+  }
+
+  // Extract unique milestones from tasks
+  List<dynamic> _extractMilestonesFromTasks(List<dynamic> tasks) {
+    final milestoneMap = <String, Map<String, dynamic>>{};
+    
+    for (final task in tasks) {
+      final milestoneId = task['milestone_id']?.toString();
+      final milestoneName = task['milestone_name']?.toString();
+      
+      // Only process if we have both ID and name
+      if (milestoneId != null && milestoneName != null && milestoneId.isNotEmpty) {
+        // Use milestone_id as key to avoid duplicates
+        if (!milestoneMap.containsKey(milestoneId)) {
+          milestoneMap[milestoneId] = {
+            'id': milestoneId,
+            'name': milestoneName,
+            'start_date': task['milestone_start_date'],
+            'end_date': task['milestone_end_date'],
+            'status': task['milestone_status'] ?? 'Unknown',
+            // Mark as extracted from tasks
+            '_extracted_from_tasks': true,
+          };
+        }
+      }
+    }
+    
+    return milestoneMap.values.toList();
   }
 
   // Map Zoho tasks to project structure
@@ -1779,7 +1840,7 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
     return mappedData;
   }
 
-  void _showTasksDialog(dynamic project, List<dynamic> tasks) {
+  void _showTasksDialog(dynamic project, List<dynamic> tasks, {List<dynamic>? milestones}) {
     final projectName = project['name'] ?? 'Project';
     
     // Map tasks to project structure
@@ -1789,6 +1850,7 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
     // Store original tasks and project for export
     final originalTasks = List<dynamic>.from(tasks);
     final projectData = project;
+    final milestonesList = milestones ?? [];
     
     showDialog(
       context: context,
@@ -1846,7 +1908,7 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                       // Export Button
                       ElevatedButton.icon(
                         onPressed: () {
-                          _exportMappedData(projectName, mappedData, originalTasks: originalTasks, project: projectData);
+                          _exportMappedData(projectName, mappedData, originalTasks: originalTasks, project: projectData, milestones: milestonesList);
                         },
                         icon: const Icon(Icons.download, size: 16),
                         label: const Text('Export JSON'),
@@ -1877,6 +1939,157 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                       fontWeight: FontWeight.bold,
                     ),
                   ),
+                ),
+                // Milestones Section - Always show, even if empty (for debugging)
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2D2D2D),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: milestonesList.isNotEmpty ? Colors.purple.shade700 : Colors.grey.shade700,
+                      width: 2,
+                    ),
+                  ),
+                  child: milestonesList.isEmpty
+                      ? Row(
+                          children: [
+                            Icon(
+                              Icons.flag,
+                              color: Colors.grey.shade400,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'No milestones found',
+                              style: TextStyle(
+                                color: Colors.grey.shade400,
+                                fontSize: 14,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ],
+                        )
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.flag,
+                                  color: Colors.purple.shade300,
+                                  size: 20,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Milestones (${milestonesList.length})',
+                                  style: TextStyle(
+                                    color: Colors.purple.shade300,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                        ...milestonesList.take(5).map((milestone) {
+                          final name = milestone['name']?.toString() ?? 
+                                       milestone['milestone_name']?.toString() ?? 
+                                       'Unnamed Milestone';
+                          final startDate = milestone['start_date'] ?? 
+                                           milestone['start_date_format'];
+                          final endDate = milestone['end_date'] ?? 
+                                         milestone['end_date_format'];
+                          final status = milestone['status']?.toString() ?? 'Unknown';
+                          
+                          Color statusColor = Colors.grey;
+                          if (status.toLowerCase().contains('completed') || 
+                              status.toLowerCase().contains('done')) {
+                            statusColor = Colors.green;
+                          } else if (status.toLowerCase().contains('in progress') ||
+                                     status.toLowerCase().contains('active')) {
+                            statusColor = Colors.blue;
+                          } else if (status.toLowerCase().contains('pending') ||
+                                     status.toLowerCase().contains('not started')) {
+                            statusColor = Colors.orange;
+                          }
+                          
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1E1E1E),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: Colors.grey.shade700, width: 1),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.flag,
+                                  size: 16,
+                                  color: statusColor,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    name,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: statusColor.withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(color: statusColor.withOpacity(0.5)),
+                                  ),
+                                  child: Text(
+                                    status.toUpperCase(),
+                                    style: TextStyle(
+                                      color: statusColor,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Icon(
+                                  Icons.calendar_today,
+                                  size: 12,
+                                  color: Colors.grey.shade400,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '${startDate != null ? _formatSimpleDate(startDate) ?? 'TBD' : 'TBD'} - ${endDate != null ? _formatSimpleDate(endDate) ?? 'TBD' : 'TBD'}',
+                                  style: TextStyle(
+                                    color: Colors.grey.shade300,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                        if (milestonesList.length > 5)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              '... and ${milestonesList.length - 5} more milestone${milestonesList.length - 5 != 1 ? 's' : ''}',
+                              style: TextStyle(
+                                color: Colors.grey.shade400,
+                                fontSize: 12,
+                                fontStyle: FontStyle.italic,
+                              ),
+                          ),
+                        ),
+                      ],
+                    ),
                 ),
                 // Mapped Structure: Domains -> Blocks -> Requirements
                 Expanded(
@@ -1974,6 +2187,23 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                                                 fontWeight: FontWeight.w500,
                                               ),
                                             ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          IconButton(
+                                            icon: const Icon(Icons.download, size: 18),
+                                            color: Colors.green.shade400,
+                                            tooltip: 'Export Domain JSON',
+                                            onPressed: () {
+                                              _exportDomainJson(
+                                                projectName,
+                                                domain,
+                                                originalTasks: originalTasks,
+                                                project: projectData,
+                                                milestones: milestonesList,
+                                              );
+                                            },
+                                            padding: const EdgeInsets.all(8),
+                                            constraints: const BoxConstraints(),
                                           ),
                                         ],
                                       ),
@@ -2171,7 +2401,7 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
     );
   }
 
-  void _exportMappedData(String projectName, Map<String, dynamic> mappedData, {List<dynamic>? originalTasks, dynamic project}) {
+  void _exportMappedData(String projectName, Map<String, dynamic> mappedData, {List<dynamic>? originalTasks, dynamic project, List<dynamic>? milestones}) {
     // Create simplified export data structure with only essential fields
     final domains = mappedData['domains'] as List<dynamic>;
     
@@ -2234,11 +2464,36 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
       exportDomains.add(domainExport);
     }
     
+    // Build milestones export structure
+    final exportMilestones = <Map<String, dynamic>>[];
+    if (milestones != null && milestones.isNotEmpty) {
+      for (final milestone in milestones) {
+        final milestoneExport = <String, dynamic>{
+          'name': milestone['name']?.toString() ?? milestone['milestone_name']?.toString() ?? 'Unnamed Milestone',
+        };
+        
+        // Add start_date if available
+        final startDateValue = milestone['start_date'] ?? milestone['start_date_format'];
+        if (startDateValue != null) {
+          milestoneExport['start_date'] = startDateValue.toString();
+        }
+        
+        // Add end_date if available
+        final endDateValue = milestone['end_date'] ?? milestone['end_date_format'];
+        if (endDateValue != null) {
+          milestoneExport['end_date'] = endDateValue.toString();
+        }
+        
+        exportMilestones.add(milestoneExport);
+      }
+    }
+    
     // Create simplified export data structure
     final exportData = {
       'project_name': projectName,
       if (startDate.isNotEmpty) 'start_date': startDate,
       if (updatedDate.isNotEmpty) 'updated_date': updatedDate,
+      if (exportMilestones.isNotEmpty) 'milestones': exportMilestones,
       'domains': exportDomains,
     };
     
@@ -2347,7 +2602,7 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                         // Download JSON file
                         final blob = html.Blob([jsonString], 'application/json');
                         final url = html.Url.createObjectUrlFromBlob(blob);
-                        final anchor = html.AnchorElement(href: url)
+                        html.AnchorElement(href: url)
                           ..setAttribute('download', '${projectName.replaceAll(' ', '_')}_project_plan.json')
                           ..click();
                         html.Url.revokeObjectUrl(url);
@@ -2405,6 +2660,113 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
     );
   }
 
+  void _exportDomainJson(String projectName, Map<String, dynamic> domain, {List<dynamic>? originalTasks, dynamic project, List<dynamic>? milestones}) {
+    final domainName = domain['name'] ?? '';
+    final domainCode = domain['code'] ?? '';
+    final blocks = domain['blocks'] as List<dynamic>? ?? [];
+    
+    // Get project dates
+    final startDate = project?['start_date']?.toString() ?? '';
+    final updatedDate = project?['updated_at']?.toString() ?? '';
+    
+    // Build simplified blocks
+    final simplifiedBlocks = <Map<String, dynamic>>[];
+    
+    for (final block in blocks) {
+      final blockName = block['name'] ?? '';
+      final requirements = block['requirements'] as List<dynamic>? ?? [];
+      
+      // Get dates from original task if available
+      String? blockStartDate;
+      String? blockUpdatedDate;
+      
+      if (originalTasks != null) {
+        for (final task in originalTasks) {
+          final taskName = (task['name'] ?? task['task_name'] ?? '').toString();
+          if (taskName == blockName) {
+            blockStartDate = task['start_date']?.toString() ?? task['created_time']?.toString() ?? '';
+            blockUpdatedDate = task['updated_at']?.toString() ?? task['modified_time']?.toString() ?? '';
+            break;
+          }
+        }
+      }
+      
+      final simplifiedBlock = <String, dynamic>{
+        'block': blockName,
+        if (blockStartDate != null && blockStartDate.isNotEmpty) 'start_date': blockStartDate,
+        if (blockUpdatedDate != null && blockUpdatedDate.isNotEmpty) 'updated_date': blockUpdatedDate,
+      };
+      
+      // Add requirements/modules only for DV domains
+      if (requirements.isNotEmpty) {
+        simplifiedBlock['requirements'] = requirements.map((req) {
+          final reqName = req['name'] ?? '';
+          return reqName;
+        }).toList();
+      }
+      
+      simplifiedBlocks.add(simplifiedBlock);
+    }
+    
+    // Build milestones export structure
+    final exportMilestones = <Map<String, dynamic>>[];
+    if (milestones != null && milestones.isNotEmpty) {
+      for (final milestone in milestones) {
+        final milestoneExport = <String, dynamic>{
+          'name': milestone['name']?.toString() ?? milestone['milestone_name']?.toString() ?? 'Unnamed Milestone',
+        };
+        
+        // Add start_date if available
+        final startDateValue = milestone['start_date'] ?? milestone['start_date_format'];
+        if (startDateValue != null) {
+          milestoneExport['start_date'] = startDateValue.toString();
+        }
+        
+        // Add end_date if available
+        final endDateValue = milestone['end_date'] ?? milestone['end_date_format'];
+        if (endDateValue != null) {
+          milestoneExport['end_date'] = endDateValue.toString();
+        }
+        
+        exportMilestones.add(milestoneExport);
+      }
+    }
+    
+    // Create domain-specific export data structure
+    final exportData = {
+      'project_name': projectName,
+      'domain_name': domainName,
+      'domain_code': domainCode,
+      if (startDate.isNotEmpty) 'start_date': startDate,
+      if (updatedDate.isNotEmpty) 'updated_date': updatedDate,
+      if (exportMilestones.isNotEmpty) 'milestones': exportMilestones,
+      'blocks': simplifiedBlocks,
+    };
+    
+    // Convert to JSON string with pretty formatting
+    final jsonString = const JsonEncoder.withIndent('  ').convert(exportData);
+    
+    // Download JSON file directly
+    final safeDomainName = domainName.replaceAll(' ', '_').replaceAll(RegExp(r'[^\w\s-]'), '');
+    final safeProjectName = projectName.replaceAll(' ', '_').replaceAll(RegExp(r'[^\w\s-]'), '');
+    final fileName = '${safeProjectName}_${safeDomainName}_domain.json';
+    
+    final blob = html.Blob([jsonString], 'application/json');
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    html.AnchorElement(href: url)
+      ..setAttribute('download', fileName)
+      ..click();
+    html.Url.revokeObjectUrl(url);
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Domain JSON file downloaded: $fileName'),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
   // Helper methods for the main class
   String _formatDateForTable(dynamic dateValue) {
     if (dateValue == null) return 'N/A';
@@ -2415,6 +2777,33 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
         return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
       }
       return dateStr;
+    } catch (e) {
+      return dateValue.toString();
+    }
+  }
+
+  String? _formatSimpleDate(dynamic dateValue) {
+    if (dateValue == null) return null;
+    
+    try {
+      // If it's already a formatted string, return it
+      if (dateValue is String) {
+        // Check if it's an ISO date string
+        if (dateValue.contains('T') || dateValue.contains('Z')) {
+          final date = DateTime.parse(dateValue);
+          return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+        }
+        // If it's already formatted, return as is
+        return dateValue;
+      }
+      
+      // If it's a timestamp (long)
+      if (dateValue is int || dateValue is num) {
+        final date = DateTime.fromMillisecondsSinceEpoch(dateValue.toInt());
+        return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+      }
+      
+      return dateValue.toString();
     } catch (e) {
       return dateValue.toString();
     }
@@ -2615,14 +3004,86 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
   bool _isLoadingTasks = false;
   String? _tasksError;
   bool _hasLoadedTasks = false;
+  
+  List<dynamic> _milestones = [];
+  bool _isLoadingMilestones = false;
+  String? _milestonesError;
+  bool _hasLoadedMilestones = false;
+  int _selectedTab = 0; // 0 = Milestones, 1 = Tasks
 
   @override
   void initState() {
     super.initState();
     if (widget.isZohoProject) {
-      // Load tasks after the first frame
+      // Load milestones and tasks after the first frame
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        _loadMilestones();
         _loadTasks();
+      });
+    }
+  }
+
+  Future<void> _loadMilestones() async {
+    if (!widget.isZohoProject || _hasLoadedMilestones || _isLoadingMilestones) return;
+    
+    setState(() {
+      _isLoadingMilestones = true;
+      _milestonesError = null;
+      _hasLoadedMilestones = true;
+    });
+    
+    try {
+      final token = widget.authProvider.token;
+      
+      if (token == null) {
+        setState(() {
+          _milestonesError = 'Not authenticated';
+          _isLoadingMilestones = false;
+        });
+        return;
+      }
+      
+      // Get project ID - handle both zoho_ prefix and direct ID
+      final projectId = widget.project['zoho_project_id']?.toString() ?? 
+                       widget.project['id']?.toString() ?? '';
+      
+      // Remove zoho_ prefix if present
+      final actualProjectId = projectId.startsWith('zoho_') 
+          ? projectId.replaceFirst('zoho_', '') 
+          : projectId;
+      
+      if (actualProjectId.isEmpty) {
+        setState(() {
+          _milestonesError = 'Project ID not found';
+          _isLoadingMilestones = false;
+        });
+        return;
+      }
+      
+      // Get portal ID from zoho_data if available
+      final zohoData = widget.project['zoho_data'] as Map<String, dynamic>?;
+      final portalId = zohoData?['portal_id']?.toString() ?? 
+                      zohoData?['portal']?.toString();
+      
+      final response = await widget.apiService.getZohoMilestones(
+        projectId: actualProjectId,
+        token: token,
+        portalId: portalId,
+      );
+      
+      final milestones = response['milestones'] ?? [];
+      
+      print('🎯 Received ${milestones.length} milestones from API');
+      
+      setState(() {
+        _milestones = milestones;
+        _isLoadingMilestones = false;
+      });
+    } catch (e) {
+      print('❌ Error loading milestones: $e');
+      setState(() {
+        _milestonesError = e.toString();
+        _isLoadingMilestones = false;
       });
     }
   }
@@ -2781,7 +3242,7 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
                         ),
                         const Spacer(),
                         Text(
-                          '${_tasks.length} Tasks',
+                          '${_milestones.length} Milestones • ${_tasks.length} Tasks',
                           style: TextStyle(
                             color: Colors.grey.shade400,
                             fontSize: 14,
@@ -2829,13 +3290,257 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
                     ],
                   ),
                 ),
-                // Content - For Zoho projects, only show tasks
+                // Tabs for Milestones and Tasks (Zoho projects only)
+                if (widget.isZohoProject)
+                  Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2D2D2D),
+                      border: Border(
+                        bottom: BorderSide(color: Colors.grey.shade700, width: 1),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => setState(() => _selectedTab = 0),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
+                              decoration: BoxDecoration(
+                                border: Border(
+                                  bottom: BorderSide(
+                                    color: _selectedTab == 0 ? Colors.blue.shade400 : Colors.transparent,
+                                    width: 2,
+                                  ),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.flag,
+                                    size: 18,
+                                    color: _selectedTab == 0 ? Colors.blue.shade400 : Colors.grey.shade400,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Milestones (${_milestones.length})',
+                                    style: TextStyle(
+                                      color: _selectedTab == 0 ? Colors.blue.shade400 : Colors.grey.shade400,
+                                      fontSize: 14,
+                                      fontWeight: _selectedTab == 0 ? FontWeight.w600 : FontWeight.normal,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => setState(() => _selectedTab = 1),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
+                              decoration: BoxDecoration(
+                                border: Border(
+                                  bottom: BorderSide(
+                                    color: _selectedTab == 1 ? Colors.blue.shade400 : Colors.transparent,
+                                    width: 2,
+                                  ),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.task,
+                                    size: 18,
+                                    color: _selectedTab == 1 ? Colors.blue.shade400 : Colors.grey.shade400,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Tasks (${_tasks.length})',
+                                    style: TextStyle(
+                                      color: _selectedTab == 1 ? Colors.blue.shade400 : Colors.grey.shade400,
+                                      fontSize: 14,
+                                      fontWeight: _selectedTab == 1 ? FontWeight.w600 : FontWeight.normal,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                // Content - For Zoho projects, show milestones or tasks based on selected tab
                 Flexible(
                   child: SingleChildScrollView(
                     padding: const EdgeInsets.symmetric(horizontal: 20),
                     child: widget.isZohoProject
                         ? Builder(
                             builder: (context) {
+                              // Milestones Tab
+                              if (_selectedTab == 0) {
+                                if (_isLoadingMilestones) {
+                                  return const Padding(
+                                    padding: EdgeInsets.all(40),
+                                    child: Center(
+                                      child: CircularProgressIndicator(),
+                                    ),
+                                  );
+                                }
+                                
+                                if (_milestonesError != null) {
+                                  return Padding(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Column(
+                                      children: [
+                                        Text(
+                                          'Error loading milestones: $_milestonesError',
+                                          style: const TextStyle(color: Colors.red, fontSize: 14),
+                                        ),
+                                        const SizedBox(height: 12),
+                                        ElevatedButton.icon(
+                                          onPressed: _loadMilestones,
+                                          icon: const Icon(Icons.refresh, size: 18),
+                                          label: const Text('Retry'),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.blue.shade700,
+                                            foregroundColor: Colors.white,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }
+                                
+                                if (_milestones.isEmpty) {
+                                  return const Padding(
+                                    padding: EdgeInsets.all(40),
+                                    child: Center(
+                                      child: Text(
+                                        'No milestones found',
+                                        style: TextStyle(color: Colors.grey, fontSize: 14),
+                                      ),
+                                    ),
+                                  );
+                                }
+                                
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 20),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: _milestones.map((milestone) {
+                                      final name = milestone['name']?.toString() ?? 
+                                                   milestone['milestone_name']?.toString() ?? 
+                                                   'Unnamed Milestone';
+                                      final startDate = milestone['start_date'] ?? 
+                                                       milestone['start_date_format'];
+                                      final endDate = milestone['end_date'] ?? 
+                                                     milestone['end_date_format'];
+                                      final status = milestone['status']?.toString() ?? 'Unknown';
+                                      final description = milestone['description']?.toString();
+                                      
+                                      Color statusColor = Colors.grey;
+                                      if (status.toLowerCase().contains('completed') || 
+                                          status.toLowerCase().contains('done')) {
+                                        statusColor = Colors.green;
+                                      } else if (status.toLowerCase().contains('in progress') ||
+                                                 status.toLowerCase().contains('active')) {
+                                        statusColor = Colors.blue;
+                                      } else if (status.toLowerCase().contains('pending') ||
+                                                 status.toLowerCase().contains('not started')) {
+                                        statusColor = Colors.orange;
+                                      }
+                                      
+                                      return Container(
+                                        margin: const EdgeInsets.only(bottom: 12),
+                                        padding: const EdgeInsets.all(16),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF2D2D2D),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: Colors.grey.shade700, width: 1),
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                Icon(
+                                                  Icons.flag,
+                                                  size: 20,
+                                                  color: statusColor,
+                                                ),
+                                                const SizedBox(width: 10),
+                                                Expanded(
+                                                  child: Text(
+                                                    name,
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 16,
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                ),
+                                                Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                  decoration: BoxDecoration(
+                                                    color: statusColor.withOpacity(0.2),
+                                                    borderRadius: BorderRadius.circular(4),
+                                                    border: Border.all(color: statusColor.withOpacity(0.5)),
+                                                  ),
+                                                  child: Text(
+                                                    status.toUpperCase(),
+                                                    style: TextStyle(
+                                                      color: statusColor,
+                                                      fontSize: 10,
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            if (description != null && description.isNotEmpty) ...[
+                                              const SizedBox(height: 8),
+                                              Text(
+                                                description,
+                                                style: TextStyle(
+                                                  color: Colors.grey.shade300,
+                                                  fontSize: 13,
+                                                ),
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ],
+                                            const SizedBox(height: 12),
+                                            Row(
+                                              children: [
+                                                Icon(
+                                                  Icons.calendar_today,
+                                                  size: 14,
+                                                  color: Colors.grey.shade400,
+                                                ),
+                                                const SizedBox(width: 6),
+                                                Text(
+                                                  '${startDate != null ? _formatSimpleDate(startDate) : 'TBD'} - ${endDate != null ? _formatSimpleDate(endDate) : 'TBD'}',
+                                                  style: TextStyle(
+                                                    color: Colors.grey.shade300,
+                                                    fontSize: 12,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    }).toList(),
+                                  ),
+                                );
+                              }
+                              
+                              // Tasks Tab
                               if (_isLoadingTasks) {
                                 return const Padding(
                                   padding: EdgeInsets.all(40),
@@ -2881,13 +3586,40 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
                                 );
                               }
                               
-                              // Group tasks by tasklist
+                              // Group tasks by tasklist (domain)
+                              // Each tasklist will show its milestone info inside
                               final Map<String, List<dynamic>> tasksByTasklist = {};
+                              final Map<String, Map<String, dynamic>> tasklistMilestoneMap = {};
+                              
                               for (final task in _tasks) {
+                                // Get tasklist name
                                 final tasklistName = task['tasklist_name']?.toString() ?? 'Uncategorized';
+                                
+                                // Get milestone info for this tasklist
+                                final milestoneId = task['milestone_id']?.toString();
+                                final milestoneName = task['milestone_name']?.toString();
+                                final milestoneStartDate = task['milestone_start_date'];
+                                final milestoneEndDate = task['milestone_end_date'];
+                                
+                                // Store milestone info for this tasklist (only once per tasklist)
+                                if (!tasklistMilestoneMap.containsKey(tasklistName)) {
+                                  if (milestoneId != null && milestoneName != null) {
+                                    tasklistMilestoneMap[tasklistName] = {
+                                      'id': milestoneId,
+                                      'name': milestoneName,
+                                      'start_date': milestoneStartDate,
+                                      'end_date': milestoneEndDate,
+                                    };
+                                  } else {
+                                    tasklistMilestoneMap[tasklistName] = {};
+                                  }
+                                }
+                                
+                                // Initialize tasklist group if needed
                                 if (!tasksByTasklist.containsKey(tasklistName)) {
                                   tasksByTasklist[tasklistName] = [];
                                 }
+                                
                                 tasksByTasklist[tasklistName]!.add(task);
                               }
                               
@@ -2896,6 +3628,10 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
                                 children: tasksByTasklist.entries.map((tasklistEntry) {
                                   final tasklistName = tasklistEntry.key;
                                   final tasksInList = tasklistEntry.value;
+                                  
+                                  // Get milestone info for this tasklist
+                                  final milestoneInfo = tasklistMilestoneMap[tasklistName];
+                                  final hasMilestone = milestoneInfo != null && milestoneInfo.isNotEmpty;
                                   
                                   return Container(
                                     margin: const EdgeInsets.only(bottom: 12),
@@ -2908,24 +3644,89 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
                                       initiallyExpanded: true,
                                       tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                                       childrenPadding: const EdgeInsets.fromLTRB(20, 0, 16, 12),
-                                      title: Row(
-                                    children: [
-                                          Icon(
-                                            Icons.folder,
-                                            size: 18,
-                                            color: Colors.blue.shade300,
+                                      title: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          // Domain/Tasklist Name
+                                          Row(
+                                            children: [
+                                              Icon(
+                                                Icons.folder,
+                                                size: 18,
+                                                color: Colors.blue.shade300,
+                                              ),
+                                              const SizedBox(width: 10),
+                                              Expanded(
+                                                child: Text(
+                                                  tasklistName,
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 15,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
                                           ),
-                                          const SizedBox(width: 10),
-                                          Text(
-                                            tasklistName,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 15,
-                                              fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
+                                          // Milestone Info inside the domain
+                                          if (hasMilestone) ...[
+                                            const SizedBox(height: 8),
+                                            Container(
+                                              padding: const EdgeInsets.all(8),
+                                              decoration: BoxDecoration(
+                                                color: Colors.blue.shade900.withOpacity(0.2),
+                                                borderRadius: BorderRadius.circular(6),
+                                                border: Border.all(color: Colors.blue.shade700.withOpacity(0.5), width: 1),
+                                              ),
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  // Milestone Name
+                                                  Row(
+                                                    children: [
+                                                      Icon(
+                                                        Icons.flag,
+                                                        size: 14,
+                                                        color: Colors.blue.shade300,
+                                                      ),
+                                                      const SizedBox(width: 6),
+                                                      Expanded(
+                                                        child: Text(
+                                                          milestoneInfo['name']?.toString() ?? 'Unnamed Milestone',
+                                                          style: TextStyle(
+                                                            color: Colors.blue.shade300,
+                                                            fontSize: 12,
+                                                            fontWeight: FontWeight.w600,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  // Milestone Dates
+                                                  const SizedBox(height: 4),
+                                                  Row(
+                                                    children: [
+                                                      Icon(
+                                                        Icons.calendar_today,
+                                                        size: 12,
+                                                        color: Colors.grey.shade400,
+                                                      ),
+                                                      const SizedBox(width: 4),
+                                                      Text(
+                                                        '${milestoneInfo['start_date'] != null ? _formatSimpleDate(milestoneInfo['start_date']) : 'TBD'} - ${milestoneInfo['end_date'] != null ? _formatSimpleDate(milestoneInfo['end_date']) : 'TBD'}',
+                                                        style: TextStyle(
+                                                          color: Colors.grey.shade300,
+                                                          fontSize: 11,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
                                       children: tasksInList.map((task) {
                                         // Extract only the data we need: name, date, assigned person
                                         final taskName = task['name']?.toString() ?? 

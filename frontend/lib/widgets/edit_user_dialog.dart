@@ -20,8 +20,6 @@ class EditUserDialog extends ConsumerStatefulWidget {
 class _EditUserDialogState extends ConsumerState<EditUserDialog> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
-  final _ipaddressController = TextEditingController();
-  final _portController = TextEditingController();
   final _sshUserController = TextEditingController();
   final _sshPasswordController = TextEditingController();
   
@@ -51,8 +49,6 @@ class _EditUserDialogState extends ConsumerState<EditUserDialog> {
 
   void _initializeFields() {
     _nameController.text = widget.user['full_name'] ?? '';
-    _ipaddressController.text = widget.user['ipaddress'] ?? '';
-    _portController.text = widget.user['port']?.toString() ?? '';
     
     // Extract SSH username from email if not already set
     // Example: rakesh.p@sumedhait.com -> rakesh
@@ -103,8 +99,6 @@ class _EditUserDialogState extends ConsumerState<EditUserDialog> {
   @override
   void dispose() {
     _nameController.dispose();
-    _ipaddressController.dispose();
-    _portController.dispose();
     _sshUserController.dispose();
     _sshPasswordController.dispose();
     super.dispose();
@@ -129,12 +123,6 @@ class _EditUserDialogState extends ConsumerState<EditUserDialog> {
         role: _selectedRole,
         domainId: _selectedDomainId,
         isActive: _isActive,
-        ipaddress: _ipaddressController.text.trim().isEmpty 
-            ? null 
-            : _ipaddressController.text.trim(),
-        port: _portController.text.trim().isEmpty 
-            ? null 
-            : int.tryParse(_portController.text.trim()),
         sshUser: _sshUserController.text.trim().isEmpty 
             ? null 
             : _sshUserController.text.trim(),
@@ -310,43 +298,6 @@ class _EditUserDialogState extends ConsumerState<EditUserDialog> {
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.bold,
                   ),
-                ),
-                const SizedBox(height: 16),
-                // IP Address
-                TextFormField(
-                  controller: _ipaddressController,
-                  decoration: InputDecoration(
-                    labelText: 'IP Address',
-                    prefixIcon: const Icon(Icons.computer),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    helperText: 'SSH server IP address',
-                  ),
-                  keyboardType: TextInputType.text,
-                ),
-                const SizedBox(height: 16),
-                // Port
-                TextFormField(
-                  controller: _portController,
-                  decoration: InputDecoration(
-                    labelText: 'Port',
-                    prefixIcon: const Icon(Icons.numbers),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    helperText: 'SSH server port (1-65535)',
-                  ),
-                  keyboardType: TextInputType.number,
-                  validator: (value) {
-                    if (value != null && value.trim().isNotEmpty) {
-                      final port = int.tryParse(value.trim());
-                      if (port == null || port < 1 || port > 65535) {
-                        return 'Port must be between 1 and 65535';
-                      }
-                    }
-                    return null;
-                  },
                 ),
                 const SizedBox(height: 16),
                 // SSH User

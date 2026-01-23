@@ -363,8 +363,6 @@ class ApiService {
     String? fullName,
     String? role,
     int? domainId,
-    String? ipaddress,
-    int? port,
     String? sshUser,
     String? sshPassword,
     List<int>? projectIds,
@@ -380,8 +378,6 @@ class ApiService {
         if (fullName != null) 'full_name': fullName,
         if (role != null) 'role': role,
         if (domainId != null) 'domain_id': domainId,
-        if (ipaddress != null) 'ipaddress': ipaddress,
-        if (port != null) 'port': port,
         if (sshUser != null) 'ssh_user': sshUser,
         if (sshPassword != null) 'sshpassword': sshPassword,
         if (projectIds != null && projectIds.isNotEmpty) 'project_ids': projectIds,
@@ -403,8 +399,6 @@ class ApiService {
     String? role,
     int? domainId,
     bool? isActive,
-    String? ipaddress,
-    int? port,
     String? sshUser,
     String? sshPassword,
     String? token,
@@ -417,8 +411,6 @@ class ApiService {
         if (role != null) 'role': role,
         if (domainId != null) 'domain_id': domainId,
         if (isActive != null) 'is_active': isActive,
-        if (ipaddress != null) 'ipaddress': ipaddress,
-        if (port != null) 'port': port,
         if (sshUser != null) 'ssh_user': sshUser,
         if (sshPassword != null) 'sshpassword': sshPassword,
       }),
@@ -531,6 +523,33 @@ class ApiService {
     } else {
       final error = json.decode(response.body);
       throw Exception(error['error'] ?? 'Failed to get Zoho tasks');
+    }
+  }
+
+  Future<Map<String, dynamic>> getZohoMilestones({
+    required String projectId,
+    String? token,
+    String? portalId,
+  }) async {
+    // Extract actual project ID if it's prefixed with "zoho_"
+    final actualProjectId = projectId.startsWith('zoho_') 
+        ? projectId.replaceFirst('zoho_', '') 
+        : projectId;
+    
+    final uri = portalId != null
+        ? Uri.parse('$baseUrl/zoho/projects/$actualProjectId/milestones?portalId=$portalId')
+        : Uri.parse('$baseUrl/zoho/projects/$actualProjectId/milestones');
+    
+    final response = await http.get(
+      uri,
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get Zoho milestones');
     }
   }
 
@@ -729,6 +748,68 @@ class ApiService {
     } else {
       final error = json.decode(response.body);
       throw Exception(error['error'] ?? 'Failed to load run history');
+    }
+  }
+
+  // Execute SSH command on remote server
+  Future<Map<String, dynamic>> executeSSHCommand({
+    required String command,
+    String? token,
+    String? workingDirectory,
+  }) async {
+    final requestBody = <String, dynamic>{
+      'command': command,
+    };
+    
+    if (workingDirectory != null && workingDirectory.isNotEmpty) {
+      requestBody['workingDirectory'] = workingDirectory;
+    }
+    
+    final response = await http.post(
+      Uri.parse('$baseUrl/ssh/execute'),
+      headers: _getHeaders(token: token),
+      body: json.encode(requestBody),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to execute command');
+    }
+  }
+
+  // Establish SSH connection
+  Future<Map<String, dynamic>> connectSSH({
+    String? token,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/ssh/connect'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to establish SSH connection');
+    }
+  }
+
+  // Disconnect SSH connection
+  Future<Map<String, dynamic>> disconnectSSH({
+    String? token,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/ssh/disconnect'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to disconnect SSH');
     }
   }
 }

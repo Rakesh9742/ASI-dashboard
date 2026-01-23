@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'widgets/auth_wrapper.dart';
 import 'screens/standalone_project_screen.dart';
 import 'screens/standalone_view_screen.dart';
+import 'screens/terminal_screen.dart';
 import 'providers/theme_provider.dart';
 
 void main() {
@@ -102,6 +103,11 @@ class MyApp extends ConsumerWidget {
         if (settings.name == '/view' || settings.name?.contains('/view') == true) {
           return MaterialPageRoute(
             builder: (context) => const StandaloneViewScreen(),
+          );
+        }
+        if (settings.name == '/terminal' || settings.name?.contains('/terminal') == true) {
+          return MaterialPageRoute(
+            builder: (context) => const TerminalScreen(),
           );
         }
         return null;
