@@ -783,12 +783,25 @@ class ZohoService {
             projectFromList = foundProject;
             console.log(`[ZohoService] ✅ Found project "${foundProject.name}" in portal ${p.id}`);
             
+            // Log all keys in project object for debugging
+            console.log(`[ZohoService] Project object keys: ${Object.keys(foundProject).join(', ')}`);
+            
             // Check if project data already contains users/members
             if (foundProject.users && Array.isArray(foundProject.users)) {
+              console.log(`[ZohoService] ✅ Found ${foundProject.users.length} users in project list response`);
               return foundProject.users;
             }
             if (foundProject.project_users && Array.isArray(foundProject.project_users)) {
+              console.log(`[ZohoService] ✅ Found ${foundProject.project_users.length} project_users in project list response`);
               return foundProject.project_users;
+            }
+            if (foundProject.members && Array.isArray(foundProject.members)) {
+              console.log(`[ZohoService] ✅ Found ${foundProject.members.length} members in project list response`);
+              return foundProject.members;
+            }
+            // Log if users field exists but is not an array
+            if (foundProject.users && !Array.isArray(foundProject.users)) {
+              console.log(`[ZohoService] ⚠️  Project has 'users' field but it's not an array: ${typeof foundProject.users}`);
             }
             break;
           }
@@ -817,6 +830,17 @@ class ZohoService {
           fullProject = fullProjectResponse.data?.response?.result || fullProjectResponse.data;
           
           // Check for users in various possible locations
+          // Log project structure for debugging
+          if (fullProject) {
+            console.log(`[ZohoService] Project details keys: ${Object.keys(fullProject).join(', ')}`);
+            if (fullProject.users) {
+              console.log(`[ZohoService] Project has 'users': ${Array.isArray(fullProject.users) ? `array with ${fullProject.users.length} items` : typeof fullProject.users}`);
+            }
+            if (fullProject.project_users) {
+              console.log(`[ZohoService] Project has 'project_users': ${Array.isArray(fullProject.project_users) ? `array with ${fullProject.project_users.length} items` : typeof fullProject.project_users}`);
+            }
+          }
+          
           if (fullProject?.users && Array.isArray(fullProject.users)) {
             console.log(`[ZohoService] ✅ Found ${fullProject.users.length} users in project details`);
             return fullProject.users;
@@ -829,7 +853,7 @@ class ZohoService {
             console.log(`[ZohoService] ✅ Found ${fullProject.members.length} members in project details`);
             return fullProject.members;
           }
-          break; // Successfully fetched, exit loop
+          // Don't break - continue to try other endpoints
         } catch (projectDetailsError: any) {
           continue;
         }
@@ -846,16 +870,34 @@ class ZohoService {
         `/restapi/portal/${portal}/projects/${projectId}/users/`,
         `/restapi/portal/${portal}/projects/${projectIdString}/people/`,
         `/restapi/portal/${portal}/projects/${projectId}/people/`,
+        // Try with additional query parameters
+        `/api/v3/portal/${portal}/projects/${projectIdString}/users?type=all`,
+        `/restapi/portal/${portal}/projects/${projectIdString}/users/?type=all`,
+        // Try project details with users included
+        `/api/v3/portal/${portal}/projects/${projectIdString}?include=users`,
+        `/api/v3/portal/${portal}/projects/${projectIdString}?include=project_users`,
       ];
       
       for (const endpoint of endpointVariations) {
         try {
+          console.log(`[ZohoService] Trying endpoint: ${endpoint}`);
           response = await client.get(endpoint);
-          console.log(`[ZohoService] ✅ Success with endpoint: ${endpoint}`);
+          console.log(`[ZohoService] ✅ Success with endpoint: ${endpoint} (status: ${response.status})`);
           
           // Extract users from response immediately
           const responseData = response.data?.response?.result || response.data;
           let members: ZohoProjectMember[] = [];
+          
+          // Log response structure for debugging
+          if (responseData) {
+            console.log(`[ZohoService] Response keys: ${Object.keys(responseData).join(', ')}`);
+            if (responseData.users) {
+              console.log(`[ZohoService] Found 'users' field: ${Array.isArray(responseData.users) ? `array with ${responseData.users.length} items` : typeof responseData.users}`);
+            }
+            if (responseData.project_users) {
+              console.log(`[ZohoService] Found 'project_users' field: ${Array.isArray(responseData.project_users) ? `array with ${responseData.project_users.length} items` : typeof responseData.project_users}`);
+            }
+          }
           
           if (responseData?.users && Array.isArray(responseData.users)) {
             members = responseData.users;
@@ -867,16 +909,25 @@ class ZohoService {
             members = responseData.people;
           } else if (Array.isArray(responseData)) {
             members = responseData;
+          } else if (responseData?.response?.result?.users && Array.isArray(responseData.response.result.users)) {
+            members = responseData.response.result.users;
+          } else if (responseData?.response?.result?.project_users && Array.isArray(responseData.response.result.project_users)) {
+            members = responseData.response.result.project_users;
           }
           
           if (members.length > 0) {
-            console.log(`[ZohoService] ✅ Found ${members.length} project members from API endpoint`);
+            console.log(`[ZohoService] ✅ Found ${members.length} project members from API endpoint: ${endpoint}`);
             return members;
+          } else {
+            console.log(`[ZohoService] ⚠️  Endpoint ${endpoint} returned success but no members found`);
           }
           
           // If we got a response but no members, continue to next endpoint
-          break;
+          // Don't break here - try all endpoints
         } catch (error: any) {
+          const status = error.response?.status;
+          const errorMsg = error.response?.data?.error?.message || error.message;
+          console.log(`[ZohoService] ❌ Endpoint ${endpoint} failed: ${status || 'N/A'} - ${errorMsg}`);
           if (error.response?.status === 404) {
             lastError = error;
             continue;
