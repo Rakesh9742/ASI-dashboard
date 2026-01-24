@@ -660,9 +660,34 @@ router.get('/projects', authenticate, async (req, res) => {
       portalId as string | undefined
     );
     
-    // Log roles and owner information for each project
-    console.log('\n📊 PROJECTS DATA WITH ROLES AND OWNER:');
-    console.log('========================================');
+    // Get SSH username for run directory lookup
+    let userUsername: string | null = null;
+    if (userId) {
+      try {
+        const { executeSSHCommand } = await import('../services/ssh.service');
+        const whoamiResult = await executeSSHCommand(userId, 'whoami', 1);
+        if (whoamiResult.stdout && whoamiResult.stdout.trim()) {
+          userUsername = whoamiResult.stdout.trim();
+        }
+      } catch (e) {
+        // If SSH command fails, try to get from database
+        try {
+          const zohoRunResult = await pool.query(
+            `SELECT DISTINCT user_name 
+             FROM zoho_project_run_directories 
+             WHERE user_id = $1 AND user_name IS NOT NULL
+             ORDER BY updated_at DESC, created_at DESC
+             LIMIT 1`,
+            [userId]
+          );
+          if (zohoRunResult.rows.length > 0 && zohoRunResult.rows[0].user_name) {
+            userUsername = zohoRunResult.rows[0].user_name;
+          }
+        } catch (dbError) {
+          // Silent fallback
+        }
+      }
+    }
     
     // Get portal ID for export status check
     let currentPortalId = portalId as string | undefined;
@@ -743,7 +768,6 @@ router.get('/projects', authenticate, async (req, res) => {
             );
             if (exportResult.rows.length > 0) {
               exportedToLinux = exportResult.rows[0].exported_to_linux === true;
-              console.log(`[Zoho Projects API] Found export status for project ${projectIdStr} (portal ${currentPortalId}): ${exportedToLinux}`);
             } else {
               // Also try without portal_id constraint to catch exports that might not have portal_id set
               const exportResultNoPortal = await pool.query(
@@ -752,30 +776,33 @@ router.get('/projects', authenticate, async (req, res) => {
               );
               if (exportResultNoPortal.rows.length > 0) {
                 exportedToLinux = exportResultNoPortal.rows[0].exported_to_linux === true;
-                console.log(`[Zoho Projects API] Found export status for project ${projectIdStr} (no portal match): ${exportedToLinux}`);
-              } else {
-                console.log(`[Zoho Projects API] No export record found for project ${projectIdStr} (portal ${currentPortalId})`);
               }
             }
           } catch (e) {
             // If table doesn't exist or query fails, continue without export status
-            console.log('Could not get export status from zoho_project_exports table:', e);
           }
           
-          console.log(`\n📁 Project: ${project.name} (ID: ${project.id || project.id_string})`);
-          console.log(`   Owner Name: ${project.owner_name || project.owner?.name || 'N/A'}`);
-          console.log(`   Owner ID: ${project.owner_id || project.owner?.id || 'N/A'}`);
-          console.log(`   Owner Email: ${project.owner_email || project.owner?.email || 'N/A'}`);
-          console.log(`   Members/Roles Count: ${formattedMembers.length}`);
-          console.log(`   Exported to Linux: ${exportedToLinux}`);
-          
-          if (formattedMembers.length > 0) {
-            console.log(`   📋 Roles Table:`);
-            formattedMembers.forEach((member, idx) => {
-              console.log(`      ${idx + 1}. ${member.name} (${member.email}) - Role: ${member.role} [Mapped: ${member.role_mapped}] - Status: ${member.status}`);
-            });
-          } else {
-            console.log(`   ⚠️  No members/roles found for this project`);
+          // Get ALL run directories for this Zoho project (by logged-in user_id)
+          let zohoRunDirectories: string[] = [];
+          if (userId) {
+            try {
+              const zohoRunDirResult = await pool.query(
+                `SELECT run_directory, user_name, zoho_project_id, zoho_project_name, block_name, experiment_name, user_id, updated_at, created_at
+                 FROM zoho_project_run_directories 
+                 WHERE (zoho_project_id = $1 OR LOWER(zoho_project_name) = LOWER($2))
+                   AND user_id = $3
+                 ORDER BY updated_at DESC, created_at DESC`,
+                [(project.id || project.id_string).toString(), project.name, userId]
+              );
+              
+              if (zohoRunDirResult.rows.length > 0) {
+                zohoRunDirectories = zohoRunDirResult.rows
+                  .filter(row => row.run_directory)
+                  .map(row => row.run_directory);
+              }
+            } catch (runDirError) {
+              // Silent error handling
+            }
           }
           
           return {
@@ -793,6 +820,8 @@ router.get('/projects', authenticate, async (req, res) => {
             zoho_project_id: project.id, // Add zoho_project_id field for consistency
             exported_to_linux: exportedToLinux, // Add export status flag
             portal_id: currentPortalId, // Include portal ID
+            run_directory: zohoRunDirectories.length > 0 ? zohoRunDirectories[0] : null, // Latest run directory (for backward compatibility)
+            run_directories: zohoRunDirectories, // All run directories for the logged-in user
             // Include roles/members table with properly formatted data
             members: formattedMembers,
             roles: formattedMembers.map(m => ({
@@ -1032,24 +1061,6 @@ router.get('/projects/:projectId', authenticate, async (req, res) => {
         };
       });
       
-      // Log roles and owner information
-      console.log('\n📊 SINGLE PROJECT DATA WITH ROLES AND OWNER:');
-      console.log('========================================');
-      console.log(`📁 Project: ${project.name} (ID: ${project.id || project.id_string})`);
-      console.log(`   Owner Name: ${project.owner_name || project.owner?.name || 'N/A'}`);
-      console.log(`   Owner ID: ${project.owner_id || project.owner?.id || 'N/A'}`);
-      console.log(`   Owner Email: ${project.owner_email || project.owner?.email || 'N/A'}`);
-      console.log(`   Members/Roles Count: ${formattedMembers.length}`);
-      
-      if (formattedMembers.length > 0) {
-        console.log(`   📋 Roles Table:`);
-        formattedMembers.forEach((member, idx) => {
-          console.log(`      ${idx + 1}. ${member.name} (${member.email}) - Role: ${member.role} [Mapped: ${member.role_mapped}] - Status: ${member.status}`);
-        });
-      } else {
-        console.log(`   ⚠️  No members/roles found for this project`);
-      }
-      console.log('========================================\n');
     } catch (memberError: any) {
       console.error(`❌ Error fetching members for project ${project.name}:`, memberError.message);
       formattedMembers = []; // Ensure it's initialized even on error

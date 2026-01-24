@@ -458,7 +458,14 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     final gateCount = project['gate_count'] ?? project['gateCount'] ?? 'N/A';
     final technology = project['technology'] ?? project['technology_node'] ?? 'Sky130 PDK';
     final lastRun = _formatTimeAgo(project['last_run']?.toString() ?? project['updated_at']?.toString());
-    final runDirectory = project['run_directory']?.toString();
+    // Get run directories - check for array first, then fallback to single
+    final runDirectoriesList = project['run_directories'];
+    final List<String> runDirectories = runDirectoriesList != null && runDirectoriesList is List
+        ? runDirectoriesList.map((e) => e.toString()).where((e) => e.isNotEmpty).toList()
+        : (project['run_directory']?.toString() != null && project['run_directory'].toString().isNotEmpty
+            ? [project['run_directory'].toString()]
+            : []);
+    final runDirectory = runDirectories.isNotEmpty ? runDirectories[0] : null; // Keep for backward compatibility
     // Check if project is exported to Linux - handle both boolean and string values
     final exportedValue = project['exported_to_linux'];
     final isExported = exportedValue == true || 
@@ -549,6 +556,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
           progress: progress,
           isRunning: isRunning,
           runDirectory: runDirectory,
+          runDirectories: runDirectories,
           onTap: handleProjectClick,
           canExportToLinux: isCadEngineerForProject,
           isExported: isExported,
@@ -1000,6 +1008,7 @@ class _ProjectCardWidget extends StatefulWidget {
   final double progress;
   final bool isRunning;
   final String? runDirectory;
+  final List<String> runDirectories;
   final VoidCallback onTap;
   final bool canExportToLinux;
   final bool isExported;
@@ -1019,6 +1028,7 @@ class _ProjectCardWidget extends StatefulWidget {
     required this.progress,
     required this.isRunning,
     this.runDirectory,
+    this.runDirectories = const [],
     required this.onTap,
     this.canExportToLinux = false,
     this.isExported = false,
@@ -1206,42 +1216,45 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                 ),
               ),
               
-              // Run Directory (if available)
-              if (widget.runDirectory != null && widget.runDirectory!.isNotEmpty) ...[
+              // Run Directories (if available) - show all
+              if (widget.runDirectories.isNotEmpty) ...[
                 const SizedBox(height: 8),
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: Theme.of(context).colorScheme.primary.withOpacity(0.2),
-                      width: 1,
+                ...widget.runDirectories.map((dir) => Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.primary.withOpacity(0.2),
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.folder,
+                          size: 16,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            dir,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Theme.of(context).colorScheme.primary,
+                              fontFamily: 'monospace',
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.folder,
-                        size: 16,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          widget.runDirectory!,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Theme.of(context).colorScheme.primary,
-                            fontFamily: 'monospace',
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                )).toList(),
               ],
               
               const SizedBox(height: 12),

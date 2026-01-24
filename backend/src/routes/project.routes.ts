@@ -68,7 +68,9 @@ router.get('/', authenticate, async (req, res) => {
     const userRole = (req as any).user?.role;
     
     // Log logged-in user info
-    console.log(`📋 Fetching projects for logged-in user: user_id=${userId}, role=${userRole}`);
+    console.log(`\n🔵 ========== GET /api/projects ==========`);
+    console.log(`🔵 Logged-in user: user_id=${userId}, role=${userRole}`);
+    console.log(`🔵 includeZoho=${includeZoho}`);
 
     // Build query based on user role
     // Engineers see projects they created
@@ -239,6 +241,9 @@ router.get('/', authenticate, async (req, res) => {
 
     // If includeZoho is requested, fetch from Zoho Projects
     if (includeZoho === 'true' || includeZoho === '1') {
+      console.log(`\n🔵 ========== FETCHING ZOHO PROJECTS ==========`);
+      console.log(`🔵 Logged-in user_id: ${userId}, username: ${userUsername}`);
+      console.log(`🔵 includeZoho=${includeZoho}`);
       try {
         const zohoService = (await import('../services/zoho.service')).default;
         const hasToken = await zohoService.hasValidToken(userId);
@@ -249,6 +254,8 @@ router.get('/', authenticate, async (req, res) => {
             userId,
             portalId as string | undefined
           );
+          
+          console.log(`🔵 Found ${zohoProjects.length} Zoho projects, now checking run directories...`);
 
           // Filter Zoho projects based on user role
           // For engineers: Zoho API typically returns only projects they have access to
@@ -310,6 +317,7 @@ router.get('/', authenticate, async (req, res) => {
               // Get run directory for this Zoho project
               // First check mapped local project, then check unmapped Zoho project table
               let zohoRunDirectory: string | null = null;
+              let zohoRunDirectories: string[] = []; // Store all run directories for this project and user
               
               // Check mapped local project first
               if (asiProjectId && userUsername) {
@@ -347,36 +355,45 @@ router.get('/', authenticate, async (req, res) => {
               }
               
               // If not found in mapped project, check unmapped Zoho project table
-              // Get the latest run directory for this project and user (regardless of block/experiment)
+              // Get ALL run directories for this project and user (not just the latest)
               // IMPORTANT: Query by user_id first (logged-in user's ID), not username
               if (!zohoRunDirectory) {
                 try {
-                  console.log(`🔍 Looking for run directory: Zoho project ${zp.id} (${zp.name}), logged-in user_id: ${userId}, username: ${userUsername}`);
+                  console.log(`\n🔵 ========== CHECKING RUN DIRECTORY FOR ZOHO PROJECT ==========`);
+                  console.log(`🔵 Project: ${zp.name} (ID: ${zp.id})`);
+                  console.log(`🔵 Logged-in user_id: ${userId}, username: ${userUsername}`);
                   
                   // First try: Query by user_id (logged-in user's ID) - this is the most reliable
                   // IMPORTANT: Only show run directories for the logged-in user (by user_id), not by username
+                  // Get ALL run directories, not just the latest one
                   if (userId) {
                     console.log(`   🔍 Querying by logged-in user_id: ${userId} for project ${zp.id} (${zp.name})`);
                     
                     let zohoRunDirResult = await pool.query(
-                      `SELECT run_directory, user_name, zoho_project_id, zoho_project_name, block_name, experiment_name, user_id
+                      `SELECT run_directory, user_name, zoho_project_id, zoho_project_name, block_name, experiment_name, user_id, updated_at, created_at
                        FROM zoho_project_run_directories 
                        WHERE (zoho_project_id = $1 OR LOWER(zoho_project_name) = LOWER($2))
                          AND user_id = $3
-                       ORDER BY updated_at DESC, created_at DESC
-                       LIMIT 1`,
+                       ORDER BY updated_at DESC, created_at DESC`,
                       [zp.id.toString(), zp.name, userId]
                     );
                     
                     console.log(`   📊 Query result: Found ${zohoRunDirResult.rows.length} records for logged-in user_id ${userId}`);
                     if (zohoRunDirResult.rows.length > 0) {
-                      const row = zohoRunDirResult.rows[0];
-                      console.log(`   📝 Record details: user_id=${row.user_id}, user_name=${row.user_name}, zoho_project_id=${row.zoho_project_id}, run_directory=${row.run_directory?.substring(0, 70)}...`);
+                      // Get all run directories
+                      zohoRunDirectories = zohoRunDirResult.rows
+                        .filter(row => row.run_directory)
+                        .map(row => row.run_directory);
                       
-                      if (row.run_directory) {
-                        zohoRunDirectory = row.run_directory;
-                        console.log(`✅ ✅ ✅ FOUND run directory by logged-in user_id ${userId} for Zoho project ${zp.id} (${zp.name}): ${zohoRunDirectory}`);
-                      }
+                      // Use the latest one for backward compatibility
+                      zohoRunDirectory = zohoRunDirectories[0] || null;
+                      
+                      console.log(`   📝 All run directories for user_id ${userId}:`);
+                      zohoRunDirResult.rows.forEach((row, idx) => {
+                        console.log(`      ${idx + 1}. ${row.run_directory} (block: ${row.block_name}, experiment: ${row.experiment_name}, updated: ${row.updated_at})`);
+                      });
+                      
+                      console.log(`✅ ✅ ✅ FOUND ${zohoRunDirectories.length} run directory(ies) by logged-in user_id ${userId} for Zoho project ${zp.id} (${zp.name})`);
                     } else {
                       console.log(`   ❌ No run directory found for logged-in user_id ${userId} in project ${zp.id} (${zp.name})`);
                     }
@@ -501,7 +518,8 @@ router.get('/', authenticate, async (req, res) => {
                 asi_project_id: asiProjectId, // Add linked ASI project ID
                 portal_id: currentPortalId, // Also store at top level for easy access
                 exported_to_linux: exportedToLinux, // Add export status flag
-                run_directory: zohoRunDirectory // Add run directory for the logged-in user
+                run_directory: zohoRunDirectory, // Latest run directory (for backward compatibility)
+                run_directories: zohoRunDirectories // All run directories for the logged-in user
               };
             })
           );
@@ -1569,48 +1587,15 @@ router.get('/:projectIdentifier/cad-status', authenticate, async (req, res) => {
 
     let tasks: any[] = [];
     let bugs: any[] = [];
-    let projectDetails: any = null; // Store for fallback use
-    let zohoProjectId: string | null = null;
 
-    // Try to get Zoho project ID from mapping first
+    // If project is mapped to Zoho, fetch real data; otherwise return empty data
     if (mappingResult.rows.length > 0) {
-      zohoProjectId = mappingResult.rows[0].zoho_project_id;
-    } else {
-      // If not mapped, try to find the Zoho project by name
-      try {
-        const zohoService = (await import('../services/zoho.service')).default;
-        const portals = await zohoService.getPortals(userId);
-        
-        if (portals.length > 0) {
-          const portalId = portals[0].id;
-          
-          // Get all projects from Zoho and find by name
-          const allProjects = await zohoService.getProjects(userId, portalId);
-          const matchingProject = allProjects.find((p: any) => 
-            p.name && p.name.toLowerCase() === projectName.toLowerCase()
-          );
-          
-          if (matchingProject) {
-            zohoProjectId = matchingProject.id_string || matchingProject.id;
-          }
-        }
-      } catch (searchError: any) {
-        // Silently fail - will use fallback counts if available
-      }
-    }
-
-    // If we have a Zoho project ID (from mapping or search), fetch tasks and issues
-    if (zohoProjectId) {
-
-      // First, try to get project details to get task/issue counts as fallback
-      try {
-        projectDetails = await zohoService.getProject(userId, zohoProjectId.toString());
-      } catch (projectError: any) {
-        // Silently fail - will use fallback counts if available
-      }
+      const zohoProjectId = mappingResult.rows[0].zoho_project_id;
+      console.log(`[CAD Status] Project ${projectName} (ASI ID: ${asiProjectId}) is mapped to Zoho project ID: ${zohoProjectId}`);
 
       // Fetch tasks and bugs/issues directly from Zoho
       // Use Promise.allSettled to handle partial failures gracefully
+      console.log(`[CAD Status] Fetching tasks and bugs for Zoho project ${zohoProjectId}...`);
       const [tasksResult, bugsResult] = await Promise.allSettled([
         zohoService.getTasks(userId, zohoProjectId.toString()),
         zohoService.getBugs(userId, zohoProjectId.toString()),
@@ -1618,99 +1603,27 @@ router.get('/:projectIdentifier/cad-status', authenticate, async (req, res) => {
 
       // Extract results, using empty arrays if rejected
       if (tasksResult.status === 'fulfilled') {
-        tasks = tasksResult.value || [];
+        tasks = tasksResult.value;
+        console.log(`[CAD Status] Successfully fetched ${tasks.length} tasks for project ${projectName}`);
       } else {
-        console.error(`[CAD Status] Error fetching tasks:`, tasksResult.reason?.message || tasksResult.reason);
+        console.error(`[CAD Status] Error fetching tasks for project ${projectName}:`, tasksResult.reason?.message || tasksResult.reason);
         tasks = []; // Use empty array on error
       }
 
       if (bugsResult.status === 'fulfilled') {
-        bugs = bugsResult.value || [];
+        bugs = bugsResult.value;
         console.log(`[CAD Status] Successfully fetched ${bugs.length} bugs for project ${projectName}`);
-        
-        // If bugs array is empty but project details show issue counts, log a warning
-        if (bugs.length === 0 && projectDetails?.issues) {
-          const totalIssues = (projectDetails.issues.open_count || 0) + (projectDetails.issues.closed_count || 0);
-          if (totalIssues > 0) {
-            console.warn(`[CAD Status] ⚠️  getBugs() returned 0 bugs but project details show ${totalIssues} issues. This might indicate a pagination or API issue.`);
-          }
-        }
       } else {
         console.error(`[CAD Status] Error fetching bugs for project ${projectName}:`, bugsResult.reason?.message || bugsResult.reason);
-        console.error(`[CAD Status] Bug error stack:`, bugsResult.reason?.stack);
         bugs = []; // Use empty array on error
-        
-        // If we have project details, log the expected counts
-        if (projectDetails?.issues) {
-          const totalIssues = (projectDetails.issues.open_count || 0) + (projectDetails.issues.closed_count || 0);
-          console.log(`[CAD Status] Project details indicate ${totalIssues} total issues (${projectDetails.issues.open_count || 0} open, ${projectDetails.issues.closed_count || 0} closed)`);
-        }
       }
 
       console.log(`[CAD Status] Final result: ${tasks.length} tasks and ${bugs.length} bugs for project ${projectName}`);
     } else {
-      // If not mapped, try to find the Zoho project by name
-      console.log(`[CAD Status] Project ${projectName} (ASI ID: ${asiProjectId}) is NOT mapped. Searching for Zoho project by name...`);
-      try {
-        const portals = await zohoService.getPortals(userId);
-        
-        if (portals.length > 0) {
-          const portalId = portals[0].id;
-          console.log(`[CAD Status] Searching for Zoho project "${projectName}" in portal ${portalId}...`);
-          
-          // Get all projects from Zoho and find by name
-          const allProjects = await zohoService.getProjects(userId, portalId);
-          const matchingProject = allProjects.find((p: any) => 
-            p.name && p.name.toLowerCase() === projectName.toLowerCase()
-          );
-          
-          if (matchingProject) {
-            const foundZohoProjectId = matchingProject.id_string || matchingProject.id;
-            console.log(`[CAD Status] ✅ Found Zoho project "${projectName}" with ID: ${foundZohoProjectId}`);
-            
-            // Fetch project details for counts
-            try {
-              projectDetails = await zohoService.getProject(userId, foundZohoProjectId.toString());
-              console.log(`[CAD Status] Got project details. Task counts: open=${projectDetails?.tasks?.open_count || 0}, closed=${projectDetails?.tasks?.closed_count || 0}`);
-              console.log(`[CAD Status] Issue counts: open=${projectDetails?.issues?.open_count || 0}, closed=${projectDetails?.issues?.closed_count || 0}`);
-            } catch (projectError: any) {
-              console.warn(`[CAD Status] Could not fetch project details:`, projectError.message);
-            }
-            
-            // Fetch tasks and bugs using the found Zoho project ID
-            console.log(`[CAD Status] Fetching tasks and bugs for Zoho project ${foundZohoProjectId} (type: ${typeof foundZohoProjectId})...`);
-            const [tasksResult, bugsResult] = await Promise.allSettled([
-              zohoService.getTasks(userId, foundZohoProjectId.toString()),
-              zohoService.getBugs(userId, foundZohoProjectId.toString()),
-            ]);
-
-            // Extract results
-            if (tasksResult.status === 'fulfilled') {
-              tasks = tasksResult.value || [];
-              console.log(`[CAD Status] Successfully fetched ${tasks.length} tasks for project ${projectName}`);
-            } else {
-              console.error(`[CAD Status] Error fetching tasks:`, tasksResult.reason?.message || tasksResult.reason);
-              tasks = [];
-            }
-
-            if (bugsResult.status === 'fulfilled') {
-              bugs = bugsResult.value || [];
-              console.log(`[CAD Status] Successfully fetched ${bugs.length} bugs for project ${projectName}`);
-            } else {
-              console.error(`[CAD Status] Error fetching bugs:`, bugsResult.reason?.message || bugsResult.reason);
-              bugs = [];
-            }
-          } else {
-            console.warn(`[CAD Status] ⚠️  Could not find Zoho project with name "${projectName}" in portal ${portalId}`);
-            console.warn(`[CAD Status] To map this project, use POST /api/projects/map-zoho-project with zohoProjectId and asiProjectId=${asiProjectId}`);
-          }
-        }
-      } catch (searchError: any) {
-        console.error(`[CAD Status] Error searching for Zoho project:`, searchError.message);
-        console.warn(`[CAD Status] To map this project, use POST /api/projects/map-zoho-project with zohoProjectId and asiProjectId=${asiProjectId}`);
-      }
+      console.warn(`[CAD Status] Project ${projectName} (ASI ID: ${asiProjectId}) is NOT mapped to a Zoho project. Returning empty tasks/bugs.`);
+      console.warn(`[CAD Status] To map this project, use POST /api/projects/map-zoho-project with zohoProjectId and asiProjectId=${asiProjectId}`);
     }
-    // If not mapped and not found, tasks and bugs remain empty arrays (default values)
+    // If not mapped, tasks and bugs remain empty arrays (default values)
 
     const summarizeItems = (items: any[]) => {
       const summary = {
@@ -1759,47 +1672,8 @@ router.get('/:projectIdentifier/cad-status', authenticate, async (req, res) => {
       return summary;
     };
 
-    // If tasks/bugs arrays are empty but we have project details with counts, use those as fallback
-    // This handles cases where getTasks/getBugs fail but project details show task/issue counts
-    let taskSummary = summarizeItems(tasks);
-    let issueSummary = summarizeItems(bugs);
-    
-    // Use project details counts as fallback if we don't have tasks/bugs
-    if (projectDetails) {
-      // If tasks array is empty but project details show task counts, use those
-      if (tasks.length === 0 && projectDetails?.tasks) {
-        const openCount = projectDetails.tasks.open_count || 0;
-        const closedCount = projectDetails.tasks.closed_count || 0;
-        const totalCount = openCount + closedCount;
-        
-        if (totalCount > 0) {
-          console.log(`[CAD Status] Using project details task counts as fallback: ${totalCount} total (${openCount} open, ${closedCount} closed)`);
-          taskSummary = {
-            total: totalCount,
-            todo: openCount, // Treat open as todo
-            in_progress: 0,
-            completed: closedCount,
-          };
-        }
-      }
-      
-      // If bugs array is empty but project details show issue counts, use those
-      if (bugs.length === 0 && projectDetails?.issues) {
-        const openCount = projectDetails.issues.open_count || 0;
-        const closedCount = projectDetails.issues.closed_count || 0;
-        const totalCount = openCount + closedCount;
-        
-        if (totalCount > 0) {
-          console.log(`[CAD Status] Using project details issue counts as fallback: ${totalCount} total (${openCount} open, ${closedCount} closed)`);
-          issueSummary = {
-            total: totalCount,
-            todo: openCount, // Treat open as todo
-            in_progress: 0,
-            completed: closedCount,
-          };
-        }
-      }
-    }
+    const taskSummary = summarizeItems(tasks);
+    const issueSummary = summarizeItems(bugs);
 
     // Derive open/closed counts for convenience
     const tasksData = {
@@ -1963,9 +1837,9 @@ router.get('/:projectIdentifier/cad-status', authenticate, async (req, res) => {
         // Summary data (backward compatible)
         tasks: tasksData,
         issues: issuesData,
-        // Full lists - commented out as not needed in UI for now
-        // tasksList: formattedTasks,
-        // issuesList: formattedIssues,
+        // Full lists
+        tasksList: formattedTasks,
+        issuesList: formattedIssues,
       },
     });
   } catch (error: any) {
