@@ -314,7 +314,11 @@ export async function executeSSHCommand(userId: number, command: string, retries
             // Look for shell prompt patterns or wait for timeout
             let lastActivityTime = Date.now();
             let lastOutputLength = 0;
-            const completionCheckInterval = setInterval(() => {
+            // Use faster polling when password is detected (100ms) vs normal (500ms)
+            let checkInterval = 500;
+            let completionCheckInterval: NodeJS.Timeout;
+            
+            const runCompletionCheck = () => {
               const timeSinceLastActivity = Date.now() - lastActivityTime;
               const currentOutputLength = allOutput.length;
               const outputChanged = currentOutputLength !== lastOutputLength;
@@ -323,6 +327,14 @@ export async function executeSSHCommand(userId: number, command: string, retries
               // Update last activity if output changed
               if (outputChanged) {
                 lastActivityTime = Date.now();
+              }
+              
+              // Speed up polling if password is prompted but not sent yet
+              if (passwordPrompted && !passwordSent && checkInterval > 100) {
+                clearInterval(completionCheckInterval);
+                checkInterval = 100;
+                completionCheckInterval = setInterval(runCompletionCheck, checkInterval);
+                return;
               }
               
               // Check if we see a shell prompt (indicates command finished)
@@ -340,8 +352,9 @@ export async function executeSSHCommand(userId: number, command: string, retries
               let shouldComplete = false;
               
               if (passwordPrompted && !passwordSent) {
-                // Password prompted but not sent yet - wait longer (up to 60 seconds)
-                if (timeSinceLastActivity > 60000) {
+                // Password prompted but not sent yet - wait longer (up to 120 seconds)
+                // Increased from 60s to handle slow network and user input
+                if (timeSinceLastActivity > 120000) {
                   console.log('Timeout waiting for password to be sent');
                   shouldComplete = true;
                 }
@@ -504,7 +517,10 @@ export async function executeSSHCommand(userId: number, command: string, retries
                   }
                 }, 3000); // Wait 3 seconds after completion detection to capture all output
               }
-            }, 500); // Check every 500ms
+            };
+            
+            // Start the completion check interval
+            completionCheckInterval = setInterval(runCompletionCheck, checkInterval);
 
             stream.on('close', (code: number | null) => {
               console.log(`[SSH Stream] Stream closed with code: ${code}`);

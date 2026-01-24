@@ -25,6 +25,12 @@ const PORT = process.env.PORT || 3000;
 // Create HTTP server for WebSocket support
 const server = createServer(app);
 
+// Increase server timeout for long-running SSH commands (especially those requiring passwords)
+// Default is 2 minutes, increase to 5 minutes to handle password prompts
+server.timeout = 300000; // 5 minutes in milliseconds
+server.keepAliveTimeout = 300000; // Keep connections alive for 5 minutes
+server.headersTimeout = 300000; // Wait 5 minutes for headers
+
 // Middleware
 // Configure CORS to allow frontend URL from environment
 const isDevelopment = process.env.NODE_ENV !== 'production';
