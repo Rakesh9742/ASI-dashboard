@@ -442,6 +442,12 @@ router.put('/users/:id', authenticate, async (req, res) => {
 
     const { ssh_user, sshpassword, full_name, role, domain_id, is_active, run_directory } = req.body;
 
+    // Debug logging for SSH fields
+    console.log(`[Update User ${userId}] Received SSH fields:`, {
+      ssh_user: ssh_user !== undefined ? (ssh_user ? '***provided***' : 'empty/null') : 'undefined',
+      sshpassword: sshpassword !== undefined ? (sshpassword ? '***provided***' : 'empty/null') : 'undefined',
+    });
+
     // Get IP and port from environment variables (hardcoded)
     const ipaddress = process.env.SSH_IP || null;
     let port = null;
@@ -524,18 +530,26 @@ router.put('/users/:id', authenticate, async (req, res) => {
     }
     
     if (ssh_user !== undefined && hasSshUser) {
+      // Only update if a non-empty value is provided, or explicitly set to null/empty
+      // If ssh_user is an empty string, convert to null
+      const sshUserValue = ssh_user && ssh_user.trim() ? ssh_user.trim() : null;
       updates.push(`ssh_user = $${paramCount++}`);
-      values.push(ssh_user || null);
+      values.push(sshUserValue);
+      console.log(`[Update User ${userId}] Updating ssh_user:`, sshUserValue ? '***value provided***' : 'null');
     }
     if (sshpassword !== undefined && hasSshPasswordHash) {
       // Encrypt SSH password if provided
-      if (sshpassword) {
+      if (sshpassword && sshpassword.trim()) {
         const sshpasswordHash = encrypt(sshpassword);
         updates.push(`sshpassword_hash = $${paramCount++}`);
         values.push(sshpasswordHash);
+        console.log(`[Update User ${userId}] Updating sshpassword_hash: ***encrypted***`);
       } else {
+        // Only set to null if explicitly provided (empty string or null)
+        // Don't update if undefined (user didn't touch the password field)
         updates.push(`sshpassword_hash = $${paramCount++}`);
         values.push(null);
+        console.log(`[Update User ${userId}] Setting sshpassword_hash to null`);
       }
     }
     if (run_directory !== undefined && hasRunDirectory) {
@@ -558,7 +572,18 @@ router.put('/users/:id', authenticate, async (req, res) => {
     const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount}
                    RETURNING ${returningFields.join(', ')}`;
 
+    console.log(`[Update User ${userId}] Executing query with ${updates.length} updates:`, {
+      updates: updates,
+      hasSshFields: updates.some(u => u.includes('ssh_user') || u.includes('sshpassword_hash')),
+    });
+
     const result = await pool.query(query, values);
+    
+    console.log(`[Update User ${userId}] Update successful. Returned user:`, {
+      id: result.rows[0]?.id,
+      ssh_user: result.rows[0]?.ssh_user || 'null/empty',
+      has_sshpassword_hash: result.rows[0]?.sshpassword_hash ? '***has value***' : 'null/empty',
+    });
 
     // If SSH password was updated, close any existing SSH connections for this user
     // so they will be re-established with the new password on next login
