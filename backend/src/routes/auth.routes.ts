@@ -442,12 +442,6 @@ router.put('/users/:id', authenticate, async (req, res) => {
 
     const { ssh_user, sshpassword, full_name, role, domain_id, is_active, run_directory } = req.body;
 
-    // Debug logging for SSH fields
-    console.log(`[Update User ${userId}] Received SSH fields:`, {
-      ssh_user: ssh_user !== undefined ? (ssh_user ? '***provided***' : 'empty/null') : 'undefined',
-      sshpassword: sshpassword !== undefined ? (sshpassword ? '***provided***' : 'empty/null') : 'undefined',
-    });
-
     // Get IP and port from environment variables (hardcoded)
     const ipaddress = process.env.SSH_IP || null;
     let port = null;
@@ -482,47 +476,6 @@ router.put('/users/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Check if SSH columns exist by trying to query them directly
-    // This is more reliable than information_schema which was failing in production
-    let hasSshUser = false;
-    let hasSshPasswordHash = false;
-    let hasIpaddress = false;
-    let hasPort = false;
-    let hasRunDirectory = false;
-    
-    // Try to query each column to verify it exists
-    const columnChecks = [
-      { name: 'ssh_user', setter: () => { hasSshUser = true; } },
-      { name: 'sshpassword_hash', setter: () => { hasSshPasswordHash = true; } },
-      { name: 'ipaddress', setter: () => { hasIpaddress = true; } },
-      { name: 'port', setter: () => { hasPort = true; } },
-      { name: 'run_directory', setter: () => { hasRunDirectory = true; } },
-    ];
-    
-    for (const col of columnChecks) {
-      try {
-        await pool.query(`SELECT ${col.name} FROM users WHERE id = $1 LIMIT 1`, [userId]);
-        col.setter();
-      } catch (error: any) {
-        // Column doesn't exist (error code 42703 = undefined_column)
-        if (error.code === '42703') {
-          // Column definitely doesn't exist, leave flag as false
-        } else {
-          // Other error (might be connection issue), but column might exist
-          // For safety, assume it exists if it's not a column error
-          col.setter();
-        }
-      }
-    }
-    
-    console.log(`[Update User ${userId}] Column existence check:`, {
-      hasIpaddress,
-      hasPort,
-      hasSshUser,
-      hasSshPasswordHash,
-      hasRunDirectory,
-    });
-
     // Build update query dynamically
     const updates: string[] = [];
     const values: any[] = [];
@@ -544,52 +497,28 @@ router.put('/users/:id', authenticate, async (req, res) => {
       updates.push(`is_active = $${paramCount++}`);
       values.push(is_active);
     }
-    // Update IP and port from environment (hardcoded) - only if columns exist
-    if (hasIpaddress) {
+    // Always update IP and port from environment (hardcoded)
       updates.push(`ipaddress = $${paramCount++}`);
       values.push(ipaddress || null);
-    }
-    if (hasPort) {
       updates.push(`port = $${paramCount++}`);
-      values.push(port || null);
-    }
+    values.push(port || null);
     
-    if (ssh_user !== undefined && hasSshUser) {
-      // Only update if a non-empty value is provided, or explicitly set to null/empty
-      // If ssh_user is an empty string, convert to null
-      const sshUserValue = ssh_user && ssh_user.trim() ? ssh_user.trim() : null;
+    if (ssh_user !== undefined) {
       updates.push(`ssh_user = $${paramCount++}`);
-      values.push(sshUserValue);
-      console.log(`[Update User ${userId}] Updating ssh_user:`, sshUserValue ? '***value provided***' : 'null');
-    } else {
-      console.log(`[Update User ${userId}] NOT updating ssh_user:`, {
-        ssh_user_undefined: ssh_user === undefined,
-        hasSshUser,
-        ssh_user_value: ssh_user !== undefined ? (ssh_user ? '***provided***' : 'empty/null') : 'undefined',
-      });
+      values.push(ssh_user || null);
     }
-    if (sshpassword !== undefined && hasSshPasswordHash) {
+    if (sshpassword !== undefined) {
       // Encrypt SSH password if provided
-      if (sshpassword && sshpassword.trim()) {
+      if (sshpassword) {
         const sshpasswordHash = encrypt(sshpassword);
         updates.push(`sshpassword_hash = $${paramCount++}`);
         values.push(sshpasswordHash);
-        console.log(`[Update User ${userId}] Updating sshpassword_hash: ***encrypted***`);
       } else {
-        // Only set to null if explicitly provided (empty string or null)
-        // Don't update if undefined (user didn't touch the password field)
         updates.push(`sshpassword_hash = $${paramCount++}`);
         values.push(null);
-        console.log(`[Update User ${userId}] Setting sshpassword_hash to null`);
       }
-    } else {
-      console.log(`[Update User ${userId}] NOT updating sshpassword_hash:`, {
-        sshpassword_undefined: sshpassword === undefined,
-        hasSshPasswordHash,
-        sshpassword_value: sshpassword !== undefined ? (sshpassword ? '***provided***' : 'empty/null') : 'undefined',
-      });
     }
-    if (run_directory !== undefined && hasRunDirectory) {
+    if (run_directory !== undefined) {
       updates.push(`run_directory = $${paramCount++}`);
       values.push(run_directory || null);
     }
@@ -598,29 +527,12 @@ router.put('/users/:id', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'No fields to update' });
     }
 
-    // Build RETURNING clause with only existing columns
-    const returningFields = ['id', 'username', 'email', 'full_name', 'role', 'domain_id', 'is_active', 'created_at'];
-    if (hasIpaddress) returningFields.push('ipaddress');
-    if (hasPort) returningFields.push('port');
-    if (hasSshUser) returningFields.push('ssh_user');
-    if (hasRunDirectory) returningFields.push('run_directory');
-
     values.push(userId);
     const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount}
-                   RETURNING ${returningFields.join(', ')}`;
-
-    console.log(`[Update User ${userId}] Executing query with ${updates.length} updates:`, {
-      updates: updates,
-      hasSshFields: updates.some(u => u.includes('ssh_user') || u.includes('sshpassword_hash')),
-    });
+                   RETURNING id, username, email, full_name, role, domain_id, is_active, 
+                             created_at, ipaddress, port, ssh_user, run_directory`;
 
     const result = await pool.query(query, values);
-    
-    console.log(`[Update User ${userId}] Update successful. Returned user:`, {
-      id: result.rows[0]?.id,
-      ssh_user: result.rows[0]?.ssh_user || 'null/empty',
-      has_sshpassword_hash: result.rows[0]?.sshpassword_hash ? '***has value***' : 'null/empty',
-    });
 
     // If SSH password was updated, close any existing SSH connections for this user
     // so they will be re-established with the new password on next login
