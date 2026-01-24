@@ -1,6 +1,6 @@
 import express from 'express';
 import { authenticate } from '../middleware/auth.middleware';
-import { executeSSHCommand, closeSSHConnection, activeShellStreams, passwordSentFlags } from '../services/ssh.service';
+import { executeSSHCommand, closeSSHConnection, activeShellStreams, passwordSentFlags, passwordPromptDetected } from '../services/ssh.service';
 import { sshConnections } from '../services/ssh.service';
 import { closeTerminalSessionsForUser } from '../services/terminal.service';
 
@@ -41,43 +41,124 @@ router.post('/execute', authenticate, async (req, res) => {
     }
     console.log('═══════════════════════════════════════════════════════════');
 
-    const result = await executeSSHCommand(userId, command.trim(), 1, workingDirectory);
-    
-    // Log the result
-    console.log('═══════════════════════════════════════════════════════════');
-    console.log(`📤 SSH COMMAND RESULT FOR USER ${userId}:`);
-    console.log(`   Exit Code: ${result.code}`);
-    if (result.stdout) {
-      console.log(`   Stdout: ${result.stdout.substring(0, 500)}${result.stdout.length > 500 ? '...' : ''}`);
-    }
-    if (result.stderr) {
-      console.log(`   Stderr: ${result.stderr.substring(0, 500)}${result.stderr.length > 500 ? '...' : ''}`);
-    }
-    console.log('═══════════════════════════════════════════════════════════');
+    // Clear password prompt flag before starting
+    passwordPromptDetected.set(userId, false);
 
-    // Check if password is requested in output
-    const combinedOutput = (result.stdout || '') + (result.stderr || '');
-    const passwordPromptPatterns = [
-      /password:/i,
-      /enter password/i,
-      /password for/i,
-      /sudo password/i,
-      /\[sudo\] password/i,
-      /password required/i,
-    ];
+    // Start command execution
+    const commandPromise = executeSSHCommand(userId, command.trim(), 1, workingDirectory);
     
-    const requiresPassword = passwordPromptPatterns.some(pattern => pattern.test(combinedOutput));
-
-    res.json({
-      success: true,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      exitCode: result.code,
-      requiresPassword: requiresPassword,
-      timestamp: new Date().toISOString()
+    // Set up mechanism to handle password prompts
+    // If password prompt is detected, wait up to 20 seconds to see if password is sent and command completes
+    // This avoids early return and allows the command to complete naturally
+    const passwordCheckPromise = new Promise<{ stdout: string; stderr: string; code: number | null; requiresPassword: boolean } | null>((resolve) => {
+      let checkInterval: NodeJS.Timeout;
+      let passwordDetectedTime: number | null = null;
+      const MAX_WAIT_AFTER_PASSWORD_DETECTION = 20000; // Wait up to 20 seconds after password detection
+      const MAX_WAIT_FOR_PASSWORD_SEND = 12000; // Wait up to 12 seconds for password to be sent
+      
+      checkInterval = setInterval(() => {
+        if (passwordPromptDetected.get(userId) === true && passwordDetectedTime === null) {
+          passwordDetectedTime = Date.now();
+          console.log('Password prompt detected - waiting for password and command completion...');
+        }
+        
+        // If password was detected, check timing
+        if (passwordDetectedTime !== null) {
+          const timeSinceDetection = Date.now() - passwordDetectedTime;
+          const passwordWasSent = passwordSentFlags.get(userId) === true;
+          
+          // If password not sent after MAX_WAIT_FOR_PASSWORD_SEND, return early with requiresPassword
+          if (!passwordWasSent && timeSinceDetection > MAX_WAIT_FOR_PASSWORD_SEND) {
+            clearInterval(checkInterval);
+            console.log(`Password prompt detected but not sent after ${MAX_WAIT_FOR_PASSWORD_SEND}ms - returning early to avoid timeout`);
+            resolve({
+              stdout: '',
+              stderr: '[Password prompt detected - password required]',
+              code: null,
+              requiresPassword: true
+            });
+          } else if (passwordWasSent && timeSinceDetection > MAX_WAIT_AFTER_PASSWORD_DETECTION) {
+            // Password was sent but command taking too long - let commandPromise handle it
+            clearInterval(checkInterval);
+            console.log('Password was sent, waiting for command to complete...');
+            resolve(null); // Let commandPromise resolve normally
+          }
+        }
+      }, 500); // Check every 500ms
+      
+      // Clean up interval if command completes first
+      commandPromise.finally(() => {
+        clearInterval(checkInterval);
+        if (passwordDetectedTime === null) {
+          // No password was needed, resolve to let command result through
+          resolve(null);
+        }
+      });
     });
+
+    // Handle password detection and command execution
+    // If password is detected but not sent quickly, return early
+    // Otherwise, wait for command to complete normally
+    try {
+      const passwordCheckResult = await Promise.race([
+        passwordCheckPromise,
+        commandPromise.then(() => null) // Command completed before password check resolved
+      ]);
+      
+      let result;
+      if (passwordCheckResult && 'requiresPassword' in passwordCheckResult && passwordCheckResult.requiresPassword) {
+        // Password prompt detected but not sent in time - return early
+        result = passwordCheckResult;
+        console.log('Returning early due to password prompt - user needs to send password');
+      } else {
+        // Either no password needed, or password was sent - wait for command to complete
+        result = await commandPromise;
+        console.log('Command completed successfully');
+      }
+      
+      // Log the result
+      console.log('═══════════════════════════════════════════════════════════');
+      console.log(`📤 SSH COMMAND RESULT FOR USER ${userId}:`);
+      console.log(`   Exit Code: ${result.code}`);
+      if (result.stdout) {
+        console.log(`   Stdout: ${result.stdout.substring(0, 500)}${result.stdout.length > 500 ? '...' : ''}`);
+      }
+      if (result.stderr) {
+        console.log(`   Stderr: ${result.stderr.substring(0, 500)}${result.stderr.length > 500 ? '...' : ''}`);
+      }
+      console.log('═══════════════════════════════════════════════════════════');
+
+      // Check if password is requested in output
+      const combinedOutput = (result.stdout || '') + (result.stderr || '');
+      const passwordPromptPatterns = [
+        /password:/i,
+        /enter password/i,
+        /password for/i,
+        /sudo password/i,
+        /\[sudo\] password/i,
+        /password required/i,
+      ];
+      
+      const requiresPassword = passwordPromptPatterns.some(pattern => pattern.test(combinedOutput)) || 
+                               (result as any).requiresPassword === true;
+
+      res.json({
+        success: true,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.code,
+        requiresPassword: requiresPassword,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error: any) {
+      console.error('Error executing SSH command:', error);
+      res.status(500).json({ 
+        error: error.message || 'Failed to execute command',
+        details: error.code || 'SSH_ERROR'
+      });
+    }
   } catch (error: any) {
-    console.error('Error executing SSH command:', error);
+    console.error('Error in SSH execute route:', error);
     res.status(500).json({ 
       error: error.message || 'Failed to execute command',
       details: error.code || 'SSH_ERROR'

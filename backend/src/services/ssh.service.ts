@@ -18,6 +18,9 @@ export const activeShellStreams = new Map<number, any>();
 // Track if password was sent for a user's command (key: userId, value: boolean)
 export const passwordSentFlags = new Map<number, boolean>();
 
+// Track if password prompt was detected for a user's command (key: userId, value: boolean)
+export const passwordPromptDetected = new Map<number, boolean>();
+
 /**
  * Get or create SSH connection for a user
  */
@@ -257,6 +260,7 @@ export async function executeSSHCommand(userId: number, command: string, retries
             let commandSent = false;
             let outputComplete = false;
             let commandStarted = false;
+            let completionInProgress = false; // Prevent multiple completion triggers
 
             // Store the stream for password input
             activeShellStreams.set(userId, stream);
@@ -283,6 +287,7 @@ export async function executeSSHCommand(userId: number, command: string, retries
               // Check for password prompt
               if (!passwordPrompted && /password/i.test(output)) {
                 passwordPrompted = true;
+                passwordPromptDetected.set(userId, true);
                 console.log('Password prompt detected in sudo command');
                 stderr += '\n[Password prompt detected - password required]';
               }
@@ -386,7 +391,11 @@ export async function executeSSHCommand(userId: number, command: string, retries
                     return /^[\w@\-]+[:\/][\w\/~]+[#$>]\s*$/.test(trimmed) && trimmed.length < 100;
                   });
                   
-                  console.log(`[Completion Check] Password sent. Output after command: ${outputAfterCommand.length} chars, Has prompt: ${hasPromptInLastLines || anyLineIsPrompt}, Time since activity: ${timeSinceLastActivity}ms`);
+                  // Only log completion check details if not already completing (to reduce log spam)
+                  if (!completionInProgress && timeSinceLastActivity % 5000 < 200) {
+                    // Log every ~5 seconds to reduce spam
+                    console.log(`[Completion Check] Password sent. Output after command: ${outputAfterCommand.length} chars, Has prompt: ${hasPromptInLastLines || anyLineIsPrompt}, Time since activity: ${timeSinceLastActivity}ms`);
+                  }
                   
                   // Check for completion indicators in the output
                   const hasDoneMessage = /Done\./i.test(outputAfterCommand) || /done\./i.test(allOutput);
@@ -398,11 +407,15 @@ export async function executeSSHCommand(userId: number, command: string, retries
                   // 3. No activity for 60 seconds (command likely finished or hung) - increased from 30s
                   // 4. We have substantial output and no activity for 30 seconds - increased from 15s
                   if (anyLineIsPrompt && hasOutputAfterCommand) {
-                    console.log('Command completion detected: Shell prompt found after command output');
+                    if (!completionInProgress) {
+                      console.log('Command completion detected: Shell prompt found after command output');
+                    }
                     shouldComplete = true;
                   } else if (hasDoneMessage || hasSuccessMessage) {
                     // Command explicitly indicates completion
-                    console.log(`Command completion detected: Found completion message (Done/Success)`);
+                    if (!completionInProgress) {
+                      console.log(`Command completion detected: Found completion message (Done/Success)`);
+                    }
                     shouldComplete = true;
                   } else if (timeSinceLastActivity > 60000) {
                     // Wait up to 60 seconds after password sent for command to complete (increased from 30s)
@@ -428,9 +441,10 @@ export async function executeSSHCommand(userId: number, command: string, retries
                 }
               }
               
-              if (shouldComplete && !outputComplete && commandStarted) {
+              if (shouldComplete && !outputComplete && !completionInProgress && commandStarted) {
                 // Don't resolve immediately - wait a bit more to capture any remaining output
                 // This is especially important for commands that output data after completion
+                completionInProgress = true; // Set flag to prevent multiple triggers
                 setTimeout(() => {
                   if (!outputComplete) {
                     outputComplete = true;
@@ -487,6 +501,10 @@ export async function executeSSHCommand(userId: number, command: string, retries
                         if (trimmed.includes('sudo python3') && trimmed.length > 100) {
                           return false;
                         }
+                        // Remove DISPLAY variable warnings (harmless shell warnings, not actual errors)
+                        if (/^DISPLAY:\s*Undefined variable\.?$/i.test(trimmed)) {
+                          return false;
+                        }
                         // Keep everything else (including actual script output)
                         return true;
                       })
@@ -528,10 +546,11 @@ export async function executeSSHCommand(userId: number, command: string, retries
               
               // Wait a bit more to ensure all data is captured
               setTimeout(() => {
-                clearInterval(completionCheckInterval);
-                clearTimeout(commandTimeout);
-                activeShellStreams.delete(userId); // Clean up
-                passwordSentFlags.delete(userId); // Clean up password flag
+                    clearInterval(completionCheckInterval);
+                    clearTimeout(commandTimeout);
+                    activeShellStreams.delete(userId); // Clean up
+                    passwordSentFlags.delete(userId); // Clean up password flag
+                    passwordPromptDetected.delete(userId); // Clean up password prompt flag
                 if (!outputComplete) {
                   outputComplete = true;
                   console.log('═══════════════════════════════════════════════════════════');
@@ -591,10 +610,11 @@ export async function executeSSHCommand(userId: number, command: string, retries
             });
             
             stream.on('error', (err: Error) => {
-              clearInterval(completionCheckInterval);
-              clearTimeout(commandTimeout);
-              activeShellStreams.delete(userId); // Clean up
-              passwordSentFlags.delete(userId); // Clean up password flag
+                    clearInterval(completionCheckInterval);
+                    clearTimeout(commandTimeout);
+                    activeShellStreams.delete(userId); // Clean up
+                    passwordSentFlags.delete(userId); // Clean up password flag
+                    passwordPromptDetected.delete(userId); // Clean up password prompt flag
               reject(err);
             });
           });

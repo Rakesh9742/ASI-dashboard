@@ -2221,9 +2221,16 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
         setExitCode(exitCode);
         commandComplete();
 
-        // Only close dialog when command completes successfully (exit code 0)
-        // Do NOT close on password send or command start - only on successful completion
-        final isSuccess = result['success'] == true && exitCode == 0;
+        // Only close dialog when command completes successfully
+        // Success criteria:
+        // 1. result['success'] == true AND
+        // 2. (exitCode == 0 OR (exitCode == null AND output contains "Done." and no errors))
+        final hasDoneMessage = finalOutput.toLowerCase().contains('done.');
+        final hasError = finalOutput.toLowerCase().contains('error') || 
+                        finalOutput.toLowerCase().contains('failed');
+        // Consider success if: exit code is 0, OR (exit code is null but we see "Done." and no errors)
+        final isSuccess = result['success'] == true && 
+                         (exitCode == 0 || (exitCode == null && hasDoneMessage && !hasError));
         
         if (isSuccess) {
           // Mark project as exported in the database
