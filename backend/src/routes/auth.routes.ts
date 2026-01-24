@@ -482,30 +482,13 @@ router.put('/users/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Check if SSH columns exist in the database
-    const columnCheck = await pool.query(`
-      SELECT column_name 
-      FROM information_schema.columns 
-      WHERE table_schema = 'public' 
-        AND table_name = 'users' 
-        AND column_name IN ('ipaddress', 'port', 'ssh_user', 'sshpassword_hash', 'run_directory')
-    `);
-    
-    const existingColumns = columnCheck.rows.map((row: any) => row.column_name);
-    const hasIpaddress = existingColumns.includes('ipaddress');
-    const hasPort = existingColumns.includes('port');
-    const hasSshUser = existingColumns.includes('ssh_user');
-    const hasSshPasswordHash = existingColumns.includes('sshpassword_hash');
-    const hasRunDirectory = existingColumns.includes('run_directory');
-    
-    console.log(`[Update User ${userId}] Column check results:`, {
-      existingColumns,
-      hasIpaddress,
-      hasPort,
-      hasSshUser,
-      hasSshPasswordHash,
-      hasRunDirectory,
-    });
+    // SSH columns exist in the database (confirmed by user's database query)
+    // We'll always try to update them if values are provided
+    const hasSshUser = true;
+    const hasSshPasswordHash = true;
+    const hasIpaddress = true;
+    const hasPort = true;
+    const hasRunDirectory = true;
 
     // Build update query dynamically
     const updates: string[] = [];
