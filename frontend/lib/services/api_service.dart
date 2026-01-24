@@ -956,5 +956,73 @@ class ApiService {
       throw Exception(error['error'] ?? 'Failed to send password');
     }
   }
+
+  Future<Map<String, dynamic>> markZohoProjectExported({
+    required String projectId,
+    String? token,
+    String? portalId,
+    String? projectName,
+  }) async {
+    // Extract actual project ID if it's prefixed with "zoho_"
+    final actualProjectId = projectId.startsWith('zoho_') 
+        ? projectId.replaceFirst('zoho_', '') 
+        : projectId;
+    
+    final uri = Uri.parse('$baseUrl/zoho/projects/$actualProjectId/mark-exported');
+    
+    final body = <String, dynamic>{};
+    if (portalId != null) body['portalId'] = portalId;
+    if (projectName != null) body['projectName'] = projectName;
+    
+    final response = await http.post(
+      uri,
+      headers: _getHeaders(token: token),
+      body: json.encode(body),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to mark project as exported');
+    }
+  }
+
+  // Save run directory path after setup
+  Future<Map<String, dynamic>> saveRunDirectory({
+    required String projectName,
+    required String blockName,
+    required String experimentName,
+    required String runDirectory,
+    required String username, // Username from SSH session (whoami)
+    String? zohoProjectId,
+    String? token,
+  }) async {
+    final body = <String, dynamic>{
+      'projectName': projectName,
+      'blockName': blockName,
+      'experimentName': experimentName,
+      'runDirectory': runDirectory,
+      'username': username, // Pass the actual username from SSH session
+    };
+    
+    // Include Zoho project ID if provided (for unmapped Zoho projects)
+    if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
+      body['zohoProjectId'] = zohoProjectId;
+    }
+    
+    final response = await http.post(
+      Uri.parse('$baseUrl/projects/save-run-directory'),
+      headers: _getHeaders(token: token),
+      body: json.encode(body),
+    );
+    
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? error['message'] ?? 'Failed to save run directory');
+    }
+  }
 }
 

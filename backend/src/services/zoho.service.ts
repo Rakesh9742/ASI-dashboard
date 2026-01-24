@@ -41,12 +41,20 @@ interface ZohoProjectsResponse {
   };
 }
 
+interface PortalsCacheEntry {
+  portals: any[];
+  timestamp: number;
+}
+
 class ZohoService {
   private clientId: string;
   private clientSecret: string;
   private redirectUri: string;
   private apiUrl: string;
   private authUrl: string;
+  // Cache for portals data to reduce API calls (TTL: 10 minutes)
+  private portalsCache: Map<number, PortalsCacheEntry> = new Map();
+  private readonly PORTALS_CACHE_TTL = 10 * 60 * 1000; // 10 minutes in milliseconds
 
   constructor() {
     this.clientId = process.env.ZOHO_CLIENT_ID || '';
@@ -620,20 +628,88 @@ class ZohoService {
 
   /**
    * Get all portals (workspaces) for the user
+   * Uses caching to reduce API calls and prevent rate limiting
    */
-  async getPortals(userId: number): Promise<any[]> {
+  async getPortals(userId: number, forceRefresh: boolean = false): Promise<any[]> {
+    // Check cache first (unless force refresh is requested)
+    if (!forceRefresh) {
+      const cached = this.portalsCache.get(userId);
+      if (cached) {
+        const age = Date.now() - cached.timestamp;
+        if (age < this.PORTALS_CACHE_TTL) {
+          console.log(`[Cache Hit] Returning cached portals for user ${userId} (age: ${Math.round(age / 1000)}s)`);
+          return cached.portals;
+        } else {
+          // Cache expired, remove it
+          console.log(`[Cache Expired] Removing expired cache for user ${userId}`);
+          this.portalsCache.delete(userId);
+        }
+      }
+    } else {
+      console.log(`[Cache Bypass] Force refresh requested for user ${userId}`);
+    }
+
     try {
+      console.log(`[API Call] Fetching portals from Zoho API for user ${userId}`);
       const client = await this.getAuthenticatedClient(userId);
       const response = await client.get('/restapi/portals/');
 
       // Zoho API response structure may vary
+      let portals: any[] = [];
       if (response.data.response?.result?.portals) {
-        return response.data.response.result.portals;
+        portals = response.data.response.result.portals;
+      } else {
+        portals = response.data.portals || [];
       }
-      return response.data.portals || [];
+
+      // Cache the result
+      this.portalsCache.set(userId, {
+        portals,
+        timestamp: Date.now()
+      });
+      console.log(`[Cache Updated] Cached portals for user ${userId} (${portals.length} portals)`);
+
+      return portals;
     } catch (error: any) {
+      // Check if this is a rate limit error
+      const isRateLimitError = error.response?.data?.error?.title === 'URL_ROLLING_THROTTLES_LIMIT_EXCEEDED' ||
+                               error.response?.status === 429 ||
+                               (error.response?.data?.error?.details?.message?.includes('100 requests per API in 2 minutes'));
+
+      // If API call fails but we have cached data, return cached data as fallback
+      const cached = this.portalsCache.get(userId);
+      if (cached && !forceRefresh) {
+        const age = Date.now() - cached.timestamp;
+        // Use stale cache if it's less than 30 minutes old
+        if (age < 30 * 60 * 1000) {
+          console.log(`[Cache Fallback] API call failed, returning stale cache for user ${userId} (age: ${Math.round(age / 1000)}s)`);
+          return cached.portals;
+        }
+      }
+
+      // If rate limit error and no cache, return empty array gracefully instead of throwing
+      if (isRateLimitError) {
+        const waitTime = error.response?.data?.error?.details?.message?.match(/after (\d+) minutes?/)?.[1] || 'unknown';
+        console.warn(`[Rate Limit] Zoho API rate limit exceeded for user ${userId}. Try again after ${waitTime} minutes. Returning empty array.`);
+        console.warn(`[Rate Limit] Tip: Once cache is populated, cached data will be returned even during rate limits.`);
+        return []; // Return empty array instead of throwing error
+      }
+      
       console.error('Error fetching portals:', error.response?.data || error.message);
       throw new Error(`Failed to fetch portals: ${error.response?.data?.error || error.message}`);
+    }
+  }
+
+  /**
+   * Clear portals cache for a specific user or all users
+   */
+  clearPortalsCache(userId?: number): void {
+    if (userId) {
+      this.portalsCache.delete(userId);
+      console.log(`[Cache Cleared] Cleared portals cache for user ${userId}`);
+    } else {
+      this.portalsCache.clear();
+      console.log(`[Cache Cleared] Cleared all portals cache`);
     }
   }
 

@@ -18,7 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_projects_created_by ON projects(created_by);
 CREATE TABLE IF NOT EXISTS project_domains (
     project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
     domain_id INTEGER REFERENCES domains(id) ON DELETE CASCADE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     PRIMARY KEY (project_id, domain_id)
 );
 

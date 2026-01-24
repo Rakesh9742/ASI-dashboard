@@ -98,13 +98,11 @@ class FileProcessorService {
       this.outputFolder = path.join(process.cwd(), 'output');
     }
     this.ensureOutputFolderExists();
-    console.log(`📁 EDA Output folder location: ${this.outputFolder}`);
   }
 
   private ensureOutputFolderExists(): void {
     if (!fs.existsSync(this.outputFolder)) {
       fs.mkdirSync(this.outputFolder, { recursive: true });
-      console.log(`Created output folder at: ${this.outputFolder}`);
     }
   }
 
@@ -131,35 +129,16 @@ class FileProcessorService {
         }))
         .on('data', (data: any) => {
           try {
-            // Log raw data for debugging first row
-            if (results.length === 0) {
-              console.log(`📄 [FILE PROCESSOR] First row raw data keys:`, Object.keys(data));
-              console.log(`📄 [FILE PROCESSOR] Sample values:`, {
-                project: data['project'],
-                domain: data['domain'],
-                block_name: data['block_name']
-              });
-            }
+            // Process row data
             results.push(this.normalizeData(data));
           } catch (error: any) {
-            console.warn(`⚠️  [FILE PROCESSOR] Warning processing row:`, error.message);
             // Continue processing other rows even if one fails
           }
         })
         .on('end', () => {
-          console.log(`📄 [FILE PROCESSOR] Finished reading CSV, got ${results.length} rows`);
-          if (results.length > 0) {
-            console.log(`📄 [FILE PROCESSOR] First normalized row sample:`, {
-              project_name: results[0].project_name,
-              domain_name: results[0].domain_name,
-              block_name: results[0].block_name,
-              stage: results[0].stage
-            });
-          }
           resolve(results);
         })
         .on('error', (error: Error) => {
-          console.error(`❌ [FILE PROCESSOR] CSV parsing error:`, error);
           reject(error);
         });
     });
@@ -173,22 +152,14 @@ class FileProcessorService {
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const data = JSON.parse(fileContent);
       
-      console.log(`📄 [FILE PROCESSOR] JSON keys: ${Object.keys(data).join(', ')}`);
-      console.log(`📄 [FILE PROCESSOR] Has stages property: ${!!data.stages}, Type: ${typeof data.stages}`);
-      
       // Handle PD JSON structure with nested stages
       if (data.stages && typeof data.stages === 'object' && !Array.isArray(data.stages)) {
-        console.log(`📄 [FILE PROCESSOR] ✅ Detected PD JSON structure with stages`);
         const stageNames = Object.keys(data.stages);
-        console.log(`📄 [FILE PROCESSOR] Found ${stageNames.length} stages: ${stageNames.join(', ')}`);
-        
         const results: ProcessedFileData[] = [];
         
         // Process each stage
         for (const [stageName, stageData] of Object.entries(data.stages)) {
           if (typeof stageData === 'object' && stageData !== null) {
-            console.log(`📄 [FILE PROCESSOR] Processing stage: ${stageName}`);
-            
             // Create a clean merged data object (exclude the stages property to avoid recursion)
             const { stages, last_updated, ...topLevelData } = data;
             const mergedData = {
@@ -197,37 +168,24 @@ class FileProcessorService {
               stage: stageName
             };
             
-            console.log(`📄 [FILE PROCESSOR] Stage ${stageName} merged data keys: ${Object.keys(mergedData).slice(0, 10).join(', ')}...`);
-            console.log(`📄 [FILE PROCESSOR] Stage ${stageName} sample values - area: ${mergedData.area}, inst_count: ${mergedData.inst_count}, run_status: ${mergedData.run_status}`);
-            
             // Convert PD JSON structure to normalized format
             const normalized = this.normalizePDJSONData(mergedData);
             if (normalized) {
               results.push(normalized);
-              console.log(`✅ [FILE PROCESSOR] Successfully normalized stage: ${stageName} - area: ${normalized.area}, inst_count: ${normalized.inst_count}`);
-            } else {
-              console.warn(`⚠️  [FILE PROCESSOR] Failed to normalize stage: ${stageName}`);
             }
           }
         }
         
         if (results.length > 0) {
-          console.log(`📄 [FILE PROCESSOR] ✅ Successfully processed ${results.length} stages from JSON`);
           return results;
-        } else {
-          console.warn(`⚠️  [FILE PROCESSOR] No stages were successfully processed, falling back to legacy format`);
         }
-      } else {
-        console.log(`📄 [FILE PROCESSOR] ⚠️  No stages detected - stages exists: ${!!data.stages}, is object: ${data.stages && typeof data.stages === 'object'}, is array: ${Array.isArray(data.stages)}`);
       }
       
       // Handle both array and single object (legacy format)
-      console.log(`📄 [FILE PROCESSOR] Using legacy format handler`);
       const dataArray = Array.isArray(data) ? data : [data];
       
       return dataArray.map(item => this.normalizeData(item));
     } catch (error: any) {
-      console.error(`❌ [FILE PROCESSOR] Error parsing JSON:`, error);
       throw new Error(`Failed to parse JSON file: ${error.message}`);
     }
   }
@@ -306,11 +264,6 @@ class FileProcessorService {
       normalized.user_name = toUndefined(data.user_name);
       normalized.stage = toUndefined(data.stage);
       
-      // Debug logging for first stage
-      if (data.stage === 'syn' || !normalized.stage) {
-        console.log(`📄 [FILE PROCESSOR] Processing stage: ${normalized.stage || 'unknown'}`);
-        console.log(`📄 [FILE PROCESSOR] Sample data - project: ${normalized.project_name}, block: ${normalized.block_name}, experiment: ${normalized.experiment}`);
-      }
       
       // Parse timestamp
       if (data.timestamp) {
@@ -544,23 +497,8 @@ class FileProcessorService {
       }
       normalized.lec = lecParts.length > 0 ? lecParts.join(', ') : undefined;
       
-      // Debug: Log what was normalized for this stage
-      console.log(`📄 [FILE PROCESSOR] Normalized stage "${normalized.stage}" - Fields populated:`, {
-        project_name: !!normalized.project_name,
-        block_name: !!normalized.block_name,
-        stage: !!normalized.stage,
-        area: !!normalized.area,
-        inst_count: !!normalized.inst_count,
-        internal_timing: !!normalized.internal_timing,
-        interface_timing: !!normalized.interface_timing,
-        run_status: !!normalized.run_status,
-        runtime: !!normalized.runtime,
-      });
-      
       return normalized;
     } catch (error: any) {
-      console.error(`⚠️  [FILE PROCESSOR] Error normalizing PD JSON data:`, error.message);
-      console.error(`⚠️  [FILE PROCESSOR] Error stack:`, error.stack);
       return null;
     }
   }
@@ -816,7 +754,6 @@ class FileProcessorService {
       
       return result.rows.length > 0 ? result.rows[0].id : null;
     } catch (error) {
-      console.error('Error finding domain:', error);
       return null;
     }
   }
@@ -835,7 +772,6 @@ class FileProcessorService {
       
       return result.rows.length > 0 ? result.rows[0].id : null;
     } catch (error) {
-      console.error('Error finding project:', error);
       return null;
     }
   }
@@ -875,8 +811,6 @@ class FileProcessorService {
         throw new Error('Project name is required');
       }
 
-      console.log(`📄 [NEW SCHEMA] Saving to new Physical Design schema - Project: "${projectName}", Domain: "${domainName}"`);
-
       // 1. Find or create domain ID (if domain name is provided)
       let domainId: number | null = null;
       if (domainName) {
@@ -897,12 +831,6 @@ class FileProcessorService {
           if (similarDomainCheck.rows.length > 0) {
             // Use existing domain with similar name (case-insensitive match)
             domainId = similarDomainCheck.rows[0].id;
-            const existingName = similarDomainCheck.rows[0].name;
-            console.log(`\n${'='.repeat(60)}`);
-            console.log(`✅ [DOMAIN FOUND] Found similar domain (case-insensitive match):`);
-            console.log(`   Requested: "${normalizedDomainName}"`);
-            console.log(`   Found: "${existingName}" (ID: ${domainId})`);
-            console.log(`${'='.repeat(60)}\n`);
           } else {
             // Create domain if it doesn't exist
             // Generate a code from the domain name (uppercase, replace spaces with underscores)
@@ -913,34 +841,13 @@ class FileProcessorService {
                 [normalizedDomainName, domainCode, `Domain: ${normalizedDomainName}`, true]
               );
               domainId = domainResult.rows[0].id;
-              console.log(`\n${'='.repeat(60)}`);
-              console.log(`✅ [DOMAIN CREATED] New domain saved to database:`);
-              console.log(`   Domain Name: "${normalizedDomainName}"`);
-              console.log(`   Domain Code: "${domainCode}"`);
-              console.log(`   Domain ID: ${domainId}`);
-              console.log(`${'='.repeat(60)}\n`);
             } catch (error: any) {
               // If domain already exists (unique constraint), try to find it again
               if (error.code === '23505') { // Unique violation
                 domainId = await this.findDomainId(normalizedDomainName);
-                if (domainId) {
-                  console.log(`\n${'='.repeat(60)}`);
-                  console.log(`✅ [DOMAIN FOUND] Existing domain found in database:`);
-                  console.log(`   Domain Name: "${normalizedDomainName}"`);
-                  console.log(`   Domain ID: ${domainId}`);
-                  console.log(`${'='.repeat(60)}\n`);
-                }
-              } else {
-                console.warn(`⚠️  [NEW SCHEMA] Could not create domain "${normalizedDomainName}":`, error.message);
               }
             }
           }
-        } else {
-          console.log(`\n${'='.repeat(60)}`);
-          console.log(`✅ [DOMAIN FOUND] Existing domain found in database:`);
-          console.log(`   Domain Name: "${normalizedDomainName}"`);
-          console.log(`   Domain ID: ${domainId}`);
-          console.log(`${'='.repeat(60)}\n`);
         }
       }
 
@@ -953,7 +860,6 @@ class FileProcessorService {
           [projectName, uploadedBy || null]
         );
         projectId = projectResult.rows[0].id;
-        console.log(`📄 [NEW SCHEMA] Created new project: ${projectName} (ID: ${projectId})`);
       }
 
       if (!projectId) {
@@ -975,21 +881,9 @@ class FileProcessorService {
               'INSERT INTO public.project_domains (project_id, domain_id) VALUES ($1, $2) ON CONFLICT (project_id, domain_id) DO NOTHING',
               [projectId, domainId]
             );
-            console.log(`\n${'='.repeat(60)}`);
-            console.log(`✅ [DOMAIN LINK] Linked domain to project:`);
-            console.log(`   Domain: "${domainName}" (ID: ${domainId})`);
-            console.log(`   Project: "${projectName}" (ID: ${projectId})`);
-            console.log(`${'='.repeat(60)}\n`);
-          } else {
-            console.log(`📄 [NEW SCHEMA] Domain "${domainName}" already linked to project "${projectName}"`);
           }
         } catch (error: any) {
-          // Log but don't fail if linking fails (table might not exist yet)
-          console.warn(`⚠️  [NEW SCHEMA] Could not link domain to project:`, error.message);
-          // Check if table exists, if not, we'll skip linking (table will be created by migration)
-          if (error.code === '42P01') { // Table does not exist
-            console.warn(`⚠️  [NEW SCHEMA] project_domains table does not exist. Please run migration 006_create_projects.sql`);
-          }
+          // Skip linking if table doesn't exist (table will be created by migration)
         }
       }
 
@@ -1008,14 +902,12 @@ class FileProcessorService {
       let blockId: number;
       if (blockResult.rows.length > 0) {
         blockId = blockResult.rows[0].id;
-        console.log(`📄 [NEW SCHEMA] Found existing block: ${blockName} (ID: ${blockId})`);
       } else {
         const insertBlockResult = await client.query(
           'INSERT INTO public.blocks (project_id, block_name) VALUES ($1, $2) RETURNING id',
           [projectId, blockName]
         );
         blockId = insertBlockResult.rows[0].id;
-        console.log(`📄 [NEW SCHEMA] Created new block: ${blockName} (ID: ${blockId})`);
       }
 
       // 5. Get run info from first row
@@ -1043,14 +935,12 @@ class FileProcessorService {
           'UPDATE public.runs SET user_name = $1, run_directory = $2, last_updated = $3 WHERE id = $4',
           [userName, runDirectory, lastUpdated, runId]
         );
-        console.log(`📄 [NEW SCHEMA] Found existing run: ${experiment}/${rtlTag} (ID: ${runId})`);
       } else {
         const insertRunResult = await client.query(
           'INSERT INTO public.runs (block_id, experiment, rtl_tag, user_name, run_directory, last_updated) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
           [blockId, experiment, rtlTag, userName, runDirectory, lastUpdated]
         );
         runId = insertRunResult.rows[0].id;
-        console.log(`📄 [NEW SCHEMA] Created new run: ${experiment}/${rtlTag} (ID: ${runId})`);
       }
 
       // 7. Process each stage
@@ -1058,11 +948,8 @@ class FileProcessorService {
       for (const stageData of processedData) {
         const stageName = stageData.stage;
         if (!stageName) {
-          console.warn(`⚠️  [NEW SCHEMA] Skipping row without stage name`);
           continue;
         }
-
-        console.log(`📄 [NEW SCHEMA] Processing stage: ${stageName}`);
 
         // Parse timestamp
         const timestamp = stageData.run_end_time ? new Date(stageData.run_end_time) : null;
@@ -1115,24 +1002,6 @@ class FileProcessorService {
         const stageId = stageResult.rows[0].id;
         if (!firstStageId) firstStageId = stageId;
 
-        // Log stage data being saved
-        console.log(`\n📊 [DB SAVE] Stage ID: ${stageId} | Stage: ${stageName}`);
-        console.log(`   └─ Stage Data:`, {
-          timestamp: timestamp?.toISOString() || 'null',
-          run_status: stageData.run_status || 'null',
-          runtime: stageData.runtime || 'null',
-          memory_usage: stageData.memory_usage || 'null',
-          log_errors: this.parseNumeric(stageData.log_errors) || 0,
-          log_warnings: this.parseNumeric(stageData.log_warnings) || 0,
-          log_critical: this.parseNumeric(stageData.log_critical) || 0,
-          area: this.parseNumeric(stageData.area) || 'null',
-          inst_count: this.parseNumeric(stageData.inst_count) || 'null',
-          utilization: this.parseNumeric(stageData.utilization) || 'null',
-          min_pulse_width: stageData.min_pulse_width || 'null',
-          min_period: stageData.min_period || 'null',
-          double_switching: stageData.double_switching || 'null',
-        });
-
         // Save timing metrics
         await this.saveTimingMetrics(client, stageId, stageData);
         
@@ -1158,13 +1027,10 @@ class FileProcessorService {
       }
 
       await client.query('COMMIT');
-      console.log(`\n✅ [NEW SCHEMA] Successfully saved ${processedData.length} stage(s) to new schema`);
-      console.log(`   └─ All metrics have been committed to database\n`);
       
       return firstStageId || 0;
     } catch (error: any) {
       await client.query('ROLLBACK');
-      console.error(`❌ [NEW SCHEMA] Error saving to new schema:`, error);
       throw error;
     } finally {
       client.release();
@@ -1250,8 +1116,6 @@ class FileProcessorService {
         timingData.hold_nvp,
       ]
     );
-
-    console.log(`   └─ Timing Metrics (stage_timing_metrics):`, JSON.stringify(timingData, null, 2));
   }
 
   private async saveConstraintMetrics(client: any, stageId: number, stageData: any): Promise<void> {
@@ -1295,8 +1159,6 @@ class FileProcessorService {
         constraintData.noise_violations,
       ]
     );
-
-    console.log(`   └─ Constraint Metrics (stage_constraint_metrics):`, JSON.stringify(constraintData, null, 2));
   }
 
   private async savePathGroups(client: any, stageId: number, stageData: any): Promise<void> {
@@ -1361,10 +1223,6 @@ class FileProcessorService {
         pathGroups.push(pathGroupData);
       }
     }
-
-    if (pathGroups.length > 0) {
-      console.log(`   └─ Path Groups (path_groups): ${pathGroups.length} groups saved`, JSON.stringify(pathGroups, null, 2));
-    }
   }
 
   private async saveDRVViolations(client: any, stageId: number, stageData: any): Promise<void> {
@@ -1397,10 +1255,6 @@ class FileProcessorService {
         drvViolations.push(drvData);
       }
     }
-
-    if (drvViolations.length > 0) {
-      console.log(`   └─ DRV Violations (drv_violations): ${drvViolations.length} violations saved`, JSON.stringify(drvViolations, null, 2));
-    }
   }
 
   private async savePowerIREMChecks(client: any, stageId: number, stageData: any): Promise<void> {
@@ -1427,8 +1281,6 @@ class FileProcessorService {
         powerData.em_signal,
       ]
     );
-
-    console.log(`   └─ Power/IR/EM Checks (power_ir_em_checks):`, JSON.stringify(powerData, null, 2));
   }
 
   private async savePhysicalVerification(client: any, stageId: number, stageData: any): Promise<void> {
@@ -1465,8 +1317,6 @@ class FileProcessorService {
         pvData.g2g_lec,
       ]
     );
-
-    console.log(`   └─ Physical Verification (physical_verification):`, JSON.stringify(pvData, null, 2));
   }
 
   private async saveAISummary(client: any, stageId: number, summaryText: string | null | undefined): Promise<void> {
@@ -1480,10 +1330,6 @@ class FileProcessorService {
       [stageId, summaryText]
     );
 
-    const summaryPreview = summaryText.length > 100 
-      ? summaryText.substring(0, 100) + '...' 
-      : summaryText;
-    console.log(`   └─ AI Summary (ai_summaries): "${summaryPreview}"`);
   }
 
   async saveFileToDatabase(
@@ -1507,35 +1353,16 @@ class FileProcessorService {
       // Project name comes from file data only, domain from filename (or file data as fallback)
       const projectName = firstRow.project_name || null; // Project from file data only
       const domainName = filenameDomain || firstRow.domain_name || null; // Domain from filename takes priority
-      
-      console.log(`📄 [FILE PROCESSOR] Final values - Project: "${projectName}", Domain: "${domainName}"`);
-      console.log(`📄 [FILE PROCESSOR] Saving ${processedData.length} stage(s) to database`);
 
       // Find domain and project IDs (same for all stages)
       const domainId = domainName ? await this.findDomainId(domainName) : null;
       const projectId = projectName ? await this.findProjectId(projectName) : null;
-      
-      if (domainId) {
-        console.log(`📄 [FILE PROCESSOR] Found domain ID: ${domainId} for domain: ${domainName}`);
-      } else if (domainName) {
-        console.log(`⚠️  [FILE PROCESSOR] Domain "${domainName}" not found in database`);
-      }
-      
-      if (projectId) {
-        console.log(`📄 [FILE PROCESSOR] Found project ID: ${projectId} for project: ${projectName}`);
-      } else if (projectName) {
-        console.log(`⚠️  [FILE PROCESSOR] Project "${projectName}" not found in database`);
-      }
 
       // Save each stage as a separate record
       const savedIds: number[] = [];
       
-      console.log(`📄 [FILE PROCESSOR] About to save ${processedData.length} stage(s) to database`);
-      
       for (let i = 0; i < processedData.length; i++) {
         const row = processedData[i];
-        console.log(`📄 [FILE PROCESSOR] Saving stage ${i + 1}/${processedData.length}: ${row.stage || 'unknown'}`);
-        console.log(`📄 [FILE PROCESSOR] Stage data - project: ${row.project_name}, block: ${row.block_name}, stage: ${row.stage}, area: ${row.area}, inst_count: ${row.inst_count}`);
         
         const insertResult = await client.query(
           `
@@ -1592,16 +1419,13 @@ class FileProcessorService {
         );
         
         savedIds.push(insertResult.rows[0].id);
-        console.log(`✅ [FILE PROCESSOR] Saved stage "${row.stage || 'unknown'}" with ID: ${insertResult.rows[0].id}`);
       }
 
       await client.query('COMMIT');
-      console.log(`✅ [FILE PROCESSOR] Successfully saved ${savedIds.length} stage(s) to database`);
       // Return the first ID for backward compatibility
       return savedIds[0];
     } catch (error: any) {
       await client.query('ROLLBACK');
-      console.error('Error saving file to database:', error);
       throw error;
     } finally {
       client.release();
@@ -1630,7 +1454,6 @@ class FileProcessorService {
       parts = nameWithoutExt.split('_');
       separator = '_';
     } else {
-      console.log(`⚠️  [FILE PROCESSOR] Could not extract domain from filename: ${fileName} (no dot or underscore found)`);
       return null;
     }
     
@@ -1639,12 +1462,9 @@ class FileProcessorService {
       const domainName = parts.slice(1).join(separator).trim();
       
       if (domainName) {
-        console.log(`📄 [FILE PROCESSOR] Extracted domain from filename: "${domainName}"`);
         return domainName;
       }
     }
-    
-    console.log(`⚠️  [FILE PROCESSOR] Could not extract domain from filename: ${fileName}`);
     return null;
   }
 
@@ -1656,22 +1476,9 @@ class FileProcessorService {
     const fileExt = path.extname(filePath).toLowerCase().slice(1);
     const stats = fs.statSync(filePath);
     const fileSize = stats.size;
-
-    console.log(`\n📄 [FILE PROCESSOR] Starting to process file: ${fileName}`);
-    console.log(`📄 [FILE PROCESSOR] File type: ${fileExt}, Size: ${fileSize} bytes`);
     
     // Extract only domain from filename (project name will come from file data)
     const filenameDomain = this.extractDomainFromFilename(fileName);
-    
-    // Print extracted domain prominently in terminal
-    if (filenameDomain) {
-      console.log(`\n${'='.repeat(60)}`);
-      console.log(`🌐 [DOMAIN EXTRACTION] Domain extracted from filename: "${filenameDomain}"`);
-      console.log(`   File: ${fileName}`);
-      console.log(`${'='.repeat(60)}\n`);
-    } else {
-      console.log(`\n⚠️  [DOMAIN EXTRACTION] No domain found in filename: ${fileName}\n`);
-    }
 
     let processedData: ProcessedFileData[];
 
@@ -1680,13 +1487,9 @@ class FileProcessorService {
 
       // Process based on file type
       if (fileExt === 'csv') {
-        console.log(`📄 [FILE PROCESSOR] Processing CSV file...`);
         processedData = await this.processCSVFile(filePath);
-        console.log(`📄 [FILE PROCESSOR] Parsed ${processedData.length} rows from CSV`);
       } else if (fileExt === 'json') {
-        console.log(`📄 [FILE PROCESSOR] Processing JSON file...`);
         processedData = await this.processJSONFile(filePath);
-        console.log(`📄 [FILE PROCESSOR] Parsed ${processedData.length} rows from JSON`);
       } else {
         throw new Error(`Unsupported file type: ${fileExt}`);
       }
@@ -1694,31 +1497,9 @@ class FileProcessorService {
       if (processedData.length === 0) {
         throw new Error('No data found in file');
       }
-
-      // Log data for debugging
-      if (processedData.length > 0) {
-        console.log(`📄 [FILE PROCESSOR] Processed ${processedData.length} stage(s) from file`);
-        console.log(`📄 [FILE PROCESSOR] First stage data:`, {
-          project_name: processedData[0].project_name,
-          domain_name: processedData[0].domain_name,
-          block_name: processedData[0].block_name,
-          stage: processedData[0].stage,
-          internal_timing: processedData[0].internal_timing,
-          interface_timing: processedData[0].interface_timing,
-          area: processedData[0].area,
-          inst_count: processedData[0].inst_count,
-          run_status: processedData[0].run_status
-        });
-        
-        // Log all stages
-        processedData.forEach((row, index) => {
-          console.log(`📄 [FILE PROCESSOR] Stage ${index + 1}: ${row.stage || 'unknown'} - Block: ${row.block_name || 'N/A'}, Status: ${row.run_status || 'N/A'}`);
-        });
-      }
       
       // Override domain from filename if extracted (project name comes from file data)
       if (filenameDomain) {
-        console.log(`📄 [FILE PROCESSOR] Overriding domain with filename value: "${filenameDomain}"`);
         // Update all rows with filename-extracted domain (keep project from file data)
         processedData = processedData.map(row => ({
           ...row,
@@ -1727,7 +1508,6 @@ class FileProcessorService {
       }
 
       // Save to database using new Physical Design schema
-      console.log(`📄 [FILE PROCESSOR] Saving data to database using new schema...`);
       const fileId = await this.saveToNewSchema(
         fileName,
         filePath,
@@ -1738,15 +1518,10 @@ class FileProcessorService {
         undefined, // Project name comes from file data, not filename
         filenameDomain || undefined
       );
-      console.log(`✅ [FILE PROCESSOR] Successfully saved file to database with ID: ${fileId}`);
 
       return fileId;
     } catch (error: any) {
-      console.error(`❌ [FILE PROCESSOR] Error processing file ${fileName}:`, error.message);
-      console.error(`❌ [FILE PROCESSOR] Error stack:`, error.stack);
-      
-      // Error handling - new schema doesn't need status updates
-      console.error(`❌ [FILE PROCESSOR] Failed to process file: ${error.message}`);
+      console.error(`Error processing file ${fileName}:`, error.message);
       throw error;
     }
   }

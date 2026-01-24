@@ -2,6 +2,7 @@ import express from 'express';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import zohoService from '../services/zoho.service';
 import { authenticate } from '../middleware/auth.middleware';
+import { pool } from '../config/database';
 
 const router = express.Router();
 
@@ -663,6 +664,19 @@ router.get('/projects', authenticate, async (req, res) => {
     console.log('\n📊 PROJECTS DATA WITH ROLES AND OWNER:');
     console.log('========================================');
     
+    // Get portal ID for export status check
+    let currentPortalId = portalId as string | undefined;
+    if (!currentPortalId) {
+      try {
+        const portals = await zohoService.getPortals(userId);
+        if (portals.length > 0) {
+          currentPortalId = portals[0].id;
+        }
+      } catch (e) {
+        console.log('Could not get portal ID for export status check:', e);
+      }
+    }
+
     const projectsWithMembers = await Promise.all(
       projects.map(async (project) => {
         try {
@@ -693,8 +707,9 @@ router.get('/projects', authenticate, async (req, res) => {
           };
           
           // Format members with proper role extraction
+          // Prioritize project_profile first as it contains the correct role for the project
           const formattedMembers = members.map(m => {
-            const roleName = extractRoleName(m.role || m.project_role || m.project_profile || m.role_in_project);
+            const roleName = extractRoleName(m.project_profile || m.role || m.project_role || m.role_in_project);
             const status = extractStatus(m.status);
             return {
               id: m.id || m.zpuid || m.zuid,
@@ -710,11 +725,49 @@ router.get('/projects', authenticate, async (req, res) => {
             };
           });
           
+          // Check export status from zoho_project_exports table
+          // This should be visible to all users who have access to the project
+          let exportedToLinux = false;
+          try {
+            const projectIdStr = project.id?.toString() || project.id_string?.toString() || '';
+            // Try with portal_id first, then without portal_id (for projects exported without portal_id)
+            const exportResult = await pool.query(
+              `SELECT exported_to_linux FROM zoho_project_exports 
+               WHERE zoho_project_id = $1 
+               AND (portal_id = $2 OR portal_id IS NULL) 
+               ORDER BY 
+                 CASE WHEN portal_id = $2 THEN 1 ELSE 2 END,
+                 portal_id DESC NULLS LAST 
+               LIMIT 1`,
+              [projectIdStr, currentPortalId]
+            );
+            if (exportResult.rows.length > 0) {
+              exportedToLinux = exportResult.rows[0].exported_to_linux === true;
+              console.log(`[Zoho Projects API] Found export status for project ${projectIdStr} (portal ${currentPortalId}): ${exportedToLinux}`);
+            } else {
+              // Also try without portal_id constraint to catch exports that might not have portal_id set
+              const exportResultNoPortal = await pool.query(
+                'SELECT exported_to_linux FROM zoho_project_exports WHERE zoho_project_id = $1 ORDER BY exported_at DESC LIMIT 1',
+                [projectIdStr]
+              );
+              if (exportResultNoPortal.rows.length > 0) {
+                exportedToLinux = exportResultNoPortal.rows[0].exported_to_linux === true;
+                console.log(`[Zoho Projects API] Found export status for project ${projectIdStr} (no portal match): ${exportedToLinux}`);
+              } else {
+                console.log(`[Zoho Projects API] No export record found for project ${projectIdStr} (portal ${currentPortalId})`);
+              }
+            }
+          } catch (e) {
+            // If table doesn't exist or query fails, continue without export status
+            console.log('Could not get export status from zoho_project_exports table:', e);
+          }
+          
           console.log(`\n📁 Project: ${project.name} (ID: ${project.id || project.id_string})`);
           console.log(`   Owner Name: ${project.owner_name || project.owner?.name || 'N/A'}`);
           console.log(`   Owner ID: ${project.owner_id || project.owner?.id || 'N/A'}`);
           console.log(`   Owner Email: ${project.owner_email || project.owner?.email || 'N/A'}`);
           console.log(`   Members/Roles Count: ${formattedMembers.length}`);
+          console.log(`   Exported to Linux: ${exportedToLinux}`);
           
           if (formattedMembers.length > 0) {
             console.log(`   📋 Roles Table:`);
@@ -737,6 +790,9 @@ router.get('/projects', authenticate, async (req, res) => {
             owner_email: project.owner_email,
             created_time: project.created_time,
             source: 'zoho',
+            zoho_project_id: project.id, // Add zoho_project_id field for consistency
+            exported_to_linux: exportedToLinux, // Add export status flag
+            portal_id: currentPortalId, // Include portal ID
             // Include roles/members table with properly formatted data
             members: formattedMembers,
             roles: formattedMembers.map(m => ({
@@ -765,6 +821,9 @@ router.get('/projects', authenticate, async (req, res) => {
             owner_email: project.owner_email,
             created_time: project.created_time,
             source: 'zoho',
+            zoho_project_id: project.id, // Add zoho_project_id field for consistency
+            exported_to_linux: false, // Default to false on error
+            portal_id: currentPortalId,
             members: [],
             roles: [],
             raw: project
@@ -782,6 +841,125 @@ router.get('/projects', authenticate, async (req, res) => {
     });
   } catch (error: any) {
     console.error('Error fetching Zoho projects:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+/**
+ * POST /api/zoho/projects/:projectId/mark-exported
+ * Mark a Zoho project as exported to Linux
+ */
+router.post('/projects/:projectId/mark-exported', authenticate, async (req, res) => {
+  try {
+    const userId = (req as any).user?.id;
+    const { projectId } = req.params;
+    const { portalId, projectName } = req.body;
+    
+    if (!projectId) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Project ID is required' 
+      });
+    }
+    
+    // Remove 'zoho_' prefix if present
+    const actualProjectId = projectId.toString().startsWith('zoho_') 
+      ? projectId.toString().replace('zoho_', '') 
+      : projectId.toString();
+    
+    // Get portal ID if not provided
+    let currentPortalId = portalId;
+    if (!currentPortalId) {
+      try {
+        const portals = await zohoService.getPortals(userId);
+        if (portals.length > 0) {
+          currentPortalId = portals[0].id;
+        }
+      } catch (e) {
+        console.log('Could not get portal ID, continuing without it:', e);
+      }
+    }
+    
+    // Get project name if not provided
+    let currentProjectName = projectName;
+    if (!currentProjectName) {
+      try {
+        const project = await zohoService.getProject(userId, actualProjectId, currentPortalId);
+        currentProjectName = project.name || 'Unknown Project';
+      } catch (e) {
+        console.log('Could not get project name, using default:', e);
+        currentProjectName = 'Unknown Project';
+      }
+    }
+    
+    // Insert or update export status
+    // Check if a record already exists for this project
+    let existingRecord;
+    if (currentPortalId) {
+      // First check for record with matching portal_id
+      const checkWithPortal = await pool.query(
+        'SELECT id FROM zoho_project_exports WHERE zoho_project_id = $1 AND portal_id = $2',
+        [actualProjectId, currentPortalId]
+      );
+      if (checkWithPortal.rows.length > 0) {
+        existingRecord = checkWithPortal.rows[0];
+      } else {
+        // Check for record with NULL portal_id (will update it to include portal_id)
+        const checkNull = await pool.query(
+          'SELECT id FROM zoho_project_exports WHERE zoho_project_id = $1 AND portal_id IS NULL',
+          [actualProjectId]
+        );
+        if (checkNull.rows.length > 0) {
+          existingRecord = checkNull.rows[0];
+        }
+      }
+    } else {
+      // Check for record with NULL portal_id
+      const checkNull = await pool.query(
+        'SELECT id FROM zoho_project_exports WHERE zoho_project_id = $1 AND portal_id IS NULL',
+        [actualProjectId]
+      );
+      if (checkNull.rows.length > 0) {
+        existingRecord = checkNull.rows[0];
+      }
+    }
+    
+    let result;
+    if (existingRecord) {
+      // Update existing record
+      result = await pool.query(
+        `UPDATE zoho_project_exports 
+         SET exported_to_linux = $1,
+             exported_at = CURRENT_TIMESTAMP,
+             exported_by = $2,
+             zoho_project_name = COALESCE($3, zoho_project_exports.zoho_project_name),
+             portal_id = COALESCE($4, zoho_project_exports.portal_id),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $5
+         RETURNING *`,
+        [true, userId, currentProjectName, currentPortalId || null, existingRecord.id]
+      );
+    } else {
+      // Insert new record
+      result = await pool.query(
+        `INSERT INTO zoho_project_exports 
+         (zoho_project_id, portal_id, zoho_project_name, exported_to_linux, exported_at, exported_by)
+         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5)
+         RETURNING *`,
+        [actualProjectId, currentPortalId || null, currentProjectName, true, userId]
+      );
+    }
+    
+    res.json({
+      success: true,
+      message: 'Project marked as exported to Linux',
+      export: result.rows[0]
+    });
+  } catch (error: any) {
+    console.error('Error marking project as exported:', error);
     res.status(500).json({ 
       success: false,
       error: error.message 
@@ -836,8 +1014,9 @@ router.get('/projects/:projectId', authenticate, async (req, res) => {
       );
       
       // Format members with proper role extraction
+      // Prioritize project_profile first as it contains the correct role for the project
       formattedMembers = members.map((m: any) => {
-        const roleName = extractRoleName(m.role || m.project_role || m.project_profile || m.role_in_project);
+        const roleName = extractRoleName(m.project_profile || m.role || m.project_role || m.role_in_project);
         const status = extractStatus(m.status);
         return {
           id: m.id || m.zpuid || m.zuid,

@@ -19,8 +19,6 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
   List<Map<String, dynamic>> _projects = [];
   bool _isLoading = true;
   String _searchQuery = '';
-  // Track which projects have been exported to Linux
-  final Set<String> _exportedProjects = <String>{};
 
   @override
   void initState() {
@@ -45,7 +43,8 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         };
       }
     } catch (e) {
-      // Silently fail - will default to global role check
+      // Log error for debugging but continue with fallback
+      print('Error checking project CAD role for $projectIdentifier: $e');
     }
     return {'effectiveRole': null};
   }
@@ -374,7 +373,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
             crossAxisCount: crossAxisCount,
             crossAxisSpacing: 16,
             mainAxisSpacing: 16,
-            childAspectRatio: 1.35,
+            childAspectRatio: 1.15, // Reduced from 1.35 to make cards taller
           ),
           itemCount: projects.length,
           itemBuilder: (context, index) {
@@ -387,6 +386,18 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
 
   String _getProjectStatus(Map<String, dynamic> project) {
     final status = (project['status'] ?? '').toString().toUpperCase();
+    
+    // Check if project is exported to Linux - if so, show as RUNNING
+    // Handle both boolean true and string "true" values
+    final exportedValue = project['exported_to_linux'];
+    final isExported = exportedValue == true || 
+                       exportedValue == 'true' || 
+                       exportedValue == 1 ||
+                       exportedValue == '1';
+    if (isExported) {
+      return 'RUNNING';
+    }
+    
     if (status == 'RUNNING' || status == 'IN_PROGRESS') {
       return 'RUNNING';
     } else if (status == 'COMPLETED' || status == 'COMPLETE') {
@@ -447,10 +458,20 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     final gateCount = project['gate_count'] ?? project['gateCount'] ?? 'N/A';
     final technology = project['technology'] ?? project['technology_node'] ?? 'Sky130 PDK';
     final lastRun = _formatTimeAgo(project['last_run']?.toString() ?? project['updated_at']?.toString());
+    final runDirectory = project['run_directory']?.toString();
+    // Check if project is exported to Linux - handle both boolean and string values
+    final exportedValue = project['exported_to_linux'];
+    final isExported = exportedValue == true || 
+                       exportedValue == 'true' || 
+                       exportedValue == 1 ||
+                       exportedValue == '1';
     final progressValue = project['progress'];
-    final progress = progressValue != null 
-        ? (progressValue is num ? progressValue.toDouble() : double.tryParse(progressValue.toString()) ?? 0.0)
-        : (status == 'RUNNING' ? 65.0 : 0.0);
+    // If exported, show 10% progress. Otherwise use the normal progress calculation
+    final progress = isExported 
+        ? 10.0
+        : (progressValue != null 
+            ? (progressValue is num ? progressValue.toDouble() : double.tryParse(progressValue.toString()) ?? 0.0)
+            : (status == 'RUNNING' ? 65.0 : 0.0));
     final isRunning = status == 'RUNNING';
 
     void handleProjectClick() {
@@ -481,24 +502,40 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     }
 
     final userRole = ref.read(authProvider).user?['role'];
-    final globalCanExportToLinux = userRole == 'cad_engineer' || userRole == 'admin';
-    final isEngineer = userRole == 'engineer' || userRole == 'admin';
+    
+    // Determine project identifier - prefer Zoho project ID for Zoho projects
+    final projectIdentifier = project['zoho_project_id']?.toString() ?? 
+                             project['id']?.toString() ?? 
+                             projectName;
     
     // Check project-specific CAD engineer role
     return FutureBuilder<Map<String, dynamic>>(
-      future: _checkProjectCadRole(projectName),
+      future: _checkProjectCadRole(projectIdentifier),
       builder: (context, snapshot) {
-        // Check if user is CAD engineer for this project (global or project-specific)
-        final isCadEngineerForProject = globalCanExportToLinux || 
-            (snapshot.hasData && snapshot.data!['effectiveRole'] == 'cad_engineer');
-        
-        // Check if user is engineer for this project (global or project-specific)
-        // Exclude CAD engineers - Setup button is only for regular engineers
+        // Get effective role (project-specific if available, otherwise global)
         final effectiveRole = snapshot.hasData ? snapshot.data!['effectiveRole'] : userRole;
-        final isEngineerForProject = (isEngineer || effectiveRole == 'engineer') && 
-            !isCadEngineerForProject && effectiveRole != 'cad_engineer';
         
-        final isExported = _exportedProjects.contains(projectName);
+        // Check if user is CAD engineer or admin (global or project-specific)
+        // CAD engineers and admins should see Export to Linux button
+        final isCadEngineerForProject = effectiveRole == 'cad_engineer' || 
+                                        effectiveRole == 'admin' ||
+                                        userRole == 'cad_engineer' || 
+                                        userRole == 'admin';
+        
+        // Check if user is regular engineer (not CAD engineer, not admin)
+        // Setup button is only for regular engineers
+        final isEngineerForProject = (effectiveRole == 'engineer' || userRole == 'engineer') && 
+            effectiveRole != 'cad_engineer' &&
+            effectiveRole != 'admin' &&
+            userRole != 'cad_engineer' &&
+            userRole != 'admin';
+        
+        // Check export status from project data (from API) - handle both boolean and string values
+        final exportedValue = project['exported_to_linux'];
+        final isExported = exportedValue == true || 
+                           exportedValue == 'true' || 
+                           exportedValue == 1 ||
+                           exportedValue == '1';
         
         return _ProjectCardWidget(
           project: project,
@@ -511,6 +548,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
           lastRun: lastRun,
           progress: progress,
           isRunning: isRunning,
+          runDirectory: runDirectory,
           onTap: handleProjectClick,
           canExportToLinux: isCadEngineerForProject,
           isExported: isExported,
@@ -675,16 +713,23 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       if (mounted) {
         Navigator.of(context).pop(); // Close loading dialog
         
+        // Get project ID and portal ID for export tracking
+        final projectId = project['zoho_project_id']?.toString() ?? 
+                         project['id']?.toString() ?? '';
+        final portalId = project['portal_id']?.toString() ?? 
+                        project['zoho_data']?['portal_id']?.toString();
+        
         showDialog(
           context: context,
           builder: (context) => _ExportToLinuxDialog(
             projectName: projectName,
+            projectId: projectId,
+            portalId: portalId,
             domains: domains,
             apiService: _apiService,
-            onExportSuccess: (projectName) {
-              setState(() {
-                _exportedProjects.add(projectName);
-              });
+            onExportSuccess: () {
+              // Reload projects to get updated export status from API
+              _loadProjects();
             },
           ),
         );
@@ -858,6 +903,50 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       if (mounted) {
         Navigator.of(context).pop(); // Close loading dialog
         
+        // Get Zoho project ID if this is a Zoho project
+        // Check both zoho_project_id and source to identify Zoho projects
+        final isZohoProject = project['source'] == 'zoho' || project['zoho_project_id'] != null;
+        
+        // Debug: Print project structure
+        print('🔍 Project structure for setup:');
+        print('   Name: ${project['name']}');
+        print('   ID: ${project['id']}');
+        print('   Source: ${project['source']}');
+        print('   zoho_project_id: ${project['zoho_project_id']}');
+        print('   Is Zoho Project: $isZohoProject');
+        
+        String? actualZohoProjectId;
+        
+        // First try: Get from zoho_project_id field (this is the actual Zoho ID)
+        final zohoProjectId = project['zoho_project_id']?.toString();
+        if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
+          // Remove zoho_ prefix if present
+          actualZohoProjectId = zohoProjectId.startsWith('zoho_')
+              ? zohoProjectId.replaceFirst('zoho_', '')
+              : zohoProjectId;
+          print('   ✅ Found zoho_project_id: $actualZohoProjectId');
+        } else if (isZohoProject) {
+          // Second try: Use project ID directly if it's a Zoho project
+          // /api/zoho/projects returns id as the raw Zoho ID (e.g., "173458000001945100")
+          // /api/projects?includeZoho=true returns id as "zoho_173458000001945100"
+          final projectId = project['id']?.toString();
+          if (projectId != null) {
+            if (projectId.startsWith('zoho_')) {
+              // Has zoho_ prefix, remove it
+              actualZohoProjectId = projectId.replaceFirst('zoho_', '');
+              print('   ✅ Extracted from project ID (with zoho_ prefix): $actualZohoProjectId');
+            } else {
+              // No prefix, use directly (this is the raw Zoho ID from /api/zoho/projects)
+              actualZohoProjectId = projectId;
+              print('   ✅ Using project ID directly (raw Zoho ID): $actualZohoProjectId');
+            }
+          }
+        }
+        
+        if (actualZohoProjectId == null && isZohoProject) {
+          print('   ⚠️ Warning: Zoho project detected but ID not found');
+        }
+        
         showDialog(
           context: context,
           builder: (context) => _SetupDialog(
@@ -865,6 +954,23 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
             domains: userDomains,
             domainBlocksMap: domainBlocksMap,
             apiService: _apiService,
+            zohoProjectId: actualZohoProjectId,
+            onRunDirectorySaved: (runDirectory) {
+              // Update the project in the list with the new run directory
+              setState(() {
+                final projectIndex = _projects.indexWhere(
+                  (p) => (p['name']?.toString().toLowerCase() == projectName.toLowerCase()) ||
+                         (p['zoho_project_id']?.toString() == actualZohoProjectId) ||
+                         (p['id']?.toString() == project['id']?.toString())
+                );
+                if (projectIndex != -1) {
+                  _projects[projectIndex] = {
+                    ..._projects[projectIndex],
+                    'run_directory': runDirectory,
+                  };
+                }
+              });
+            },
           ),
         );
       }
@@ -893,6 +999,7 @@ class _ProjectCardWidget extends StatefulWidget {
   final String lastRun;
   final double progress;
   final bool isRunning;
+  final String? runDirectory;
   final VoidCallback onTap;
   final bool canExportToLinux;
   final bool isExported;
@@ -911,6 +1018,7 @@ class _ProjectCardWidget extends StatefulWidget {
     required this.lastRun,
     required this.progress,
     required this.isRunning,
+    this.runDirectory,
     required this.onTap,
     this.canExportToLinux = false,
     this.isExported = false,
@@ -949,6 +1057,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
               // Header with Icon and Status Badge
               Row(
@@ -1005,7 +1114,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               
               // Project Name
               Text(
@@ -1018,7 +1127,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               
               // Description
               Text(
@@ -1030,7 +1139,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               
               // Details Grid - Gate Count and Technology
               Row(
@@ -1086,7 +1195,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               
               // Last Run
               Text(
@@ -1097,11 +1206,49 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                 ),
               ),
               
-              const Spacer(),
+              // Run Directory (if available)
+              if (widget.runDirectory != null && widget.runDirectory!.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.primary.withOpacity(0.2),
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.folder,
+                        size: 16,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          widget.runDirectory!,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(context).colorScheme.primary,
+                            fontFamily: 'monospace',
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              
+              const SizedBox(height: 12),
               
               // Progress Bar (if running)
               if (widget.isRunning) ...[
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -1140,7 +1287,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
               ],
               
               // Divider
@@ -1148,7 +1295,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                 color: Theme.of(context).dividerColor,
                 height: 1,
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               
               // Footer actions
               Row(
@@ -1233,12 +1380,16 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
 
 class _ExportToLinuxDialog extends ConsumerStatefulWidget {
   final String projectName;
+  final String projectId;
+  final String? portalId;
   final List<Map<String, dynamic>> domains;
   final ApiService apiService;
-  final Function(String)? onExportSuccess;
+  final VoidCallback? onExportSuccess;
 
   const _ExportToLinuxDialog({
     required this.projectName,
+    required this.projectId,
+    this.portalId,
     required this.domains,
     required this.apiService,
     this.onExportSuccess,
@@ -2062,9 +2213,23 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
         final isSuccess = result['success'] == true && exitCode == 0;
         
         if (isSuccess) {
+          // Mark project as exported in the database
+          try {
+            final token = ref.read(authProvider).token;
+            await widget.apiService.markZohoProjectExported(
+              projectId: widget.projectId,
+              token: token,
+              portalId: widget.portalId,
+              projectName: widget.projectName,
+            );
+          } catch (e) {
+            // Log error but don't fail the export - it was successful
+            print('Error marking project as exported: $e');
+          }
+          
           // Notify parent that export was successful
           if (widget.onExportSuccess != null) {
-            widget.onExportSuccess!(widget.projectName);
+            widget.onExportSuccess!();
           }
           
           // Show success message
@@ -2343,12 +2508,16 @@ class _SetupDialog extends ConsumerStatefulWidget {
   final List<Map<String, dynamic>> domains;
   final Map<String, List<Map<String, dynamic>>> domainBlocksMap;
   final ApiService apiService;
+  final String? zohoProjectId;
+  final Function(String runDirectory)? onRunDirectorySaved; // Callback to update parent state
 
   const _SetupDialog({
     required this.projectName,
     required this.domains,
     required this.domainBlocksMap,
     required this.apiService,
+    this.zohoProjectId,
+    this.onRunDirectorySaved,
   });
 
   @override
@@ -2452,6 +2621,108 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
       print('═══════════════════════════════════════════════════════════');
 
       final isSuccess = result['success'] == true && (result['exitCode'] == 0 || result['exitCode'] == null);
+      
+      // If setup command succeeded, fetch the actual run directory path from remote server and save it
+      if (isSuccess) {
+        try {
+          print('═══════════════════════════════════════════════════════════');
+          print('🔍 FETCHING RUN DIRECTORY PATH FROM REMOTE SERVER:');
+          print('   Project: $projectName');
+          print('   Block: $blockName');
+          print('   Experiment: $experimentName');
+          print('═══════════════════════════════════════════════════════════');
+          
+          // Step 1: Get the actual username from the remote server
+          print('   Step 1: Getting actual username from remote server...');
+          final whoamiResult = await widget.apiService.executeSSHCommand(
+            command: 'whoami',
+            token: token,
+          );
+          
+          String? actualUsername;
+          if (whoamiResult['success'] == true && whoamiResult['stdout'] != null) {
+            actualUsername = whoamiResult['stdout'].toString().trim();
+            print('   ✅ Actual username on server: $actualUsername');
+          }
+          
+          if (actualUsername == null || actualUsername.isEmpty) {
+            throw Exception('Unable to get username from remote server');
+          }
+          
+          // Step 2: Search for the directory that was just created
+          // The setup command creates a directory matching: /CX_RUN_NEW/{project}/pd/users/{username}/{block}/{experiment}
+          // We'll search for recently created directories matching this pattern
+          print('   Step 2: Searching for directory created by setup command...');
+          
+          // Escape variables for shell command
+          final escapedProject = sanitizedProjectName.replaceAll("'", "'\\''");
+          final escapedBlock = sanitizedBlockName.replaceAll("'", "'\\''");
+          final escapedExperiment = experimentName.replaceAll("'", "'\\''");
+          final escapedUsername = actualUsername.replaceAll("'", "'\\''");
+          
+          // Construct expected path
+          final expectedPath = '/CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername/$escapedBlock/$escapedExperiment';
+          
+          // Command to find the directory:
+          // 1. Try the expected path first
+          // 2. If not found, search for directories matching the pattern
+          // 3. Look for recently modified directories (created in last 5 minutes) matching the experiment name
+          // Use single quotes to prevent variable expansion, and escape properly
+          final findPathCommand = "EXPECTED_PATH='$expectedPath'; if [ -d \"\$EXPECTED_PATH\" ]; then echo \"\$EXPECTED_PATH\"; else find /CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' -mmin -5 2>/dev/null | head -1 || find /CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' 2>/dev/null | head -1; fi";
+          
+          final pathResult = await widget.apiService.executeSSHCommand(
+            command: findPathCommand,
+            token: token,
+          );
+          
+          String? actualRunDirectory;
+          if (pathResult['success'] == true && pathResult['stdout'] != null) {
+            final stdout = pathResult['stdout'].toString().trim();
+            if (stdout.isNotEmpty && stdout.startsWith('/')) {
+              actualRunDirectory = stdout.split('\n').first.trim();
+              print('   ✅ Found run directory: $actualRunDirectory');
+            }
+          }
+          
+          if (actualRunDirectory == null || actualRunDirectory.isEmpty) {
+            // Last resort: construct path using actual username from server
+            actualRunDirectory = '/CX_RUN_NEW/$sanitizedProjectName/pd/users/$actualUsername/$sanitizedBlockName/$experimentName';
+            print('   ⚠️ Directory not found via search, using constructed path: $actualRunDirectory');
+          }
+          
+          print('═══════════════════════════════════════════════════════════');
+          print('💾 SAVING RUN DIRECTORY PATH TO DATABASE:');
+          print('   Path: $actualRunDirectory');
+          print('═══════════════════════════════════════════════════════════');
+          
+          print('   📤 Sending to backend:');
+          print('      Project: $projectName');
+          print('      Zoho Project ID: ${widget.zohoProjectId ?? "null"}');
+          print('      Username: $actualUsername');
+          print('      Run Directory: $actualRunDirectory');
+          
+          await widget.apiService.saveRunDirectory(
+            projectName: projectName,
+            blockName: blockName,
+            experimentName: experimentName,
+            runDirectory: actualRunDirectory,
+            username: actualUsername, // Pass the actual username from SSH session
+            zohoProjectId: widget.zohoProjectId,
+            token: token,
+          );
+          
+          print('✅ Run directory path saved successfully');
+          
+          // Notify parent to update the project with the new run directory
+          if (widget.onRunDirectorySaved != null) {
+            widget.onRunDirectorySaved!(actualRunDirectory);
+          }
+        } catch (e) {
+          print('⚠️ Warning: Failed to fetch/save run directory path: $e');
+          // Don't fail the entire setup if saving path fails, just log it
+          // The setup command already succeeded, so we continue
+        }
+      }
       
       setState(() {
         _isRunning = false;
