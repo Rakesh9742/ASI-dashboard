@@ -815,7 +815,12 @@ class ZohoService {
       }
       
       portal = foundPortal;
-      const projectIdString = projectFromList?.id_string || projectId;
+      // CRITICAL: Use id_string for V3 API endpoints (as seen in working local logs)
+      // The id_string format (e.g., "173458000001945089") works with /users endpoint
+      // The numeric id (e.g., 173458000001945100) might not work with V3 API
+      const projectIdString = projectFromList?.id_string || String(projectId);
+      
+      console.log(`[ZohoService] Using project ID: ${projectIdString} (original: ${projectId}, id_string: ${projectFromList?.id_string}, numeric id: ${projectFromList?.id})`);
       
       // Helper function to recursively search for users/members in response
       const findUsersInResponse = (obj: any, path: string = '', depth: number = 0, maxDepth: number = 10): any[] => {
@@ -955,6 +960,55 @@ class ZohoService {
             if (members.length === 0) {
               console.log(`[ZohoService] ⚠️  No project_users/users array found. Searching for user-like arrays in response...`);
               
+              // CRITICAL: The ?include=project_users parameter is NOT working - users are not in the response
+              // We need to dump the FULL response structure to see where the 10 users might be
+              console.log(`[ZohoService] 🔍 Dumping FULL response structure to find where users are stored...`);
+              const fullResponseDump = JSON.stringify(fullResponse, null, 2);
+              console.log(`[ZohoService] Full response (first 5000 chars): ${fullResponseDump.substring(0, 5000)}...`);
+              
+              // Also check ALL arrays in the response, regardless of their path
+              const findAllArrays = (obj: any, path: string = '', depth: number = 0): Array<{path: string, array: any[], size: number, sample: any}> => {
+                const found: Array<{path: string, array: any[], size: number, sample: any}> = [];
+                if (depth > 8 || !obj || typeof obj !== 'object') return found;
+                
+                // Check if this is an array
+                if (Array.isArray(obj) && obj.length > 0) {
+                  found.push({ 
+                    path, 
+                    array: obj, 
+                    size: obj.length,
+                    sample: obj[0]
+                  });
+                }
+                
+                // Recursively search nested objects
+                for (const key in obj) {
+                  if (obj.hasOwnProperty(key) && obj[key] !== null && typeof obj[key] === 'object') {
+                    found.push(...findAllArrays(obj[key], path ? `${path}.${key}` : key, depth + 1));
+                  }
+                }
+                
+                return found;
+              };
+              
+              const allArrays = findAllArrays(fullResponse);
+              console.log(`[ZohoService] 🔍 Found ${allArrays.length} total arrays in response:`);
+              allArrays.forEach(({path, size, sample}) => {
+                const sampleStr = JSON.stringify(sample, null, 2).substring(0, 200);
+                console.log(`[ZohoService]   - ${path}: ${size} items`);
+                console.log(`[ZohoService]     Sample: ${sampleStr}...`);
+                
+                // Check if this array contains user-like objects
+                if (size >= 5 && sample && typeof sample === 'object') {
+                  const hasUserFields = sample.email || sample.Email || sample.zpuid || sample.zuid || sample.user_id || 
+                                       sample.name || sample.Name || sample.first_name || sample.last_name;
+                  if (hasUserFields) {
+                    console.log(`[ZohoService]     ⚠️  This array (${path}) has ${size} items and contains user-like objects!`);
+                    console.log(`[ZohoService]     Sample keys: ${Object.keys(sample).join(', ')}`);
+                  }
+                }
+              });
+              
               // Helper to recursively find arrays with user-like objects
               // EXCLUDE: project_manager, stakeholders, owner, created_by, updated_by - these are NOT project members
               const excludedPaths = ['project_manager', 'stakeholders', 'owner', 'created_by', 'updated_by', 'tasks', 'issues', 'milestones'];
@@ -1031,57 +1085,6 @@ class ZohoService {
                   if (largeArray) {
                     console.log(`[ZohoService] ⚠️  Found large array (${largeArray.array.length} items) but it's in excluded path: ${largeArray.path}`);
                     console.log(`[ZohoService] ⚠️  This suggests the project_users array might be nested elsewhere or the API isn't returning it.`);
-                  }
-                  
-                  // CRITICAL: The ?include=project_users parameter might not be working
-                  // Let's try a different approach: check if response.data itself contains users
-                  // or if we need to make a separate API call to get project users
-                  console.log(`[ZohoService] 🔍 Attempting deep search for arrays with 5+ user-like objects...`);
-                  const deepSearch = (obj: any, path: string = '', depth: number = 0): Array<{path: string, array: any[], size: number}> => {
-                    const found: Array<{path: string, array: any[], size: number}> = [];
-                    if (depth > 6 || !obj || typeof obj !== 'object') return found;
-                    
-                    // Skip excluded top-level keys
-                    if (depth === 0 && ['project_manager', 'stakeholders', 'owner', 'created_by', 'updated_by', 'tasks', 'issues', 'milestones'].includes(path.toLowerCase())) {
-                      return found;
-                    }
-                    
-                    // Check if this is an array with user-like objects
-                    if (Array.isArray(obj) && obj.length >= 5) {
-                      const firstItem = obj[0];
-                      if (firstItem && typeof firstItem === 'object' && 
-                          (firstItem.email || firstItem.Email || firstItem.zpuid || firstItem.zuid || firstItem.user_id)) {
-                        found.push({ path, array: obj, size: obj.length });
-                      }
-                    }
-                    
-                    // Recursively search nested objects
-                    for (const key in obj) {
-                      if (obj.hasOwnProperty(key) && obj[key] !== null && typeof obj[key] === 'object') {
-                        const keyLower = key.toLowerCase();
-                        // Skip excluded keys at any depth
-                        if (!['project_manager', 'stakeholders', 'owner', 'created_by', 'updated_by', 'tasks', 'issues', 'milestones'].includes(keyLower)) {
-                          found.push(...deepSearch(obj[key], path ? `${path}.${key}` : key, depth + 1));
-                        }
-                      }
-                    }
-                    
-                    return found;
-                  };
-                  
-                  const deepResults = deepSearch(fullResponse);
-                  if (deepResults.length > 0) {
-                    console.log(`[ZohoService] 🔍 Deep search found ${deepResults.length} arrays with 5+ users:`);
-                    deepResults.forEach(({path, size}) => {
-                      console.log(`[ZohoService]   - ${path}: ${size} items`);
-                    });
-                    
-                    // Use the largest array (most likely to be project_users)
-                    const largest = deepResults.reduce((best, current) => current.size > (best?.size || 0) ? current : best);
-                    if (largest && largest.size >= 5) {
-                      members = largest.array;
-                      console.log(`[ZohoService] ✅ Using largest array from deep search: ${largest.path} (${members.length} members)`);
-                    }
                   }
                 }
               } else {
@@ -1206,13 +1209,27 @@ class ZohoService {
       // If all direct endpoints failed or returned no members, return empty array
       // DO NOT use task/issue extraction - we only want direct project members
       if (!response && lastError) {
-        console.error(`[ZohoService] All endpoint variations failed. Last error:`, lastError.response?.data?.error?.message || lastError.message);
+        const lastStatus = lastError.response?.status;
+        const lastMessage = lastError.response?.data?.error?.message || lastError.message;
+        
+        console.error(`[ZohoService] All endpoint variations failed. Last error: ${lastStatus} - ${lastMessage}`);
+        
+        // Check if the issue is OAuth scope related
+        if (lastStatus === 401 || lastStatus === 403) {
+          console.error(`[ZohoService] ⚠️  CRITICAL: OAuth scope/permission issue detected!`);
+          console.error(`[ZohoService] ⚠️  The /users endpoint requires specific OAuth scopes that may not be configured.`);
+          console.error(`[ZohoService] ⚠️  Local environment works because it has the correct OAuth scopes.`);
+          console.error(`[ZohoService] ⚠️  Staging environment needs OAuth token with scopes for: projects.read, users.read, or project_users.read`);
+          console.error(`[ZohoService] ⚠️  Please check Zoho OAuth app configuration on staging and ensure required scopes are granted.`);
+        }
+        
         console.log(`[ZohoService] ⚠️  No direct project members found - returning empty array (not using task/issue extraction)`);
         return [];
       }
       
       // If we got a response but no members were found in direct arrays, return empty
       console.log(`[ZohoService] ⚠️  No direct project members found in any endpoint response`);
+      console.log(`[ZohoService] ⚠️  This might indicate that the ?include=project_users parameter is not working on this Zoho API version.`);
       return [];
     } catch (error: any) {
       console.error('[ZohoService] Error fetching project members:', {
