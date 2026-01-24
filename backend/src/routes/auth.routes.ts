@@ -482,20 +482,46 @@ router.put('/users/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // SSH columns exist in the database (confirmed by user's database query)
-    // NOTE: We tried using information_schema.columns to check for column existence,
-    // but it was failing in production (returning empty array) even though columns exist.
-    // Root causes could be:
-    // 1. Case sensitivity issues with information_schema
-    // 2. Schema search path differences between local and production
-    // 3. Connection context differences
-    // Since we know the columns exist (migration 012_add_ssh_fields_to_users.sql),
-    // we'll always try to update them if values are provided.
-    const hasSshUser = true;
-    const hasSshPasswordHash = true;
-    const hasIpaddress = true;
-    const hasPort = true;
-    const hasRunDirectory = true;
+    // Check if SSH columns exist by trying to query them directly
+    // This is more reliable than information_schema which was failing in production
+    let hasSshUser = false;
+    let hasSshPasswordHash = false;
+    let hasIpaddress = false;
+    let hasPort = false;
+    let hasRunDirectory = false;
+    
+    // Try to query each column to verify it exists
+    const columnChecks = [
+      { name: 'ssh_user', setter: () => { hasSshUser = true; } },
+      { name: 'sshpassword_hash', setter: () => { hasSshPasswordHash = true; } },
+      { name: 'ipaddress', setter: () => { hasIpaddress = true; } },
+      { name: 'port', setter: () => { hasPort = true; } },
+      { name: 'run_directory', setter: () => { hasRunDirectory = true; } },
+    ];
+    
+    for (const col of columnChecks) {
+      try {
+        await pool.query(`SELECT ${col.name} FROM users WHERE id = $1 LIMIT 1`, [userId]);
+        col.setter();
+      } catch (error: any) {
+        // Column doesn't exist (error code 42703 = undefined_column)
+        if (error.code === '42703') {
+          // Column definitely doesn't exist, leave flag as false
+        } else {
+          // Other error (might be connection issue), but column might exist
+          // For safety, assume it exists if it's not a column error
+          col.setter();
+        }
+      }
+    }
+    
+    console.log(`[Update User ${userId}] Column existence check:`, {
+      hasIpaddress,
+      hasPort,
+      hasSshUser,
+      hasSshPasswordHash,
+      hasRunDirectory,
+    });
 
     // Build update query dynamically
     const updates: string[] = [];
