@@ -865,228 +865,31 @@ class ZohoService {
         return users;
       };
       
-      // Try fetching project details with V3 API first to check for users
-      const projectDetailEndpoints = [
-        `/api/v3/portal/${portal}/projects/${projectIdString}?include=users`,
-        `/api/v3/portal/${portal}/projects/${projectIdString}?include=project_users`,
-        `/api/v3/portal/${portal}/projects/${projectIdString}?include=members`,
-        `/api/v3/portal/${portal}/projects/${projectIdString}`,
-        `/api/v3/portal/${portal}/projects/${projectId}`,
-      ];
-      
-      let fullProject: any = null;
-      let fullProjectResponseData: any = null;
-      let usersFromRecursiveSearch: any[] = [];
-      for (const endpoint of projectDetailEndpoints) {
-        try {
-          const fullProjectResponse = await client.get(endpoint);
-          fullProjectResponseData = fullProjectResponse.data;
-          fullProject = fullProjectResponse.data?.response?.result || fullProjectResponse.data;
-          
-          // Check for users in various possible locations
-          // Log project structure for debugging
-          if (fullProject) {
-            console.log(`[ZohoService] Project details keys: ${Object.keys(fullProject).join(', ')}`);
-            if (fullProject.users) {
-              console.log(`[ZohoService] Project has 'users': ${Array.isArray(fullProject.users) ? `array with ${fullProject.users.length} items` : typeof fullProject.users}`);
-            }
-            if (fullProject.project_users) {
-              console.log(`[ZohoService] Project has 'project_users': ${Array.isArray(fullProject.project_users) ? `array with ${fullProject.project_users.length} items` : typeof fullProject.project_users}`);
-            }
-            if (fullProject.members) {
-              console.log(`[ZohoService] Project has 'members': ${Array.isArray(fullProject.members) ? `array with ${fullProject.members.length} items` : typeof fullProject.members}`);
-            }
-            // Check for user-related fields
-            if (fullProject.owner) {
-              console.log(`[ZohoService] Project has 'owner': ${typeof fullProject.owner}`);
-            }
-            if (fullProject.project_manager) {
-              console.log(`[ZohoService] Project has 'project_manager': ${typeof fullProject.project_manager}`);
-            }
-            if (fullProject.stakeholders) {
-              console.log(`[ZohoService] Project has 'stakeholders': ${Array.isArray(fullProject.stakeholders) ? `array with ${fullProject.stakeholders.length} items` : typeof fullProject.stakeholders}`);
-            }
-          }
-          
-          // Try to find users recursively in the entire response
-          const foundUsers = findUsersInResponse(fullProjectResponseData);
-          if (foundUsers.length > 0) {
-            console.log(`[ZohoService] ✅ Found ${foundUsers.length} users recursively in project details response`);
-            // Log details about found users for debugging
-            foundUsers.forEach((user, idx) => {
-              console.log(`[ZohoService] User ${idx + 1}: ${user.email || user.Email || 'no email'}, name: ${user.name || user.Name || 'no name'}, zpuid: ${user.zpuid || 'no zpuid'}, role: ${user.project_profile || user.role || 'no role'}`);
-            });
-            // Deduplicate and return
-            const uniqueUsers = foundUsers.filter((user, index, self) => {
-              const matchIndex = self.findIndex((u) => {
-                const emailMatch = (u.email && user.email && u.email.toLowerCase() === user.email.toLowerCase()) ||
-                                  (u.Email && user.Email && u.Email.toLowerCase() === user.Email.toLowerCase());
-                const idMatch = (u.zpuid && user.zpuid && u.zpuid === user.zpuid) ||
-                               (u.zuid && user.zuid && u.zuid === user.zuid) ||
-                               (u.id && user.id && String(u.id) === String(user.id));
-                return emailMatch || idMatch;
-              });
-              const isUnique = matchIndex === index;
-              if (!isUnique && index < 10) {
-                console.log(`[ZohoService] Duplicate user at index ${index}: ${user.email || user.Email || 'no email'} (matched with index ${matchIndex})`);
-              }
-              return isUnique;
-            });
-            console.log(`[ZohoService] After deduplication: ${uniqueUsers.length} unique users from ${foundUsers.length} total`);
-            if (uniqueUsers.length > 0) {
-              // Store for later combination with users from tasks/issues
-              usersFromRecursiveSearch = uniqueUsers;
-              console.log(`[ZohoService] Stored ${usersFromRecursiveSearch.length} users from recursive search for later combination`);
-            }
-          }
-          
-          if (fullProject?.users && Array.isArray(fullProject.users)) {
-            console.log(`[ZohoService] ✅ Found ${fullProject.users.length} users in project details`);
-            return fullProject.users;
-          }
-          if (fullProject?.project_users && Array.isArray(fullProject.project_users)) {
-            console.log(`[ZohoService] ✅ Found ${fullProject.project_users.length} project_users in project details`);
-            return fullProject.project_users;
-          }
-          if (fullProject?.members && Array.isArray(fullProject.members)) {
-            console.log(`[ZohoService] ✅ Found ${fullProject.members.length} members in project details`);
-            return fullProject.members;
-          }
-          
-          // Extract users from project fields like owner, project_manager, stakeholders
-          const extractedUsers: any[] = [];
-          if (fullProject) {
-            // Extract owner
-            if (fullProject.owner && typeof fullProject.owner === 'object') {
-              const owner = fullProject.owner;
-              if (owner.email || owner.zpuid || owner.zuid || owner.id) {
-                extractedUsers.push({
-                  id: owner.zpuid || owner.zuid || owner.id,
-                  zuid: owner.zuid,
-                  zpuid: owner.zpuid,
-                  name: owner.name || owner.display_name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim(),
-                  email: owner.email,
-                  first_name: owner.first_name,
-                  last_name: owner.last_name,
-                  role: 'admin' // Project owner typically has admin role
-                });
-                console.log(`[ZohoService] Extracted owner: ${owner.email || owner.name || owner.id}`);
-              }
-            }
-            
-            // Extract project manager
-            if (fullProject.project_manager && typeof fullProject.project_manager === 'object') {
-              const pm = fullProject.project_manager;
-              if (pm.email || pm.zpuid || pm.zuid || pm.id) {
-                extractedUsers.push({
-                  id: pm.zpuid || pm.zuid || pm.id,
-                  zuid: pm.zuid,
-                  zpuid: pm.zpuid,
-                  name: pm.name || pm.display_name || `${pm.first_name || ''} ${pm.last_name || ''}`.trim(),
-                  email: pm.email,
-                  first_name: pm.first_name,
-                  last_name: pm.last_name,
-                  role: 'project_manager'
-                });
-                console.log(`[ZohoService] Extracted project manager: ${pm.email || pm.name || pm.id}`);
-              }
-            }
-            
-            // Extract stakeholders
-            if (fullProject.stakeholders && Array.isArray(fullProject.stakeholders)) {
-              fullProject.stakeholders.forEach((stakeholder: any) => {
-                if (stakeholder && typeof stakeholder === 'object' && (stakeholder.email || stakeholder.zpuid || stakeholder.zuid || stakeholder.id)) {
-                  extractedUsers.push({
-                    id: stakeholder.zpuid || stakeholder.zuid || stakeholder.id,
-                    zuid: stakeholder.zuid,
-                    zpuid: stakeholder.zpuid,
-                    name: stakeholder.name || stakeholder.display_name || `${stakeholder.first_name || ''} ${stakeholder.last_name || ''}`.trim(),
-                    email: stakeholder.email,
-                    first_name: stakeholder.first_name,
-                    last_name: stakeholder.last_name,
-                    role: stakeholder.role || 'engineer'
-                  });
-                  console.log(`[ZohoService] Extracted stakeholder: ${stakeholder.email || stakeholder.name || stakeholder.id}`);
-                }
-              });
-            }
-            
-            // Extract created_by and updated_by
-            if (fullProject.created_by && typeof fullProject.created_by === 'object') {
-              const creator = fullProject.created_by;
-              if (creator.email || creator.zpuid || creator.zuid || creator.id) {
-                extractedUsers.push({
-                  id: creator.zpuid || creator.zuid || creator.id,
-                  zuid: creator.zuid,
-                  zpuid: creator.zpuid,
-                  name: creator.name || creator.display_name || `${creator.first_name || ''} ${creator.last_name || ''}`.trim(),
-                  email: creator.email,
-                  first_name: creator.first_name,
-                  last_name: creator.last_name,
-                  role: 'admin'
-                });
-                console.log(`[ZohoService] Extracted creator: ${creator.email || creator.name || creator.id}`);
-              }
-            }
-            
-            if (fullProject.updated_by && typeof fullProject.updated_by === 'object') {
-              const updater = fullProject.updated_by;
-              if (updater.email || updater.zpuid || updater.zuid || updater.id) {
-                extractedUsers.push({
-                  id: updater.zpuid || updater.zuid || updater.id,
-                  zuid: updater.zuid,
-                  zpuid: updater.zpuid,
-                  name: updater.name || updater.display_name || `${updater.first_name || ''} ${updater.last_name || ''}`.trim(),
-                  email: updater.email,
-                  first_name: updater.first_name,
-                  last_name: updater.last_name,
-                  role: 'engineer'
-                });
-                console.log(`[ZohoService] Extracted updater: ${updater.email || updater.name || updater.id}`);
-              }
-            }
-            
-            // Remove duplicates
-            const uniqueExtracted = extractedUsers.filter((user, index, self) => 
-              index === self.findIndex((u) => 
-                (u.email && u.email === user.email) ||
-                (u.zpuid && u.zpuid === user.zpuid) ||
-                (u.zuid && u.zuid === user.zuid) ||
-                (u.id && u.id === user.id)
-              )
-            );
-            
-            if (uniqueExtracted.length > 0) {
-              console.log(`[ZohoService] ✅ Extracted ${uniqueExtracted.length} users from project fields (owner, PM, stakeholders, etc.)`);
-              // Don't return here - continue to try tasks extraction for more users
-            }
-          }
-          
-          // Don't break - continue to try other endpoints and task extraction
-        } catch (projectDetailsError: any) {
-          continue;
-        }
-      }
+      // REMOVED: Project detail endpoints that extract from owner/PM/stakeholders
+      // We ONLY want direct project members from project_users/users arrays, not from project fields
+      // The endpoint variations below will handle fetching project members directly
       
       // Try multiple endpoint variations for getting project members
+      // PRIORITY: Try project details with include=project_users FIRST (most reliable for getting project members list)
       // Use id_string for V3 API as it's more reliable
       const endpointVariations = [
+        // Priority 1: Project details with project_users include (MOST LIKELY TO WORK)
+        `/api/v3/portal/${portal}/projects/${projectIdString}?include=project_users`,
+        `/api/v3/portal/${portal}/projects/${projectIdString}?include=users,project_users`,
+        `/api/v3/portal/${portal}/projects/${projectIdString}?include=members`,
+        // Priority 2: Direct users endpoints
         `/api/v3/portal/${portal}/projects/${projectIdString}/users`,
         `/api/v3/portal/${portal}/projects/${projectIdString}/users/`,
         `/api/v3/portal/${portal}/projects/${projectId}/users`,
         `/api/v3/portal/${portal}/projects/${projectId}/users/`,
+        // Priority 3: REST API endpoints
         `/restapi/portal/${portal}/projects/${projectIdString}/users/`,
         `/restapi/portal/${portal}/projects/${projectId}/users/`,
-        `/restapi/portal/${portal}/projects/${projectIdString}/people/`,
-        `/restapi/portal/${portal}/projects/${projectId}/people/`,
-        // Try with additional query parameters
+        // Priority 4: Try with additional query parameters
         `/api/v3/portal/${portal}/projects/${projectIdString}/users?type=all`,
         `/api/v3/portal/${portal}/projects/${projectIdString}/users?include=all`,
         `/restapi/portal/${portal}/projects/${projectIdString}/users/?type=all`,
-        // Try project details with users included (already tried above, but try again with different params)
-        `/api/v3/portal/${portal}/projects/${projectIdString}?include=users,project_users`,
-        `/api/v3/portal/${portal}/projects/${projectIdString}?include=members`,
-        // Try team/people endpoints
+        // Priority 5: Team/people endpoints (less likely to work)
         `/api/v3/portal/${portal}/projects/${projectIdString}/team`,
         `/api/v3/portal/${portal}/projects/${projectIdString}/team/`,
         `/restapi/portal/${portal}/projects/${projectIdString}/team/`,
@@ -1099,47 +902,126 @@ class ZohoService {
           console.log(`[ZohoService] ✅ Success with endpoint: ${endpoint} (status: ${response.status})`);
           
           // Extract users from response immediately - ONLY from direct project member arrays
-          const responseData = response.data?.response?.result || response.data;
+          // Check multiple possible response structures
+          const fullResponse = response.data;
+          const responseData = fullResponse?.response?.result || fullResponse;
           let members: ZohoProjectMember[] = [];
           
-          // Log response structure for debugging
+          // Log full response structure for debugging when project_users/users not found
           if (responseData) {
             console.log(`[ZohoService] Response keys: ${Object.keys(responseData).join(', ')}`);
-            if (responseData.users) {
-              console.log(`[ZohoService] Found 'users' field: ${Array.isArray(responseData.users) ? `array with ${responseData.users.length} items` : typeof responseData.users}`);
-              if (Array.isArray(responseData.users) && responseData.users.length > 0) {
-                console.log(`[ZohoService] Sample user keys: ${Object.keys(responseData.users[0]).join(', ')}`);
+            
+            // Check for project_users in various locations - comprehensive search
+            const checkLocations = [
+              { path: 'responseData.project_users', value: responseData.project_users },
+              { path: 'responseData.users', value: responseData.users },
+              { path: 'responseData.members', value: responseData.members },
+              { path: 'fullResponse.response.result.project_users', value: fullResponse?.response?.result?.project_users },
+              { path: 'fullResponse.response.result.users', value: fullResponse?.response?.result?.users },
+              { path: 'fullResponse.response.result.members', value: fullResponse?.response?.result?.members },
+              { path: 'fullResponse.project_users', value: fullResponse?.project_users },
+              { path: 'fullResponse.users', value: fullResponse?.users },
+              { path: 'fullResponse.members', value: fullResponse?.members },
+              // Also check if response.data itself is an array
+              { path: 'response.data (direct array)', value: Array.isArray(response.data) ? response.data : null },
+            ];
+            
+            let foundLocation = null;
+            for (const location of checkLocations) {
+              if (location.value && Array.isArray(location.value) && location.value.length > 0) {
+                foundLocation = location.path;
+                members = location.value;
+                console.log(`[ZohoService] ✅ Found project_users/users at: ${foundLocation} (${members.length} members)`);
+                if (members.length > 0) {
+                  console.log(`[ZohoService] First member sample:`, JSON.stringify(members[0], null, 2).substring(0, 300));
+                }
+                break;
+              } else if (location.value && Array.isArray(location.value)) {
+                console.log(`[ZohoService] Found ${location.path} but it's empty (0 members)`);
+              } else if (location.value) {
+                console.log(`[ZohoService] Found ${location.path} but it's not an array: ${typeof location.value}`);
               }
             }
-            if (responseData.project_users) {
-              console.log(`[ZohoService] Found 'project_users' field: ${Array.isArray(responseData.project_users) ? `array with ${responseData.project_users.length} items` : typeof responseData.project_users}`);
-              if (Array.isArray(responseData.project_users) && responseData.project_users.length > 0) {
-                console.log(`[ZohoService] Sample project_user keys: ${Object.keys(responseData.project_users[0]).join(', ')}`);
-                console.log(`[ZohoService] Sample project_user:`, JSON.stringify(responseData.project_users[0], null, 2));
+            
+            // If still not found, search for any arrays containing user-like objects
+            if (members.length === 0) {
+              console.log(`[ZohoService] ⚠️  No project_users/users array found. Searching for user-like arrays in response...`);
+              
+              // Helper to recursively find arrays with user-like objects
+              const findUserArrays = (obj: any, path: string = ''): Array<{path: string, array: any[]}> => {
+                const found: Array<{path: string, array: any[]}> = [];
+                if (!obj || typeof obj !== 'object') return found;
+                
+                // Check if this is an array with user-like objects
+                if (Array.isArray(obj) && obj.length > 0) {
+                  const firstItem = obj[0];
+                  if (firstItem && typeof firstItem === 'object' && 
+                      (firstItem.email || firstItem.Email || firstItem.zpuid || firstItem.zuid || firstItem.user_id)) {
+                    found.push({ path, array: obj });
+                  }
+                }
+                
+                // Recursively search nested objects
+                for (const key in obj) {
+                  if (obj.hasOwnProperty(key) && obj[key] !== null && typeof obj[key] === 'object') {
+                    found.push(...findUserArrays(obj[key], path ? `${path}.${key}` : key));
+                  }
+                }
+                
+                return found;
+              };
+              
+              const userArrays = findUserArrays(fullResponse);
+              if (userArrays.length > 0) {
+                console.log(`[ZohoService] ✅ Found ${userArrays.length} potential user arrays in response:`);
+                userArrays.forEach(({path, array}) => {
+                  console.log(`[ZohoService]   - ${path}: ${array.length} items`);
+                  if (array.length > 0) {
+                    console.log(`[ZohoService]     First item keys: ${Object.keys(array[0]).join(', ')}`);
+                    console.log(`[ZohoService]     First item sample:`, JSON.stringify(array[0], null, 2).substring(0, 300));
+                  }
+                });
+                
+                // Use the first user array found (prioritize project_users if multiple)
+                const projectUsersArray = userArrays.find(ua => ua.path.toLowerCase().includes('project_user') || ua.path.toLowerCase().includes('project_user'));
+                const usersArray = userArrays.find(ua => ua.path.toLowerCase().includes('user') && !ua.path.toLowerCase().includes('project_user'));
+                const membersArray = userArrays.find(ua => ua.path.toLowerCase().includes('member'));
+                
+                const selectedArray = projectUsersArray || usersArray || membersArray || userArrays[0];
+                if (selectedArray) {
+                  members = selectedArray.array;
+                  console.log(`[ZohoService] ✅ Using user array from: ${selectedArray.path} (${members.length} members)`);
+                }
+              } else {
+                console.log(`[ZohoService] ⚠️  No user-like arrays found in response. Full response structure:`);
+                console.log(`[ZohoService] response.data type: ${Array.isArray(response.data) ? 'array' : typeof response.data}`);
+                console.log(`[ZohoService] response.data keys: ${Object.keys(fullResponse || {}).join(', ')}`);
+                if (fullResponse?.response) {
+                  console.log(`[ZohoService] response.data.response keys: ${Object.keys(fullResponse.response).join(', ')}`);
+                }
+                if (fullResponse?.response?.result) {
+                  console.log(`[ZohoService] response.data.response.result keys: ${Object.keys(fullResponse.response.result).join(', ')}`);
+                  // Check if any of the keys contain user-related data
+                  const resultKeys = Object.keys(fullResponse.response.result);
+                  for (const key of resultKeys) {
+                    const value = fullResponse.response.result[key];
+                    if (Array.isArray(value) && value.length > 0) {
+                      console.log(`[ZohoService] Found array at result.${key} with ${value.length} items`);
+                      if (value[0] && typeof value[0] === 'object' && (value[0].email || value[0].Email || value[0].zpuid || value[0].zuid)) {
+                        console.log(`[ZohoService] ⚠️  Array at result.${key} appears to contain users! First item:`, JSON.stringify(value[0], null, 2).substring(0, 200));
+                      }
+                    }
+                  }
+                  // Log first 1000 chars of the result to see structure
+                  const resultStr = JSON.stringify(fullResponse.response.result, null, 2).substring(0, 1000);
+                  console.log(`[ZohoService] response.data.response.result (first 1000 chars): ${resultStr}...`);
+                }
               }
             }
           }
           
-          // ONLY extract from direct project member arrays - NO recursive search, NO tasks/issues
-          if (responseData?.project_users && Array.isArray(responseData.project_users)) {
-            members = responseData.project_users;
-            console.log(`[ZohoService] Using project_users array: ${members.length} members`);
-          } else if (responseData?.users && Array.isArray(responseData.users)) {
-            members = responseData.users;
-            console.log(`[ZohoService] Using users array: ${members.length} members`);
-          } else if (responseData?.members && Array.isArray(responseData.members)) {
-            members = responseData.members;
-            console.log(`[ZohoService] Using members array: ${members.length} members`);
-          } else if (responseData?.response?.result?.project_users && Array.isArray(responseData.response.result.project_users)) {
-            members = responseData.response.result.project_users;
-            console.log(`[ZohoService] Using response.result.project_users array: ${members.length} members`);
-          } else if (responseData?.response?.result?.users && Array.isArray(responseData.response.result.users)) {
-            members = responseData.response.result.users;
-            console.log(`[ZohoService] Using response.result.users array: ${members.length} members`);
-          } else if (responseData?.response?.result?.members && Array.isArray(responseData.response.result.members)) {
-            members = responseData.response.result.members;
-            console.log(`[ZohoService] Using response.result.members array: ${members.length} members`);
-          }
+          // ONLY extract from direct project member arrays - NO recursive search, NO tasks/issues, NO owner/PM/stakeholders
+          // We've already checked all locations above, so if members.length === 0, there are no direct project members
           
           // Deduplicate members by email/zpuid BEFORE processing
           if (members.length > 0) {
