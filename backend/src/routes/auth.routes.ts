@@ -497,6 +497,15 @@ router.put('/users/:id', authenticate, async (req, res) => {
     const hasSshUser = existingColumns.includes('ssh_user');
     const hasSshPasswordHash = existingColumns.includes('sshpassword_hash');
     const hasRunDirectory = existingColumns.includes('run_directory');
+    
+    console.log(`[Update User ${userId}] Column check results:`, {
+      existingColumns,
+      hasIpaddress,
+      hasPort,
+      hasSshUser,
+      hasSshPasswordHash,
+      hasRunDirectory,
+    });
 
     // Build update query dynamically
     const updates: string[] = [];
@@ -536,6 +545,12 @@ router.put('/users/:id', authenticate, async (req, res) => {
       updates.push(`ssh_user = $${paramCount++}`);
       values.push(sshUserValue);
       console.log(`[Update User ${userId}] Updating ssh_user:`, sshUserValue ? '***value provided***' : 'null');
+    } else {
+      console.log(`[Update User ${userId}] NOT updating ssh_user:`, {
+        ssh_user_undefined: ssh_user === undefined,
+        hasSshUser,
+        ssh_user_value: ssh_user !== undefined ? (ssh_user ? '***provided***' : 'empty/null') : 'undefined',
+      });
     }
     if (sshpassword !== undefined && hasSshPasswordHash) {
       // Encrypt SSH password if provided
@@ -551,6 +566,12 @@ router.put('/users/:id', authenticate, async (req, res) => {
         values.push(null);
         console.log(`[Update User ${userId}] Setting sshpassword_hash to null`);
       }
+    } else {
+      console.log(`[Update User ${userId}] NOT updating sshpassword_hash:`, {
+        sshpassword_undefined: sshpassword === undefined,
+        hasSshPasswordHash,
+        sshpassword_value: sshpassword !== undefined ? (sshpassword ? '***provided***' : 'empty/null') : 'undefined',
+      });
     }
     if (run_directory !== undefined && hasRunDirectory) {
       updates.push(`run_directory = $${paramCount++}`);
