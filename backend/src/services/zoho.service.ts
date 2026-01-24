@@ -870,24 +870,24 @@ class ZohoService {
       // The endpoint variations below will handle fetching project members directly
       
       // Try multiple endpoint variations for getting project members
-      // PRIORITY: Try project details with include=project_users FIRST (most reliable for getting project members list)
+      // PRIORITY: Try DIRECT /users endpoints FIRST (these should return project_users array directly)
       // Use id_string for V3 API as it's more reliable
       const endpointVariations = [
-        // Priority 1: Project details with project_users include (MOST LIKELY TO WORK)
-        `/api/v3/portal/${portal}/projects/${projectIdString}?include=project_users`,
-        `/api/v3/portal/${portal}/projects/${projectIdString}?include=users,project_users`,
-        `/api/v3/portal/${portal}/projects/${projectIdString}?include=members`,
-        // Priority 2: Direct users endpoints
+        // Priority 1: Direct users endpoints (should return project_users array directly)
         `/api/v3/portal/${portal}/projects/${projectIdString}/users`,
         `/api/v3/portal/${portal}/projects/${projectIdString}/users/`,
         `/api/v3/portal/${portal}/projects/${projectId}/users`,
         `/api/v3/portal/${portal}/projects/${projectId}/users/`,
-        // Priority 3: REST API endpoints
-        `/restapi/portal/${portal}/projects/${projectIdString}/users/`,
-        `/restapi/portal/${portal}/projects/${projectId}/users/`,
-        // Priority 4: Try with additional query parameters
+        // Priority 2: Users endpoints with query params
         `/api/v3/portal/${portal}/projects/${projectIdString}/users?type=all`,
         `/api/v3/portal/${portal}/projects/${projectIdString}/users?include=all`,
+        // Priority 3: Project details with project_users include (may not work - users might not be in response)
+        `/api/v3/portal/${portal}/projects/${projectIdString}?include=project_users`,
+        `/api/v3/portal/${portal}/projects/${projectIdString}?include=users,project_users`,
+        `/api/v3/portal/${portal}/projects/${projectIdString}?include=members`,
+        // Priority 4: REST API endpoints
+        `/restapi/portal/${portal}/projects/${projectIdString}/users/`,
+        `/restapi/portal/${portal}/projects/${projectId}/users/`,
         `/restapi/portal/${portal}/projects/${projectIdString}/users/?type=all`,
         // Priority 5: Team/people endpoints (less likely to work)
         `/api/v3/portal/${portal}/projects/${projectIdString}/team`,
@@ -912,7 +912,13 @@ class ZohoService {
             console.log(`[ZohoService] Response keys: ${Object.keys(responseData).join(', ')}`);
             
             // Check for project_users in various locations - comprehensive search
+            // For /users endpoints, the response might be directly an array or wrapped
             const checkLocations = [
+              // Direct array response (common for /users endpoints)
+              { path: 'response.data (direct array)', value: Array.isArray(response.data) ? response.data : null },
+              { path: 'response.data.response (array)', value: Array.isArray(response.data?.response) ? response.data.response : null },
+              { path: 'response.data.response.result (array)', value: Array.isArray(response.data?.response?.result) ? response.data.response.result : null },
+              // Object response with nested arrays
               { path: 'responseData.project_users', value: responseData.project_users },
               { path: 'responseData.users', value: responseData.users },
               { path: 'responseData.members', value: responseData.members },
@@ -922,8 +928,10 @@ class ZohoService {
               { path: 'fullResponse.project_users', value: fullResponse?.project_users },
               { path: 'fullResponse.users', value: fullResponse?.users },
               { path: 'fullResponse.members', value: fullResponse?.members },
-              // Also check if response.data itself is an array
-              { path: 'response.data (direct array)', value: Array.isArray(response.data) ? response.data : null },
+              // Check response.data.response if it exists
+              { path: 'response.data.response.project_users', value: response.data?.response?.project_users },
+              { path: 'response.data.response.users', value: response.data?.response?.users },
+              { path: 'response.data.response.members', value: response.data?.response?.members },
             ];
             
             let foundLocation = null;
@@ -948,9 +956,17 @@ class ZohoService {
               console.log(`[ZohoService] ⚠️  No project_users/users array found. Searching for user-like arrays in response...`);
               
               // Helper to recursively find arrays with user-like objects
+              // EXCLUDE: project_manager, stakeholders, owner, created_by, updated_by - these are NOT project members
+              const excludedPaths = ['project_manager', 'stakeholders', 'owner', 'created_by', 'updated_by', 'tasks', 'issues', 'milestones'];
               const findUserArrays = (obj: any, path: string = ''): Array<{path: string, array: any[]}> => {
                 const found: Array<{path: string, array: any[]}> = [];
                 if (!obj || typeof obj !== 'object') return found;
+                
+                // Skip excluded paths - these are NOT project members
+                const pathLower = path.toLowerCase();
+                if (excludedPaths.some(excluded => pathLower.includes(excluded.toLowerCase()))) {
+                  return found;
+                }
                 
                 // Check if this is an array with user-like objects
                 if (Array.isArray(obj) && obj.length > 0) {
@@ -964,7 +980,10 @@ class ZohoService {
                 // Recursively search nested objects
                 for (const key in obj) {
                   if (obj.hasOwnProperty(key) && obj[key] !== null && typeof obj[key] === 'object') {
-                    found.push(...findUserArrays(obj[key], path ? `${path}.${key}` : key));
+                    // Skip excluded keys
+                    if (!excludedPaths.includes(key.toLowerCase())) {
+                      found.push(...findUserArrays(obj[key], path ? `${path}.${key}` : key));
+                    }
                   }
                 }
                 
@@ -973,7 +992,7 @@ class ZohoService {
               
               const userArrays = findUserArrays(fullResponse);
               if (userArrays.length > 0) {
-                console.log(`[ZohoService] ✅ Found ${userArrays.length} potential user arrays in response:`);
+                console.log(`[ZohoService] ✅ Found ${userArrays.length} potential user arrays in response (excluding project_manager/stakeholders):`);
                 userArrays.forEach(({path, array}) => {
                   console.log(`[ZohoService]   - ${path}: ${array.length} items`);
                   if (array.length > 0) {
@@ -982,15 +1001,88 @@ class ZohoService {
                   }
                 });
                 
-                // Use the first user array found (prioritize project_users if multiple)
-                const projectUsersArray = userArrays.find(ua => ua.path.toLowerCase().includes('project_user') || ua.path.toLowerCase().includes('project_user'));
-                const usersArray = userArrays.find(ua => ua.path.toLowerCase().includes('user') && !ua.path.toLowerCase().includes('project_user'));
-                const membersArray = userArrays.find(ua => ua.path.toLowerCase().includes('member'));
+                // Prioritize project_users, then users, then members
+                const projectUsersArray = userArrays.find(ua => 
+                  ua.path.toLowerCase().includes('project_user') || 
+                  ua.path.toLowerCase().includes('project_user')
+                );
+                const usersArray = userArrays.find(ua => 
+                  ua.path.toLowerCase().includes('user') && 
+                  !ua.path.toLowerCase().includes('project_user') &&
+                  !ua.path.toLowerCase().includes('project_manager') &&
+                  !ua.path.toLowerCase().includes('stakeholder')
+                );
+                const membersArray = userArrays.find(ua => 
+                  ua.path.toLowerCase().includes('member') &&
+                  !ua.path.toLowerCase().includes('milestone')
+                );
                 
-                const selectedArray = projectUsersArray || usersArray || membersArray || userArrays[0];
+                const selectedArray = projectUsersArray || usersArray || membersArray;
                 if (selectedArray) {
                   members = selectedArray.array;
                   console.log(`[ZohoService] ✅ Using user array from: ${selectedArray.path} (${members.length} members)`);
+                } else {
+                  console.log(`[ZohoService] ⚠️  Found user arrays but none match project_users/users/members pattern. Available: ${userArrays.map(ua => ua.path).join(', ')}`);
+                  
+                  // If we found arrays but they're excluded (project_manager/stakeholders), 
+                  // we need to look deeper - maybe users are nested in a different structure
+                  // Try to find any array with 8+ users (we expect 10)
+                  const largeArray = userArrays.find(ua => ua.array.length >= 8);
+                  if (largeArray) {
+                    console.log(`[ZohoService] ⚠️  Found large array (${largeArray.array.length} items) but it's in excluded path: ${largeArray.path}`);
+                    console.log(`[ZohoService] ⚠️  This suggests the project_users array might be nested elsewhere or the API isn't returning it.`);
+                  }
+                  
+                  // CRITICAL: The ?include=project_users parameter might not be working
+                  // Let's try a different approach: check if response.data itself contains users
+                  // or if we need to make a separate API call to get project users
+                  console.log(`[ZohoService] 🔍 Attempting deep search for arrays with 5+ user-like objects...`);
+                  const deepSearch = (obj: any, path: string = '', depth: number = 0): Array<{path: string, array: any[], size: number}> => {
+                    const found: Array<{path: string, array: any[], size: number}> = [];
+                    if (depth > 6 || !obj || typeof obj !== 'object') return found;
+                    
+                    // Skip excluded top-level keys
+                    if (depth === 0 && ['project_manager', 'stakeholders', 'owner', 'created_by', 'updated_by', 'tasks', 'issues', 'milestones'].includes(path.toLowerCase())) {
+                      return found;
+                    }
+                    
+                    // Check if this is an array with user-like objects
+                    if (Array.isArray(obj) && obj.length >= 5) {
+                      const firstItem = obj[0];
+                      if (firstItem && typeof firstItem === 'object' && 
+                          (firstItem.email || firstItem.Email || firstItem.zpuid || firstItem.zuid || firstItem.user_id)) {
+                        found.push({ path, array: obj, size: obj.length });
+                      }
+                    }
+                    
+                    // Recursively search nested objects
+                    for (const key in obj) {
+                      if (obj.hasOwnProperty(key) && obj[key] !== null && typeof obj[key] === 'object') {
+                        const keyLower = key.toLowerCase();
+                        // Skip excluded keys at any depth
+                        if (!['project_manager', 'stakeholders', 'owner', 'created_by', 'updated_by', 'tasks', 'issues', 'milestones'].includes(keyLower)) {
+                          found.push(...deepSearch(obj[key], path ? `${path}.${key}` : key, depth + 1));
+                        }
+                      }
+                    }
+                    
+                    return found;
+                  };
+                  
+                  const deepResults = deepSearch(fullResponse);
+                  if (deepResults.length > 0) {
+                    console.log(`[ZohoService] 🔍 Deep search found ${deepResults.length} arrays with 5+ users:`);
+                    deepResults.forEach(({path, size}) => {
+                      console.log(`[ZohoService]   - ${path}: ${size} items`);
+                    });
+                    
+                    // Use the largest array (most likely to be project_users)
+                    const largest = deepResults.reduce((best, current) => current.size > (best?.size || 0) ? current : best);
+                    if (largest && largest.size >= 5) {
+                      members = largest.array;
+                      console.log(`[ZohoService] ✅ Using largest array from deep search: ${largest.path} (${members.length} members)`);
+                    }
+                  }
                 }
               } else {
                 console.log(`[ZohoService] ⚠️  No user-like arrays found in response. Full response structure:`);
@@ -1012,12 +1104,16 @@ class ZohoService {
                       }
                     }
                   }
-                  // Log first 1000 chars of the result to see structure
-                  const resultStr = JSON.stringify(fullResponse.response.result, null, 2).substring(0, 1000);
-                  console.log(`[ZohoService] response.data.response.result (first 1000 chars): ${resultStr}...`);
-                }
+                // Log first 2000 chars of the result to see structure
+                const resultStr = JSON.stringify(fullResponse.response.result, null, 2).substring(0, 2000);
+                console.log(`[ZohoService] response.data.response.result (first 2000 chars): ${resultStr}...`);
+                
+                // Also check the full response.data structure
+                const fullResponseStr = JSON.stringify(fullResponse, null, 2).substring(0, 2000);
+                console.log(`[ZohoService] Full response.data (first 2000 chars): ${fullResponseStr}...`);
               }
             }
+          }
           }
           
           // ONLY extract from direct project member arrays - NO recursive search, NO tasks/issues, NO owner/PM/stakeholders
