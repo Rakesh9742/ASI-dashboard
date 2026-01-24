@@ -7120,8 +7120,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
 
     final tasks = _cadStatus?['tasks'] as Map<String, dynamic>? ?? {};
     final issues = _cadStatus?['issues'] as Map<String, dynamic>? ?? {};
-    final tasksList = _cadStatus?['tasksList'] as List<dynamic>? ?? [];
-    final issuesList = _cadStatus?['issuesList'] as List<dynamic>? ?? [];
+    // tasksList and issuesList removed - not needed for now
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24.0),
@@ -7161,78 +7160,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
               ),
             ],
           ),
-          const SizedBox(height: 32),
-          // Tabs for Tasks and Issues
-          DefaultTabController(
-            length: 2,
-            initialIndex: _cadTabIndex,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TabBar(
-                  onTap: (index) {
-                    setState(() {
-                      _cadTabIndex = index;
-                    });
-                  },
-                  tabs: [
-                    Tab(
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.task, size: 18),
-                          const SizedBox(width: 4),
-                          Text('Tasks (${tasksList.length})'),
-                        ],
-                      ),
-                    ),
-                    Tab(
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.bug_report, size: 18),
-                          const SizedBox(width: 4),
-                          Text('Issues (${issuesList.length})'),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  height: 500,
-                  child: TabBarView(
-                    children: [
-                      // Tasks Tab
-                      tasksList.isEmpty
-                          ? const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(32.0),
-                                child: Text(
-                                  'No tasks found.',
-                                  style: TextStyle(color: Colors.grey, fontSize: 16),
-                                ),
-                              ),
-                            )
-                          : _buildCadTaskList(tasksList, Colors.blue),
-                      // Issues Tab
-                      issuesList.isEmpty
-                          ? const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(32.0),
-                                child: Text(
-                                  'No issues found.',
-                                  style: TextStyle(color: Colors.grey, fontSize: 16),
-                                ),
-                              ),
-                            )
-                          : _buildCadTaskList(issuesList, Colors.deepOrange),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
+          // Tabs removed - not needed for now
         ],
       ),
     );
@@ -7809,6 +7737,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                 final overdue = milestoneStatus?['overdue'] ?? 0;
                 final pending = milestoneStatus?['pending'] ?? 0;
                 final total = milestoneStatus?['total'] ?? 0;
+                final inProgressMilestones = (stageData?['in_progress_milestones'] as List<dynamic>?) ?? [];
+                final hasInProgress = inProgressMilestones.isNotEmpty;
                 final color = stageColors[stage] ?? Colors.black87;
                 final label = stageLabels[stage] ?? stage.toUpperCase();
 
@@ -7850,27 +7780,30 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                               label,
                               style: TextStyle(
                                 fontSize: 13,
-                                fontWeight: FontWeight.bold,
-                                color: color,
+                                fontWeight: hasInProgress ? FontWeight.w900 : FontWeight.bold,
+                                color: hasInProgress ? color : color,
                               ),
                             ),
                           ],
                         ),
                         const SizedBox(height: 10),
-                        // Current Stage Value
+                        // Current Stage Value - show in-progress milestones in bold
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                           decoration: BoxDecoration(
                             color: Colors.white,
                             borderRadius: BorderRadius.circular(6),
-                            border: Border.all(color: color.withOpacity(0.2)),
+                            border: Border.all(
+                              color: hasInProgress ? color : color.withOpacity(0.2),
+                              width: hasInProgress ? 2 : 1,
+                            ),
                           ),
                           child: Text(
-                            currentStage,
+                            hasInProgress ? inProgressMilestones.join(', ') : currentStage,
                             style: TextStyle(
                               fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: color,
+                              fontWeight: hasInProgress ? FontWeight.w900 : FontWeight.w600,
+                              color: hasInProgress ? color : color,
                             ),
                           ),
                         ),

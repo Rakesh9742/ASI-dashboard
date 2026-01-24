@@ -102,6 +102,8 @@ class ZohoService {
       'ZohoProjects.tasks.READ',  // Required for reading tasks and subtasks
       'ZohoProjects.tasklists.READ',  // Required for reading tasklists
       'ZohoProjects.users.READ',  // Required for reading project users/members
+      'ZohoProjects.bugs.READ',  // Required for reading bugs/issues
+      'ZohoProjects.issues.READ',  // Required for reading issues (alternative to bugs)
       'ZOHOPEOPLE.forms.ALL',  // Required for accessing employee forms/records
       'ZOHOPEOPLE.employee.ALL',  // Also include employee scope
     ].join(' ');
@@ -1195,7 +1197,20 @@ class ZohoService {
         } catch (error: any) {
           const status = error.response?.status;
           const errorMsg = error.response?.data?.error?.message || error.message;
-          console.log(`[ZohoService] ❌ Endpoint ${endpoint} failed: ${status || 'N/A'} - ${errorMsg}`);
+          const errorCode = error.response?.data?.code || error.code;
+          
+          // Log detailed error info for 401/403 errors (OAuth scope issues)
+          if (status === 401 || status === 403) {
+            console.log(`[ZohoService] ❌ Endpoint ${endpoint} failed: ${status} - ${errorMsg}`);
+            console.log(`[ZohoService] ⚠️  OAuth scope/permission issue. Error code: ${errorCode}`);
+            if (error.response?.data) {
+              const errorDetails = JSON.stringify(error.response.data, null, 2).substring(0, 500);
+              console.log(`[ZohoService] Error details: ${errorDetails}`);
+            }
+          } else {
+            console.log(`[ZohoService] ❌ Endpoint ${endpoint} failed: ${status || 'N/A'} - ${errorMsg}`);
+          }
+          
           if (error.response?.status === 404) {
             lastError = error;
             continue;
@@ -2887,7 +2902,6 @@ class ZohoService {
         }
       }
 
-      console.log('[getBugs] Using portal:', { id: portal, name: portalName });
 
       // First, get the project to find the correct project ID (id_string)
       let correctProjectId = projectId;
@@ -2923,21 +2937,27 @@ class ZohoService {
         let projectFetchSuccess = false;
         for (const variation of projectEndpointVariations) {
           try {
-            console.log(`[getBugs] Trying project endpoint: ${variation.name} - ${variation.url}`);
             const projectResponse = await client.get(variation.url);
-            project = projectResponse.data.response?.result || projectResponse.data;
-            console.log('[getBugs] ✅ Project fetched successfully via', variation.name);
+            let rawProject = projectResponse.data.response?.result || projectResponse.data;
+            
+            // CRITICAL: Handle case where response is { projects: [...] } instead of direct project
+            if (rawProject && rawProject.projects && Array.isArray(rawProject.projects) && rawProject.projects.length > 0) {
+              project = rawProject.projects[0];
+            } else if (Array.isArray(rawProject) && rawProject.length > 0) {
+              project = rawProject[0];
+            } else {
+              project = rawProject;
+            }
+            
             projectFetchSuccess = true;
             break;
           } catch (projectError: any) {
-            console.log(`[getBugs] ❌ Project endpoint ${variation.name} failed:`, projectError.response?.data?.error?.message || projectError.message);
             // Continue to next variation
           }
         }
         
         // If all project endpoints failed, try getting from projects list
         if (!projectFetchSuccess) {
-          console.log('[getBugs] ⚠️  Single project endpoint failed, trying to get from projects list...');
           try {
             const projectsResponse = await client.get(`/restapi/portal/${portal}/projects/`);
             let projects: any[] = [];
@@ -2958,38 +2978,34 @@ class ZohoService {
             );
             
             if (project) {
-              console.log('[getBugs] ✅ Found project in projects list');
               projectFetchSuccess = true;
             }
           } catch (listError: any) {
-            console.error('[getBugs] ❌ Failed to get projects list:', listError.response?.data?.error?.message || listError.message);
           }
         }
         
         if (project) {
+          // CRITICAL: Handle nested projects array structure
+          // Sometimes the response is { projects: [...] } instead of direct project
+          if (project.projects && Array.isArray(project.projects) && project.projects.length > 0) {
+            project = project.projects[0];
+          }
+          
           // Use the correct project ID - prefer id_string over id (as seen in link URLs)
-          correctProjectId = project.id_string || projectId;
-          console.log(`[getBugs] 🔑 Using project ID: ${correctProjectId} (original: ${projectId}, id_string: ${project?.id_string})`);
+          // CRITICAL: Use id_string for V3 API endpoints (same as getTasks and getProjectMembers)
+          correctProjectId = project.id_string || String(projectId);
           
           // Log project link structure for debugging
           if (project.link) {
-            console.log(`[getBugs] Project link keys:`, Object.keys(project.link));
-            if (project.link.bug) {
-              console.log(`[getBugs] Project link.bug:`, project.link.bug);
-            } else {
-              console.log(`[getBugs] ⚠️  No 'bug' key in project.link. Available keys:`, Object.keys(project.link));
-            }
-          } else {
-            console.log(`[getBugs] ⚠️  No 'link' object in project`);
           }
         }
       } catch (projectError: any) {
-        console.warn('[getBugs] Could not fetch project, using original projectId:', projectError.message);
         // Continue with original projectId
       }
 
       // Try different endpoint variations for bugs using the correct project ID
       const endpointVariations = [];
+      
       
       // First: Try using the link URL from project object if available (MOST RELIABLE)
       if (project?.link?.bug?.url) {
@@ -3004,10 +3020,6 @@ class ZohoService {
           name: 'project.link.bug URL (CORRECT)',
           url: bugPath
         });
-        console.log(`[getBugs] Found bug link URL in project: ${bugUrl} -> ${bugPath}`);
-      } else {
-        console.log('[getBugs] ⚠️  No bug link URL found in project.link.bug.url');
-        console.log('[getBugs] Project link keys:', project?.link ? Object.keys(project.link) : 'No link object');
       }
       
       // Try with "issues" instead of "bugs" (some Zoho setups use "issues")
@@ -3077,14 +3089,26 @@ class ZohoService {
         name: 'v1 API with portal ID (id_string, bugs)',
         url: `/restapi/v1/portal/${portal}/projects/${correctProjectId}/bugs/`
       });
+      
+      // Try V3 API endpoints (different format, might have different OAuth scopes)
+      endpointVariations.push({
+        name: 'V3 API /api/v3 format (bugs)',
+        url: `/api/v3/portal/${portal}/projects/${correctProjectId}/bugs`
+      });
+      endpointVariations.push({
+        name: 'V3 API /api/v3 format (issues)',
+        url: `/api/v3/portal/${portal}/projects/${correctProjectId}/issues`
+      });
 
       let bugs: any[] = [];
       
+      
       for (const variation of endpointVariations) {
-        if (bugs.length > 0) break; // Stop if we found bugs
+        if (bugs.length > 0) {
+          break; // Stop if we found bugs
+        }
         
         try {
-          console.log(`[getBugs] Trying bugs endpoint: ${variation.name} - ${variation.url}`);
           const response = await client.get(variation.url);
           
           // Try multiple response structures - bugs, issues, tickets
@@ -3107,8 +3131,11 @@ class ZohoService {
           }
           
           if (bugs.length > 0) {
-            console.log(`[getBugs] ✅ Found ${bugs.length} bugs/issues/tickets via ${variation.name}`);
+            console.log(`[getBugs] ✅✅✅ SUCCESS! Found ${bugs.length} bugs/issues/tickets via ${variation.name}`);
             console.log(`[getBugs] Sample bug data keys:`, bugs[0] ? Object.keys(bugs[0]) : 'No bugs');
+            if (bugs[0]) {
+              console.log(`[getBugs] Sample bug (first 500 chars):`, JSON.stringify(bugs[0], null, 2).substring(0, 500));
+            }
             break;
           } else {
             console.log(`[getBugs] ⚠️  ${variation.name} returned empty array. Response structure:`, {
@@ -3117,21 +3144,170 @@ class ZohoService {
               resultKeys: response.data.response?.result ? Object.keys(response.data.response.result) : [],
               topLevelKeys: Object.keys(response.data || {})
             });
+            // Log full response structure for debugging
+            const responseStr = JSON.stringify(response.data, null, 2).substring(0, 1000);
+            console.log(`[getBugs] Full response (first 1000 chars): ${responseStr}...`);
           }
         } catch (error: any) {
           const errorMsg = error.response?.data?.error?.message || error.message;
           const errorCode = error.response?.data?.error?.code;
-          console.log(`[getBugs] ❌ ${variation.name} failed: ${errorMsg}${errorCode ? ` (code: ${errorCode})` : ''}`);
-          if (error.response?.data) {
-            console.log(`[getBugs] Error response data:`, JSON.stringify(error.response.data).substring(0, 200));
-          }
           // Continue to next variation
           continue;
         }
       }
 
+      // Check if project has bugs enabled and bug count
+      if (project && project.IS_BUG_ENABLED && project.bug_count) {
+        const bugCount = parseInt(project.bug_count) || 0;
+      }
+      
       if (bugs.length === 0) {
-        console.warn('[getBugs] ⚠️  No bugs found after trying all endpoint variations');
+        
+        // Last resort: Try getting bugs from project details with include parameter
+        // Sometimes bugs/issues are accessible through project details with ?include=bugs or ?include=issues
+        if (correctProjectId) {
+          try {
+            const projectWithBugs = await client.get(`/restapi/portal/${portal}/projects/${correctProjectId}/?include=bugs,issues`);
+            
+            // Check multiple response structures
+            let bugsFromInclude: any[] = [];
+            const result = projectWithBugs.data.response?.result || projectWithBugs.data;
+            
+            
+            // Handle nested projects array structure - CRITICAL: The response is { projects: [...] }
+            let projectData = result;
+            if (result && result.projects && Array.isArray(result.projects) && result.projects.length > 0) {
+              projectData = result.projects[0];
+              
+              // CRITICAL: Check if bugs/issues are in the extracted project from the projects array
+              if (projectData?.bugs && Array.isArray(projectData.bugs)) {
+                bugsFromInclude = projectData.bugs;
+              } else if (projectData?.issues && Array.isArray(projectData.issues)) {
+                bugsFromInclude = projectData.issues;
+              } else if (projectData) {
+                // Check for any array that might contain bugs
+                for (const key of Object.keys(projectData)) {
+                  const value = projectData[key];
+                  if (Array.isArray(value) && value.length > 0) {
+                    const firstItem = value[0];
+                    if (firstItem && typeof firstItem === 'object') {
+                      // Check if this looks like bugs/issues
+                      if (firstItem.status || firstItem.severity || firstItem.priority || 
+                          firstItem.reporter || firstItem.assignee || firstItem.bug_number ||
+                          firstItem.issue_number || firstItem.title || firstItem.name) {
+                        bugsFromInclude = value;
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+            } else if (Array.isArray(result) && result.length > 0) {
+              projectData = result[0];
+            }
+            
+            // Check for bugs/issues in the extracted project data (fallback if not found above)
+            if (bugsFromInclude.length === 0) {
+              if (projectData?.bugs) {
+                bugsFromInclude = Array.isArray(projectData.bugs) ? projectData.bugs : [];
+              } else if (projectData?.issues) {
+                bugsFromInclude = Array.isArray(projectData.issues) ? projectData.issues : [];
+              } else if (result?.bugs) {
+                bugsFromInclude = Array.isArray(result.bugs) ? result.bugs : [];
+              } else if (result?.issues) {
+                bugsFromInclude = Array.isArray(result.issues) ? result.issues : [];
+              }
+            }
+            
+            // Also check if bugs are nested deeper in the response
+            if (bugsFromInclude.length === 0 && projectWithBugs.data) {
+              // Deep search for bugs/issues arrays
+              const deepSearch = (obj: any, depth: number = 0): any[] => {
+                if (depth > 6 || !obj || typeof obj !== 'object') return [];
+                const found: any[] = [];
+                
+                if (Array.isArray(obj) && obj.length > 0) {
+                  const firstItem = obj[0];
+                  if (firstItem && typeof firstItem === 'object') {
+                    // Check if this looks like a bugs/issues array
+                    const hasBugFields = firstItem.status || firstItem.severity || firstItem.priority || 
+                                        firstItem.reporter || firstItem.assignee || firstItem.bug_number ||
+                                        firstItem.issue_number || firstItem.bug_id || firstItem.issue_id ||
+                                        firstItem.title || firstItem.name || firstItem.description;
+                    if (hasBugFields) {
+                      found.push(...obj);
+                    }
+                  }
+                }
+                
+                // Search all keys
+                for (const key in obj) {
+                  if (obj.hasOwnProperty(key) && obj[key] !== null && typeof obj[key] === 'object') {
+                    const keyLower = key.toLowerCase();
+                    if (keyLower.includes('bug') || keyLower.includes('issue') || keyLower.includes('ticket') || 
+                        keyLower === 'projects' || keyLower === 'data' || keyLower === 'result') {
+                      found.push(...deepSearch(obj[key], depth + 1));
+                    }
+                  }
+                }
+                
+                return found;
+              };
+              
+              const deepFound = deepSearch(projectWithBugs.data);
+              if (deepFound.length > 0) {
+                bugsFromInclude = deepFound;
+              }
+            }
+            
+            if (bugsFromInclude.length > 0) {
+              bugs = bugsFromInclude;
+            }
+          } catch (includeError: any) {
+            // Silently fail - will try V3 API next
+          }
+        }
+        
+        // Also try V3 API with proper query parameters (the 400 error suggests missing required params)
+        if (bugs.length === 0 && correctProjectId) {
+          const v3Variations = [
+            { name: 'V3 API with fields=all', url: `/api/v3/portal/${portal}/projects/${correctProjectId}/bugs?fields=all` },
+            { name: 'V3 API with fields parameter', url: `/api/v3/portal/${portal}/projects/${correctProjectId}/bugs?fields=id,title,status,severity,priority` },
+            { name: 'V3 API issues endpoint', url: `/api/v3/portal/${portal}/projects/${correctProjectId}/issues?fields=all` },
+            { name: 'V3 API issues with fields', url: `/api/v3/portal/${portal}/projects/${correctProjectId}/issues?fields=id,title,status,severity,priority` },
+          ];
+          
+          for (const v3Var of v3Variations) {
+            if (bugs.length > 0) break;
+            
+            try {
+              const v3Response = await client.get(v3Var.url);
+              
+              // Check multiple response structures
+              if (v3Response.data?.bugs) {
+                bugs = Array.isArray(v3Response.data.bugs) ? v3Response.data.bugs : [];
+              } else if (v3Response.data?.issues) {
+                bugs = Array.isArray(v3Response.data.issues) ? v3Response.data.issues : [];
+              } else if (v3Response.data?.data?.bugs) {
+                bugs = Array.isArray(v3Response.data.data.bugs) ? v3Response.data.data.bugs : [];
+              } else if (v3Response.data?.data?.issues) {
+                bugs = Array.isArray(v3Response.data.data.issues) ? v3Response.data.data.issues : [];
+              } else if (Array.isArray(v3Response.data)) {
+                bugs = v3Response.data;
+              } else if (v3Response.data?.response?.result?.bugs) {
+                bugs = Array.isArray(v3Response.data.response.result.bugs) ? v3Response.data.response.result.bugs : [];
+              } else if (v3Response.data?.response?.result?.issues) {
+                bugs = Array.isArray(v3Response.data.response.result.issues) ? v3Response.data.response.result.issues : [];
+              }
+              
+              if (bugs.length > 0) {
+                break;
+              }
+            } catch (v3Error: any) {
+              // Silently continue to next variation
+            }
+          }
+        }
       }
 
       return bugs;
@@ -3196,11 +3372,21 @@ class ZohoService {
       milestones.forEach((milestone: any) => {
         const milestoneName = (milestone.name || milestone.milestone_name || '').toLowerCase();
         const endDate = milestone.end_date || milestone.due_date || milestone.target_date || milestone.end_date_long;
-        const isCompleted = milestone.status === 'completed' || milestone.status === 'closed' || milestone.completed || milestone.status_name === 'Completed';
+        const startDate = milestone.start_date || milestone.start_date_long;
+        const status = (milestone.status || milestone.status_name || '').toLowerCase();
+        const isCompleted = status === 'completed' || status === 'closed' || milestone.completed;
+        const isInProgress = status === 'in progress' || status === 'inprogress' || status === 'active' || status === 'open';
         
-        // Determine stage from milestone name
+        // Map milestone names to stages: Bronze -> RTL, Silver -> DV, Gold -> PD
+        // Also check for stage names in milestone name
         let stage = 'rtl'; // default
-        if (milestoneName.includes('dv') || milestoneName.includes('design verification')) {
+        if (milestoneName.includes('bronze')) {
+          stage = 'rtl';
+        } else if (milestoneName.includes('silver')) {
+          stage = 'dv'; // Silver typically maps to DV stage
+        } else if (milestoneName.includes('gold')) {
+          stage = 'pd'; // Gold typically maps to PD stage
+        } else if (milestoneName.includes('dv') || milestoneName.includes('design verification')) {
           stage = 'dv';
         } else if (milestoneName.includes('pd') || milestoneName.includes('physical design')) {
           stage = 'pd';
@@ -3214,7 +3400,21 @@ class ZohoService {
 
         milestonesByStage[stage].total++;
         
+        // Only count non-completed milestones for overdue/pending
         if (!isCompleted) {
+          // Check if it has started (has start date and start date passed)
+          let hasStarted = false;
+          if (startDate) {
+            let start: Date;
+            if (typeof startDate === 'number') {
+              start = new Date(startDate);
+            } else {
+              start = new Date(startDate);
+            }
+            hasStarted = start <= now;
+          }
+          
+          // Check if overdue (end date exceeded)
           if (endDate) {
             let dueDate: Date;
             if (typeof endDate === 'number') {
@@ -3224,12 +3424,26 @@ class ZohoService {
             }
             
             if (dueDate < now) {
+              // End date exceeded - mark as overdue
               milestonesByStage[stage].overdue++;
-            } else {
+            } else if (!hasStarted) {
+              // Not started yet - mark as pending
+              milestonesByStage[stage].pending++;
+            } else if (!isInProgress) {
+              // Has started, not in progress, not overdue - mark as pending
               milestonesByStage[stage].pending++;
             }
+            // If in progress and not overdue, don't count as pending (it's active)
           } else {
-            milestonesByStage[stage].pending++;
+            // No end date
+            if (!hasStarted) {
+              // Not started yet - mark as pending
+              milestonesByStage[stage].pending++;
+            } else if (!isInProgress) {
+              // Has started, not in progress - mark as pending
+              milestonesByStage[stage].pending++;
+            }
+            // If in progress, don't count as pending (it's active)
           }
         }
       });
