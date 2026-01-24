@@ -3114,8 +3114,8 @@ class QmsService {
     await client.query(
       `
         INSERT INTO qms_audit_log 
-          (check_item_id, checklist_id, block_id, user_id, action_type, action_details)
-        VALUES ($1, $2, $3, $4, $5, $6)
+          (check_item_id, checklist_id, block_id, user_id, action_type, action_details, entity_type)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
       `,
       [
         checkItemId, 
@@ -3123,7 +3123,8 @@ class QmsService {
         blockId,
         userId, 
         actionType,
-        JSON.stringify(detailsWithBlock)
+        JSON.stringify(detailsWithBlock),
+        entityType
       ]
     );
   }
