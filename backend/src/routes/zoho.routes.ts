@@ -133,7 +133,7 @@ router.get('/login-auth', async (req, res) => {
  */
 router.get('/callback', async (req, res) => {
   try {
-    const { code, error, state } = req.query;
+    const { code, error, state, error_description } = req.query;
 
     if (error) {
       return res.status(400).send(`
@@ -142,6 +142,7 @@ router.get('/callback', async (req, res) => {
           <body>
             <h1>❌ Authorization Failed</h1>
             <p>Error: ${error}</p>
+            ${error_description ? `<p>Description: ${error_description}</p>` : ''}
             <p>Please try again from the application.</p>
           </body>
         </html>

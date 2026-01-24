@@ -97,10 +97,14 @@ class ZohoService {
    * Get authorization URL for OAuth flow
    */
   getAuthorizationUrl(state?: string): string {
-    // Request profile + email + projects + people scopes and force consent to obtain refresh_token
+    // Request profile + email + projects scopes and force consent to obtain refresh_token
     // Zoho expects scopes space-separated
-    // Note: Zoho People scopes must be UPPERCASE: ZOHOPEOPLE not ZohoPeople
-    // For accessing employee forms, we need ZOHOPEOPLE.forms.ALL scope
+    // Note: Zoho People scopes (ZOHOPEOPLE.forms.ALL, ZOHOPEOPLE.employee.ALL) are removed
+    // because they are not enabled in Zoho Developer Console. If you need Zoho People integration:
+    // 1. Go to https://api-console.zoho.in/ (or your data center)
+    // 2. Select your OAuth app
+    // 3. Add scopes: ZOHOPEOPLE.forms.ALL and ZOHOPEOPLE.employee.ALL
+    // 4. Then uncomment the Zoho People scopes below
     const scope = [
       'AaaServer.profile.read',
       'profile',
@@ -111,9 +115,10 @@ class ZohoService {
       'ZohoProjects.tasklists.READ',  // Required for reading tasklists
       'ZohoProjects.users.READ',  // Required for reading project users/members
       'ZohoProjects.bugs.READ',  // Required for reading bugs/issues
-      'ZohoProjects.issues.READ',  // Required for reading issues (alternative to bugs)
-      'ZOHOPEOPLE.forms.ALL',  // Required for accessing employee forms/records
-      'ZOHOPEOPLE.employee.ALL',  // Also include employee scope
+      // Note: ZohoProjects.issues.READ removed - bugs and issues are the same in Zoho Projects
+      // Zoho People scopes - UNCOMMENT ONLY IF ENABLED IN ZOHO DEVELOPER CONSOLE
+      // 'ZOHOPEOPLE.forms.ALL',  // Optional: for accessing employee forms/records
+      // 'ZOHOPEOPLE.employee.ALL',  // Optional: for accessing employee records
     ].join(' ');
 
     const params = new URLSearchParams({
