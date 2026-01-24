@@ -109,7 +109,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     
     // Wait for next frame to ensure auth state is loaded
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadProjectsAndDomains();
+    _loadProjectsAndDomains();
     });
   }
 
@@ -622,8 +622,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
               children: [
                 // Hide header for customers and management - they don't need project/domain selection
                 if (_viewType != 'customer' && _viewType != 'management') ...[
-                  _buildHeader(),
-                  const SizedBox(height: 24),
+                _buildHeader(),
+                const SizedBox(height: 24),
                 ],
                 if (_viewType == 'engineer') ...[
                   _buildFilterBar(),
@@ -928,17 +928,17 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                 }
                 
                 return Row(
-                  children: [
-                    const Text(
-                      'VIEW TYPE:',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                        color: Color(0xFF94A3B8),
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(width: 16),
+              children: [
+                const Text(
+                  'VIEW TYPE:',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF94A3B8),
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(width: 16),
                     ...viewTypeChipsInline,
                   ],
                 );
@@ -1001,8 +1001,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           final isCustomerForDomain = userRoleForDomain == 'customer';
           
           if (isCustomerForDomain || widget.initialDomain == null) {
-            _selectedDomain = availableDomains.first;
-            _loadInitialData();
+          _selectedDomain = availableDomains.first;
+          _loadInitialData();
           }
         }
       });
@@ -5162,7 +5162,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     }
     
     // Sort by block name
-      blockSummaryList.sort((a, b) => 
+    blockSummaryList.sort((a, b) => 
       (a['block_name'] as String).compareTo(b['block_name'] as String));
     
     return blockSummaryList;
@@ -8373,7 +8373,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       ],
     );
   }
-
+  
   // Get all stages from all blocks in the selected project
   List<Map<String, dynamic>> _getAllStagesForProject() {
     if (_selectedProject == null || _selectedDomain == null) return [];
