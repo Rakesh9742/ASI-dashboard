@@ -476,6 +476,22 @@ router.put('/users/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // Check if SSH columns exist in the database
+    const columnCheck = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_schema = 'public' 
+        AND table_name = 'users' 
+        AND column_name IN ('ipaddress', 'port', 'ssh_user', 'sshpassword_hash', 'run_directory')
+    `);
+    
+    const existingColumns = columnCheck.rows.map((row: any) => row.column_name);
+    const hasIpaddress = existingColumns.includes('ipaddress');
+    const hasPort = existingColumns.includes('port');
+    const hasSshUser = existingColumns.includes('ssh_user');
+    const hasSshPasswordHash = existingColumns.includes('sshpassword_hash');
+    const hasRunDirectory = existingColumns.includes('run_directory');
+
     // Build update query dynamically
     const updates: string[] = [];
     const values: any[] = [];
@@ -497,17 +513,21 @@ router.put('/users/:id', authenticate, async (req, res) => {
       updates.push(`is_active = $${paramCount++}`);
       values.push(is_active);
     }
-    // Always update IP and port from environment (hardcoded)
+    // Update IP and port from environment (hardcoded) - only if columns exist
+    if (hasIpaddress) {
       updates.push(`ipaddress = $${paramCount++}`);
       values.push(ipaddress || null);
+    }
+    if (hasPort) {
       updates.push(`port = $${paramCount++}`);
-    values.push(port || null);
+      values.push(port || null);
+    }
     
-    if (ssh_user !== undefined) {
+    if (ssh_user !== undefined && hasSshUser) {
       updates.push(`ssh_user = $${paramCount++}`);
       values.push(ssh_user || null);
     }
-    if (sshpassword !== undefined) {
+    if (sshpassword !== undefined && hasSshPasswordHash) {
       // Encrypt SSH password if provided
       if (sshpassword) {
         const sshpasswordHash = encrypt(sshpassword);
@@ -518,7 +538,7 @@ router.put('/users/:id', authenticate, async (req, res) => {
         values.push(null);
       }
     }
-    if (run_directory !== undefined) {
+    if (run_directory !== undefined && hasRunDirectory) {
       updates.push(`run_directory = $${paramCount++}`);
       values.push(run_directory || null);
     }
@@ -527,10 +547,16 @@ router.put('/users/:id', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'No fields to update' });
     }
 
+    // Build RETURNING clause with only existing columns
+    const returningFields = ['id', 'username', 'email', 'full_name', 'role', 'domain_id', 'is_active', 'created_at'];
+    if (hasIpaddress) returningFields.push('ipaddress');
+    if (hasPort) returningFields.push('port');
+    if (hasSshUser) returningFields.push('ssh_user');
+    if (hasRunDirectory) returningFields.push('run_directory');
+
     values.push(userId);
     const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount}
-                   RETURNING id, username, email, full_name, role, domain_id, is_active, 
-                             created_at, ipaddress, port, ssh_user, run_directory`;
+                   RETURNING ${returningFields.join(', ')}`;
 
     const result = await pool.query(query, values);
 
