@@ -1098,7 +1098,7 @@ class ZohoService {
           response = await client.get(endpoint);
           console.log(`[ZohoService] ✅ Success with endpoint: ${endpoint} (status: ${response.status})`);
           
-          // Extract users from response immediately
+          // Extract users from response immediately - ONLY from direct project member arrays
           const responseData = response.data?.response?.result || response.data;
           let members: ZohoProjectMember[] = [];
           
@@ -1107,53 +1107,76 @@ class ZohoService {
             console.log(`[ZohoService] Response keys: ${Object.keys(responseData).join(', ')}`);
             if (responseData.users) {
               console.log(`[ZohoService] Found 'users' field: ${Array.isArray(responseData.users) ? `array with ${responseData.users.length} items` : typeof responseData.users}`);
+              if (Array.isArray(responseData.users) && responseData.users.length > 0) {
+                console.log(`[ZohoService] Sample user keys: ${Object.keys(responseData.users[0]).join(', ')}`);
+              }
             }
             if (responseData.project_users) {
               console.log(`[ZohoService] Found 'project_users' field: ${Array.isArray(responseData.project_users) ? `array with ${responseData.project_users.length} items` : typeof responseData.project_users}`);
+              if (Array.isArray(responseData.project_users) && responseData.project_users.length > 0) {
+                console.log(`[ZohoService] Sample project_user keys: ${Object.keys(responseData.project_users[0]).join(', ')}`);
+                console.log(`[ZohoService] Sample project_user:`, JSON.stringify(responseData.project_users[0], null, 2));
+              }
             }
           }
           
-          if (responseData?.users && Array.isArray(responseData.users)) {
-            members = responseData.users;
-          } else if (responseData?.project_users && Array.isArray(responseData.project_users)) {
+          // ONLY extract from direct project member arrays - NO recursive search, NO tasks/issues
+          if (responseData?.project_users && Array.isArray(responseData.project_users)) {
             members = responseData.project_users;
+            console.log(`[ZohoService] Using project_users array: ${members.length} members`);
+          } else if (responseData?.users && Array.isArray(responseData.users)) {
+            members = responseData.users;
+            console.log(`[ZohoService] Using users array: ${members.length} members`);
           } else if (responseData?.members && Array.isArray(responseData.members)) {
             members = responseData.members;
-          } else if (responseData?.people && Array.isArray(responseData.people)) {
-            members = responseData.people;
-          } else if (responseData?.team && Array.isArray(responseData.team)) {
-            members = responseData.team;
-          } else if (Array.isArray(responseData)) {
-            members = responseData;
-          } else if (responseData?.response?.result?.users && Array.isArray(responseData.response.result.users)) {
-            members = responseData.response.result.users;
+            console.log(`[ZohoService] Using members array: ${members.length} members`);
           } else if (responseData?.response?.result?.project_users && Array.isArray(responseData.response.result.project_users)) {
             members = responseData.response.result.project_users;
+            console.log(`[ZohoService] Using response.result.project_users array: ${members.length} members`);
+          } else if (responseData?.response?.result?.users && Array.isArray(responseData.response.result.users)) {
+            members = responseData.response.result.users;
+            console.log(`[ZohoService] Using response.result.users array: ${members.length} members`);
           } else if (responseData?.response?.result?.members && Array.isArray(responseData.response.result.members)) {
             members = responseData.response.result.members;
+            console.log(`[ZohoService] Using response.result.members array: ${members.length} members`);
           }
           
-          // If still no members found, try recursive search
-          if (members.length === 0) {
-            const foundUsers = findUsersInResponse(responseData);
-            if (foundUsers.length > 0) {
-              members = foundUsers;
-              console.log(`[ZohoService] ✅ Found ${members.length} users via recursive search in response`);
-            }
-          }
-          
-          // Ensure each member has project_profile extracted
+          // Deduplicate members by email/zpuid BEFORE processing
           if (members.length > 0) {
+            const uniqueMembers = members.filter((member: any, index: number, self: any[]) => {
+              const matchIndex = self.findIndex((m: any) => {
+                const emailMatch = (m.email && member.email && m.email.toLowerCase() === member.email.toLowerCase()) ||
+                                  (m.Email && member.Email && m.Email.toLowerCase() === member.Email.toLowerCase());
+                const idMatch = (m.zpuid && member.zpuid && String(m.zpuid) === String(member.zpuid)) ||
+                               (m.zuid && member.zuid && String(m.zuid) === String(member.zuid)) ||
+                               (m.id && member.id && String(m.id) === String(member.id)) ||
+                               (m.user_id && member.user_id && String(m.user_id) === String(member.user_id));
+                return emailMatch || idMatch;
+              });
+              return matchIndex === index;
+            });
+            
+            console.log(`[ZohoService] After deduplication: ${uniqueMembers.length} unique members from ${members.length} total`);
+            members = uniqueMembers;
+            
+            // Extract project_profile from each member
             members = members.map((member: any) => {
+              // Log all keys to see what fields are available
+              if (members.indexOf(member) === 0) {
+                console.log(`[ZohoService] First member keys: ${Object.keys(member).join(', ')}`);
+              }
+              
               // Extract project_profile/role from various possible fields
               const projectProfile = member.project_profile || 
+                                    member.Project_Profile ||
                                     member.project_role || 
                                     member.role_in_project ||
                                     member.role || 
                                     member.Role || 
                                     member.project_role_name ||
                                     member.designation ||
-                                    member.Project_Profile;
+                                    member.profile ||
+                                    member.Profile;
               
               // If project_profile is an object, extract the name/value
               let projectProfileValue = projectProfile;
@@ -1163,20 +1186,27 @@ class ZohoService {
                                      projectProfile.designation || 
                                      projectProfile.value ||
                                      projectProfile.label ||
-                                     projectProfile.title;
+                                     projectProfile.title ||
+                                     projectProfile.display_name ||
+                                     projectProfile.displayName;
+              }
+              
+              // Log the extracted project_profile for debugging
+              if (members.indexOf(member) < 3) {
+                console.log(`[ZohoService] Member ${member.email || member.Email || 'no email'}: project_profile = ${projectProfileValue || 'NOT FOUND'}`);
               }
               
               return {
                 ...member,
-                project_profile: projectProfileValue || member.role || 'Employee',
-                role: projectProfileValue || member.role || 'Employee'
+                project_profile: projectProfileValue || null,
+                role: projectProfileValue || member.role || null
               };
             });
             
-            console.log(`[ZohoService] ✅ Found ${members.length} project members from API endpoint: ${endpoint}`);
+            console.log(`[ZohoService] ✅ Found ${members.length} unique project members from API endpoint: ${endpoint}`);
             return members;
           } else {
-            console.log(`[ZohoService] ⚠️  Endpoint ${endpoint} returned success but no members found`);
+            console.log(`[ZohoService] ⚠️  Endpoint ${endpoint} returned success but no members found in direct arrays`);
           }
           
           // If we got a response but no members, continue to next endpoint
@@ -1195,782 +1225,16 @@ class ZohoService {
         }
       }
       
-      // If all direct endpoints failed or returned no members, try alternative approaches
-      // Always try task extraction as fallback, even if we got a response
+      // If all direct endpoints failed or returned no members, return empty array
+      // DO NOT use task/issue extraction - we only want direct project members
       if (!response && lastError) {
-        // Approach 1: Try getting project teams/usergroups
-        try {
-          const usergroupsEndpoints = [
-            `/api/v3/portal/${portal}/projects/${projectId}/usergroups`,
-            `/api/v3/portal/${portal}/projects/${projectId}/teams`,
-            `/restapi/portal/${portal}/projects/${projectId}/usergroups/`,
-          ];
-          
-          let usergroupsResponse: any = null;
-          for (const endpoint of usergroupsEndpoints) {
-            try {
-              usergroupsResponse = await client.get(endpoint);
-              break;
-            } catch (error: any) {
-              continue;
-            }
-          }
-          
-          if (usergroupsResponse) {
-            const usergroups = usergroupsResponse.data?.response?.result?.usergroups || 
-                              usergroupsResponse.data?.response?.result?.teams ||
-                              usergroupsResponse.data?.usergroups || 
-                              usergroupsResponse.data?.teams || 
-                              usergroupsResponse.data || [];
-            
-            if (Array.isArray(usergroups) && usergroups.length > 0) {
-              const allMembers: any[] = [];
-              usergroups.forEach((group: any) => {
-                if (group.users && Array.isArray(group.users)) {
-                  allMembers.push(...group.users);
-                }
-                if (group.members && Array.isArray(group.members)) {
-                  allMembers.push(...group.members);
-                }
-              });
-              
-              const uniqueMembers = allMembers.filter((member, index, self) => 
-                index === self.findIndex((m) => 
-                  (m.id && m.id === member.id) || 
-                  (m.email && m.email === member.email) ||
-                  (m.Email && m.Email === member.Email) || 
-                  (m.user_id && m.user_id === member.user_id)
-                )
-              );
-              
-              if (uniqueMembers.length > 0) {
-                console.log(`[ZohoService] ✅ Found ${uniqueMembers.length} unique members from usergroups/teams`);
-                return uniqueMembers;
-              }
-            }
-          }
-        } catch (usergroupsError: any) {
-          // Continue to next approach
-        }
-        
-        // Approach 2: Try getting tasks and extract assignees
-        // Also combine with users extracted from project fields
-        let allExtractedUsers: any[] = [];
-        
-        // Add users extracted from project details if we have them (from earlier in the function)
-        if (fullProject) {
-          const extractedFromProject: any[] = [];
-          
-          // Extract owner
-          if (fullProject.owner && typeof fullProject.owner === 'object') {
-            const owner = fullProject.owner;
-            if (owner.email || owner.zpuid || owner.zuid || owner.id) {
-              extractedFromProject.push({
-                id: owner.zpuid || owner.zuid || owner.id,
-                zuid: owner.zuid,
-                zpuid: owner.zpuid,
-                name: owner.name || owner.display_name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim(),
-                email: owner.email,
-                first_name: owner.first_name,
-                last_name: owner.last_name,
-                role: 'admin'
-              });
-            }
-          }
-          
-          // Extract project manager
-          if (fullProject.project_manager && typeof fullProject.project_manager === 'object') {
-            const pm = fullProject.project_manager;
-            if (pm.email || pm.zpuid || pm.zuid || pm.id) {
-              extractedFromProject.push({
-                id: pm.zpuid || pm.zuid || pm.id,
-                zuid: pm.zuid,
-                zpuid: pm.zpuid,
-                name: pm.name || pm.display_name || `${pm.first_name || ''} ${pm.last_name || ''}`.trim(),
-                email: pm.email,
-                first_name: pm.first_name,
-                last_name: pm.last_name,
-                role: 'project_manager'
-              });
-            }
-          }
-          
-          // Extract stakeholders
-          if (fullProject.stakeholders && Array.isArray(fullProject.stakeholders)) {
-            fullProject.stakeholders.forEach((stakeholder: any) => {
-              if (stakeholder && typeof stakeholder === 'object' && (stakeholder.email || stakeholder.zpuid || stakeholder.zuid || stakeholder.id)) {
-                extractedFromProject.push({
-                  id: stakeholder.zpuid || stakeholder.zuid || stakeholder.id,
-                  zuid: stakeholder.zuid,
-                  zpuid: stakeholder.zpuid,
-                  name: stakeholder.name || stakeholder.display_name || `${stakeholder.first_name || ''} ${stakeholder.last_name || ''}`.trim(),
-                  email: stakeholder.email,
-                  first_name: stakeholder.first_name,
-                  last_name: stakeholder.last_name,
-                  role: stakeholder.role || 'engineer'
-                });
-              }
-            });
-          }
-          
-          // Extract created_by and updated_by
-          if (fullProject.created_by && typeof fullProject.created_by === 'object') {
-            const creator = fullProject.created_by;
-            if (creator.email || creator.zpuid || creator.zuid || creator.id) {
-              extractedFromProject.push({
-                id: creator.zpuid || creator.zuid || creator.id,
-                zuid: creator.zuid,
-                zpuid: creator.zpuid,
-                name: creator.name || creator.display_name || `${creator.first_name || ''} ${creator.last_name || ''}`.trim(),
-                email: creator.email,
-                first_name: creator.first_name,
-                last_name: creator.last_name,
-                role: 'admin'
-              });
-            }
-          }
-          
-          if (fullProject.updated_by && typeof fullProject.updated_by === 'object') {
-            const updater = fullProject.updated_by;
-            if (updater.email || updater.zpuid || updater.zuid || updater.id) {
-              extractedFromProject.push({
-                id: updater.zpuid || updater.zuid || updater.id,
-                zuid: updater.zuid,
-                zpuid: updater.zpuid,
-                name: updater.name || updater.display_name || `${updater.first_name || ''} ${updater.last_name || ''}`.trim(),
-                email: updater.email,
-                first_name: updater.first_name,
-                last_name: updater.last_name,
-                role: 'engineer'
-              });
-            }
-          }
-          
-          allExtractedUsers.push(...extractedFromProject);
-          if (extractedFromProject.length > 0) {
-            console.log(`[ZohoService] ✅ Extracted ${extractedFromProject.length} users from project fields (owner, PM, stakeholders, etc.)`);
-          }
-        }
-        
-        try {
-          const tasksEndpoints = [
-            `/api/v3/portal/${portal}/projects/${projectIdString}/tasks`,
-            `/api/v3/portal/${portal}/projects/${projectId}/tasks`,
-            `/restapi/portal/${portal}/projects/${projectIdString}/tasks/`,
-          ];
-          
-          let tasksResponse: any = null;
-          for (const endpoint of tasksEndpoints) {
-            try {
-              console.log(`[ZohoService] Trying tasks endpoint: ${endpoint}`);
-              tasksResponse = await client.get(endpoint);
-              console.log(`[ZohoService] ✅ Success with tasks endpoint: ${endpoint}`);
-              break;
-            } catch (error: any) {
-              console.log(`[ZohoService] ❌ Tasks endpoint ${endpoint} failed: ${error.response?.status || 'N/A'} - ${error.message}`);
-              continue;
-            }
-          }
-          
-          if (tasksResponse) {
-            const tasksData = tasksResponse.data?.response?.result || tasksResponse.data;
-            const tasks = tasksData?.tasks || (Array.isArray(tasksData) ? tasksData : []);
-            
-            if (Array.isArray(tasks) && tasks.length > 0) {
-              console.log(`[ZohoService] Found ${tasks.length} tasks, extracting users...`);
-              
-              // Extract unique users from task assignees
-              const allAssignees: any[] = [];
-              tasks.forEach((task: any) => {
-                // Extract from created_by object (V3 API format)
-                if (task.created_by && typeof task.created_by === 'object') {
-                  const createdBy = task.created_by;
-                  if (createdBy.email || createdBy.zpuid || createdBy.zuid) {
-                    allAssignees.push({
-                      id: createdBy.zpuid || createdBy.zuid || createdBy.id,
-                      zuid: createdBy.zuid,
-                      zpuid: createdBy.zpuid,
-                      name: createdBy.name || `${createdBy.first_name || ''} ${createdBy.last_name || ''}`.trim(),
-                      email: createdBy.email,
-                      first_name: createdBy.first_name,
-                      last_name: createdBy.last_name,
-                      role: 'engineer' // Default role, will be updated from project profile if available
-                    });
-                  }
-                }
-                
-                // Extract from owners_and_work field (V3 API format)
-                if (task.owners_and_work) {
-                  if (Array.isArray(task.owners_and_work)) {
-                    task.owners_and_work.forEach((ownerWork: any) => {
-                      const owner = ownerWork?.owner || ownerWork;
-                      if (owner && typeof owner === 'object' && (owner.email || owner.zpuid || owner.zuid)) {
-                        allAssignees.push({
-                          id: owner.zpuid || owner.zuid || owner.id,
-                          zuid: owner.zuid,
-                          zpuid: owner.zpuid,
-                          name: owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim(),
-                          email: owner.email,
-                          first_name: owner.first_name,
-                          last_name: owner.last_name,
-                          role: owner.role || ownerWork?.role || 'engineer'
-                        });
-                      }
-                    });
-                  } else if (typeof task.owners_and_work === 'object') {
-                    // Single owner object or object with owner property
-                    const owner = task.owners_and_work.owner || task.owners_and_work;
-                    if (owner && typeof owner === 'object' && (owner.email || owner.zpuid || owner.zuid)) {
-                      allAssignees.push({
-                        id: owner.zpuid || owner.zuid || owner.id,
-                        zuid: owner.zuid,
-                        zpuid: owner.zpuid,
-                        name: owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim(),
-                        email: owner.email,
-                        first_name: owner.first_name,
-                        last_name: owner.last_name,
-                        role: owner.role || 'engineer'
-                      });
-                    }
-                  }
-                }
-                
-                // Check other possible user fields (fallback)
-                if (task.owner && typeof task.owner === 'object' && (task.owner.id || task.owner.email)) {
-                  allAssignees.push(task.owner);
-                }
-                if (task.owner_id && task.owner_name) {
-                  allAssignees.push({
-                    id: task.owner_id,
-                    name: task.owner_name,
-                    email: task.owner_email || task.owner_email_id,
-                    role: task.owner_role || 'engineer'
-                  });
-                }
-                if (task.assignee && typeof task.assignee === 'object' && (task.assignee.id || task.assignee.email)) {
-                  allAssignees.push(task.assignee);
-                }
-                if (task.assignees && Array.isArray(task.assignees)) {
-                  allAssignees.push(...task.assignees);
-                }
-              });
-              
-              // Also extract from project owner and other project-level users
-              if (projectFromList) {
-                // Add project owner
-                if (projectFromList.owner_email && projectFromList.owner_name) {
-                  allAssignees.push({
-                    id: projectFromList.owner_zpuid || projectFromList.owner_id,
-                    zuid: projectFromList.owner_id,
-                    zpuid: projectFromList.owner_zpuid,
-                    name: projectFromList.owner_name,
-                    email: projectFromList.owner_email,
-                    role: projectFromList.role || 'admin' // Project owner typically has admin role
-                  });
-                }
-                
-                // Add project creator
-                if (projectFromList.created_by_id && projectFromList.created_by) {
-                  allAssignees.push({
-                    id: projectFromList.created_by_zpuid || projectFromList.created_by_id,
-                    zuid: projectFromList.created_by_id,
-                    zpuid: projectFromList.created_by_zpuid,
-                    name: projectFromList.created_by,
-                    email: projectFromList.owner_email, // May not have separate email
-                    role: 'admin'
-                  });
-                }
-              }
-              
-              // Combine with users extracted from project fields
-              allExtractedUsers.push(...allAssignees);
-              
-              // Remove duplicates by email, zpuid, or zuid
-              const uniqueAssignees = allExtractedUsers.filter((user, index, self) => 
-                index === self.findIndex((u) => 
-                  (u.email && u.email === user.email) ||
-                  (u.zpuid && u.zpuid === user.zpuid) ||
-                  (u.zuid && u.zuid === user.zuid) ||
-                  (u.id && u.id === user.id) ||
-                  (u.Email && u.Email === user.Email)
-                )
-              );
-              
-              if (uniqueAssignees.length > 0) {
-                console.log(`[ZohoService] ✅ Found ${uniqueAssignees.length} unique users from tasks and project data (${allExtractedUsers.length - allAssignees.length} from project fields, ${allAssignees.length} from tasks)`);
-                return uniqueAssignees;
-              }
-            } else {
-              console.log(`[ZohoService] ⚠️  Tasks response received but no tasks found or tasks is not an array`);
-            }
-          } else {
-            console.log(`[ZohoService] ⚠️  No tasks response received from any endpoint`);
-          }
-          
-          // If we have users from project fields but no tasks, return those
-          if (allExtractedUsers.length > 0) {
-            const uniqueUsers = allExtractedUsers.filter((user, index, self) => 
-              index === self.findIndex((u) => 
-                (u.email && u.email === user.email) ||
-                (u.zpuid && u.zpuid === user.zpuid) ||
-                (u.zuid && u.zuid === user.zuid) ||
-                (u.id && u.id === user.id)
-              )
-            );
-            if (uniqueUsers.length > 0) {
-              console.log(`[ZohoService] ✅ Returning ${uniqueUsers.length} users extracted from project fields (no tasks found)`);
-              return uniqueUsers;
-            }
-          }
-        } catch (tasksError: any) {
-          console.log(`[ZohoService] ⚠️  Error extracting from tasks: ${tasksError.message}`);
-          // If we have users from project fields, return those even if tasks extraction failed
-          if (allExtractedUsers.length > 0) {
-            const uniqueUsers = allExtractedUsers.filter((user, index, self) => 
-              index === self.findIndex((u) => 
-                (u.email && u.email === user.email) ||
-                (u.zpuid && u.zpuid === user.zpuid) ||
-                (u.zuid && u.zuid === user.zuid) ||
-                (u.id && u.id === user.id)
-              )
-            );
-            if (uniqueUsers.length > 0) {
-              console.log(`[ZohoService] ✅ Returning ${uniqueUsers.length} users extracted from project fields (tasks extraction failed)`);
-              return uniqueUsers;
-            }
-          }
-        }
-        
-        // If all approaches failed, throw error
         console.error(`[ZohoService] All endpoint variations failed. Last error:`, lastError.response?.data?.error?.message || lastError.message);
-        throw new Error(
-          `Failed to fetch project members: ${lastError.response?.data?.error?.message || lastError.message}`
-        );
+        console.log(`[ZohoService] ⚠️  No direct project members found - returning empty array (not using task/issue extraction)`);
+        return [];
       }
       
-      // If we got a response but no members, try task extraction as fallback
-      // This handles the case where endpoints return 200 but no members
-      if (response) {
-        // Handle different response structures
-        let members: ZohoProjectMember[] = [];
-        
-        if (response.data?.response?.result?.users) {
-          members = response.data.response.result.users;
-        } else if (response.data?.response?.result?.project_users) {
-          members = response.data.response.result.project_users;
-        } else if (response.data?.users) {
-          members = response.data.users;
-        } else if (response.data?.project_users) {
-          members = response.data.project_users;
-        } else if (Array.isArray(response.data)) {
-          members = response.data;
-        }
-
-        if (members.length > 0) {
-          console.log(`[ZohoService] ✅ Found ${members.length} project members from API`);
-          return members;
-        }
-        // If response exists but no members, continue to task extraction below
-        console.log(`[ZohoService] ⚠️  Response received but no members found, trying task extraction as fallback...`);
-      }
-      
-      // Try task extraction as fallback (even if we got a response with no members)
-      // Extract users from project fields and tasks
-      let allExtractedUsers: any[] = [];
-      
-      // Add users from recursive search if we found any
-      if (usersFromRecursiveSearch.length > 0) {
-        console.log(`[ZohoService] Adding ${usersFromRecursiveSearch.length} users from recursive search to fallback extraction`);
-        allExtractedUsers.push(...usersFromRecursiveSearch);
-      }
-      
-      // Add users extracted from project details if we have them
-      if (fullProject) {
-        const extractedFromProject: any[] = [];
-        
-        // Extract owner
-        if (fullProject.owner && typeof fullProject.owner === 'object') {
-          const owner = fullProject.owner;
-          if (owner.email || owner.zpuid || owner.zuid || owner.id) {
-            extractedFromProject.push({
-              id: owner.zpuid || owner.zuid || owner.id,
-              zuid: owner.zuid,
-              zpuid: owner.zpuid,
-              name: owner.name || owner.display_name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim(),
-              email: owner.email,
-              first_name: owner.first_name,
-              last_name: owner.last_name,
-              role: 'admin'
-            });
-          }
-        }
-        
-        // Extract project manager
-        if (fullProject.project_manager && typeof fullProject.project_manager === 'object') {
-          const pm = fullProject.project_manager;
-          if (pm.email || pm.zpuid || pm.zuid || pm.id) {
-            extractedFromProject.push({
-              id: pm.zpuid || pm.zuid || pm.id,
-              zuid: pm.zuid,
-              zpuid: pm.zpuid,
-              name: pm.name || pm.display_name || `${pm.first_name || ''} ${pm.last_name || ''}`.trim(),
-              email: pm.email,
-              first_name: pm.first_name,
-              last_name: pm.last_name,
-              role: 'project_manager'
-            });
-          }
-        }
-        
-        // Extract stakeholders
-        if (fullProject.stakeholders && Array.isArray(fullProject.stakeholders)) {
-          fullProject.stakeholders.forEach((stakeholder: any) => {
-            if (stakeholder && typeof stakeholder === 'object' && (stakeholder.email || stakeholder.zpuid || stakeholder.zuid || stakeholder.id)) {
-              extractedFromProject.push({
-                id: stakeholder.zpuid || stakeholder.zuid || stakeholder.id,
-                zuid: stakeholder.zuid,
-                zpuid: stakeholder.zpuid,
-                name: stakeholder.name || stakeholder.display_name || `${stakeholder.first_name || ''} ${stakeholder.last_name || ''}`.trim(),
-                email: stakeholder.email,
-                first_name: stakeholder.first_name,
-                last_name: stakeholder.last_name,
-                role: stakeholder.role || 'engineer'
-              });
-            }
-          });
-        }
-        
-        // Extract created_by and updated_by
-        if (fullProject.created_by && typeof fullProject.created_by === 'object') {
-          const creator = fullProject.created_by;
-          if (creator.email || creator.zpuid || creator.zuid || creator.id) {
-            extractedFromProject.push({
-              id: creator.zpuid || creator.zuid || creator.id,
-              zuid: creator.zuid,
-              zpuid: creator.zpuid,
-              name: creator.name || creator.display_name || `${creator.first_name || ''} ${creator.last_name || ''}`.trim(),
-              email: creator.email,
-              first_name: creator.first_name,
-              last_name: creator.last_name,
-              role: 'admin'
-            });
-          }
-        }
-        
-        if (fullProject.updated_by && typeof fullProject.updated_by === 'object') {
-          const updater = fullProject.updated_by;
-          if (updater.email || updater.zpuid || updater.zuid || updater.id) {
-            extractedFromProject.push({
-              id: updater.zpuid || updater.zuid || updater.id,
-              zuid: updater.zuid,
-              zpuid: updater.zpuid,
-              name: updater.name || updater.display_name || `${updater.first_name || ''} ${updater.last_name || ''}`.trim(),
-              email: updater.email,
-              first_name: updater.first_name,
-              last_name: updater.last_name,
-              role: 'engineer'
-            });
-          }
-        }
-        
-        allExtractedUsers.push(...extractedFromProject);
-        if (extractedFromProject.length > 0) {
-          console.log(`[ZohoService] ✅ Extracted ${extractedFromProject.length} users from project fields (owner, PM, stakeholders, etc.)`);
-        }
-      }
-      
-      // Try getting tasks and extract assignees
-      try {
-        const tasksEndpoints = [
-          `/api/v3/portal/${portal}/projects/${projectIdString}/tasks`,
-          `/api/v3/portal/${portal}/projects/${projectId}/tasks`,
-          `/restapi/portal/${portal}/projects/${projectIdString}/tasks/`,
-        ];
-        
-        let tasksResponse: any = null;
-        for (const endpoint of tasksEndpoints) {
-          try {
-            console.log(`[ZohoService] Trying tasks endpoint: ${endpoint}`);
-            tasksResponse = await client.get(endpoint);
-            console.log(`[ZohoService] ✅ Success with tasks endpoint: ${endpoint}`);
-            break;
-          } catch (error: any) {
-            console.log(`[ZohoService] ❌ Tasks endpoint ${endpoint} failed: ${error.response?.status || 'N/A'} - ${error.message}`);
-            continue;
-          }
-        }
-        
-        if (tasksResponse) {
-          const tasksData = tasksResponse.data?.response?.result || tasksResponse.data;
-          const tasks = tasksData?.tasks || (Array.isArray(tasksData) ? tasksData : []);
-          
-          if (Array.isArray(tasks) && tasks.length > 0) {
-            console.log(`[ZohoService] Found ${tasks.length} tasks, extracting users...`);
-            
-            // Extract unique users from task assignees
-            const allAssignees: any[] = [];
-            tasks.forEach((task: any) => {
-              // Extract from created_by object (V3 API format)
-              if (task.created_by && typeof task.created_by === 'object') {
-                const createdBy = task.created_by;
-                if (createdBy.email || createdBy.zpuid || createdBy.zuid) {
-                  allAssignees.push({
-                    id: createdBy.zpuid || createdBy.zuid || createdBy.id,
-                    zuid: createdBy.zuid,
-                    zpuid: createdBy.zpuid,
-                    name: createdBy.name || `${createdBy.first_name || ''} ${createdBy.last_name || ''}`.trim(),
-                    email: createdBy.email,
-                    first_name: createdBy.first_name,
-                    last_name: createdBy.last_name,
-                    role: 'engineer'
-                  });
-                }
-              }
-              
-              // Extract from owners_and_work field (V3 API format)
-              if (task.owners_and_work) {
-                if (Array.isArray(task.owners_and_work)) {
-                  task.owners_and_work.forEach((ownerWork: any) => {
-                    const owner = ownerWork?.owner || ownerWork;
-                    if (owner && typeof owner === 'object' && (owner.email || owner.zpuid || owner.zuid)) {
-                      allAssignees.push({
-                        id: owner.zpuid || owner.zuid || owner.id,
-                        zuid: owner.zuid,
-                        zpuid: owner.zpuid,
-                        name: owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim(),
-                        email: owner.email,
-                        first_name: owner.first_name,
-                        last_name: owner.last_name,
-                        role: owner.role || ownerWork?.role || 'engineer'
-                      });
-                    }
-                  });
-                } else if (typeof task.owners_and_work === 'object') {
-                  const owner = task.owners_and_work.owner || task.owners_and_work;
-                  if (owner && typeof owner === 'object' && (owner.email || owner.zpuid || owner.zuid)) {
-                    allAssignees.push({
-                      id: owner.zpuid || owner.zuid || owner.id,
-                      zuid: owner.zuid,
-                      zpuid: owner.zpuid,
-                      name: owner.name || `${owner.first_name || ''} ${owner.last_name || ''}`.trim(),
-                      email: owner.email,
-                      first_name: owner.first_name,
-                      last_name: owner.last_name,
-                      role: owner.role || 'engineer'
-                    });
-                  }
-                }
-              }
-              
-              // Check other possible user fields
-              if (task.owner && typeof task.owner === 'object' && (task.owner.id || task.owner.email)) {
-                allAssignees.push(task.owner);
-              }
-              if (task.assignee && typeof task.assignee === 'object' && (task.assignee.id || task.assignee.email)) {
-                allAssignees.push(task.assignee);
-              }
-              if (task.assignees && Array.isArray(task.assignees)) {
-                allAssignees.push(...task.assignees);
-              }
-            });
-            
-            // Also extract from project owner
-            if (projectFromList) {
-              if (projectFromList.owner_email && projectFromList.owner_name) {
-                allAssignees.push({
-                  id: projectFromList.owner_zpuid || projectFromList.owner_id,
-                  zuid: projectFromList.owner_id,
-                  zpuid: projectFromList.owner_zpuid,
-                  name: projectFromList.owner_name,
-                  email: projectFromList.owner_email,
-                  role: projectFromList.role || 'admin'
-                });
-              }
-            }
-            
-            // Combine with users extracted from project fields
-            allExtractedUsers.push(...allAssignees);
-            
-            // Remove duplicates
-            const uniqueUsers = allExtractedUsers.filter((user, index, self) => 
-              index === self.findIndex((u) => 
-                (u.email && u.email === user.email) ||
-                (u.zpuid && u.zpuid === user.zpuid) ||
-                (u.zuid && u.zuid === user.zuid) ||
-                (u.id && u.id === user.id) ||
-                (u.Email && u.Email === user.Email)
-              )
-            );
-            
-            if (uniqueUsers.length > 0) {
-              console.log(`[ZohoService] ✅ Found ${uniqueUsers.length} unique users from tasks and project fields (${allExtractedUsers.length - allAssignees.length} from project fields, ${allAssignees.length} from tasks)`);
-              // Continue to extract from issues as well before returning
-            }
-          }
-        }
-        
-        // Also extract from issues/bugs
-        try {
-          const issuesEndpoints = [
-            `/api/v3/portal/${portal}/projects/${projectIdString}/bugs`,
-            `/api/v3/portal/${portal}/projects/${projectId}/bugs`,
-            `/restapi/portal/${portal}/projects/${projectIdString}/bugs/`,
-            `/api/v3/portal/${portal}/projects/${projectIdString}/issues`,
-            `/api/v3/portal/${portal}/projects/${projectId}/issues`,
-          ];
-          
-          let issuesResponse: any = null;
-          for (const endpoint of issuesEndpoints) {
-            try {
-              console.log(`[ZohoService] Trying issues endpoint: ${endpoint}`);
-              issuesResponse = await client.get(endpoint);
-              console.log(`[ZohoService] ✅ Success with issues endpoint: ${endpoint}`);
-              break;
-            } catch (error: any) {
-              console.log(`[ZohoService] ❌ Issues endpoint ${endpoint} failed: ${error.response?.status || 'N/A'} - ${error.message}`);
-              continue;
-            }
-          }
-          
-          if (issuesResponse) {
-            const issuesData = issuesResponse.data?.response?.result || issuesResponse.data;
-            const issues = issuesData?.bugs || issuesData?.issues || (Array.isArray(issuesData) ? issuesData : []);
-            
-            if (Array.isArray(issues) && issues.length > 0) {
-              console.log(`[ZohoService] Found ${issues.length} issues, extracting users...`);
-              
-              const issueAssignees: any[] = [];
-              issues.forEach((issue: any) => {
-                // Extract from reporter/created_by
-                if (issue.reporter && typeof issue.reporter === 'object') {
-                  const reporter = issue.reporter;
-                  if (reporter.email || reporter.zpuid || reporter.zuid) {
-                    issueAssignees.push({
-                      id: reporter.zpuid || reporter.zuid || reporter.id,
-                      zuid: reporter.zuid,
-                      zpuid: reporter.zpuid,
-                      name: reporter.name || `${reporter.first_name || ''} ${reporter.last_name || ''}`.trim(),
-                      email: reporter.email,
-                      first_name: reporter.first_name,
-                      last_name: reporter.last_name,
-                      project_profile: reporter.project_profile || reporter.role || 'engineer',
-                      role: reporter.project_profile || reporter.role || 'engineer'
-                    });
-                  }
-                }
-                
-                // Extract from assignee
-                if (issue.assignee && typeof issue.assignee === 'object') {
-                  const assignee = issue.assignee;
-                  if (assignee.email || assignee.zpuid || assignee.zuid) {
-                    issueAssignees.push({
-                      id: assignee.zpuid || assignee.zuid || assignee.id,
-                      zuid: assignee.zuid,
-                      zpuid: assignee.zpuid,
-                      name: assignee.name || `${assignee.first_name || ''} ${assignee.last_name || ''}`.trim(),
-                      email: assignee.email,
-                      first_name: assignee.first_name,
-                      last_name: assignee.last_name,
-                      project_profile: assignee.project_profile || assignee.role || 'engineer',
-                      role: assignee.project_profile || assignee.role || 'engineer'
-                    });
-                  }
-                }
-                
-                // Extract from created_by
-                if (issue.created_by && typeof issue.created_by === 'object') {
-                  const createdBy = issue.created_by;
-                  if (createdBy.email || createdBy.zpuid || createdBy.zuid) {
-                    issueAssignees.push({
-                      id: createdBy.zpuid || createdBy.zuid || createdBy.id,
-                      zuid: createdBy.zuid,
-                      zpuid: createdBy.zpuid,
-                      name: createdBy.name || `${createdBy.first_name || ''} ${createdBy.last_name || ''}`.trim(),
-                      email: createdBy.email,
-                      first_name: createdBy.first_name,
-                      last_name: createdBy.last_name,
-                      project_profile: createdBy.project_profile || createdBy.role || 'engineer',
-                      role: createdBy.project_profile || createdBy.role || 'engineer'
-                    });
-                  }
-                }
-              });
-              
-              allExtractedUsers.push(...issueAssignees);
-              console.log(`[ZohoService] ✅ Extracted ${issueAssignees.length} users from issues`);
-            }
-          }
-        } catch (issuesError: any) {
-          console.log(`[ZohoService] ⚠️  Error extracting from issues: ${issuesError.message}`);
-        }
-        
-        // Combine with users from recursive search
-        if (usersFromRecursiveSearch.length > 0) {
-          console.log(`[ZohoService] Adding ${usersFromRecursiveSearch.length} users from recursive search to extraction`);
-          allExtractedUsers.push(...usersFromRecursiveSearch);
-        }
-        
-        // Final deduplication and return
-        if (allExtractedUsers.length > 0) {
-          console.log(`[ZohoService] Total users before deduplication: ${allExtractedUsers.length}`);
-          const uniqueUsers = allExtractedUsers.filter((user, index, self) => {
-            const matchIndex = self.findIndex((u) => {
-              const emailMatch = (u.email && user.email && u.email.toLowerCase() === user.email.toLowerCase()) ||
-                                (u.Email && user.Email && u.Email.toLowerCase() === user.Email.toLowerCase());
-              const idMatch = (u.zpuid && user.zpuid && u.zpuid === user.zpuid) ||
-                             (u.zuid && user.zuid && u.zuid === user.zuid) ||
-                             (u.id && user.id && String(u.id) === String(user.id));
-              return emailMatch || idMatch;
-            });
-            return matchIndex === index;
-          });
-          
-          console.log(`[ZohoService] After final deduplication: ${uniqueUsers.length} unique users from ${allExtractedUsers.length} total`);
-          
-          // Preserve project_profile/role from the first occurrence of each user
-          const usersWithRoles = uniqueUsers.map(user => {
-            // If user doesn't have project_profile but has role, use role
-            if (!user.project_profile && user.role) {
-              user.project_profile = user.role;
-            }
-            return user;
-          });
-          
-          if (usersWithRoles.length > 0) {
-            console.log(`[ZohoService] ✅ Returning ${usersWithRoles.length} unique users from all sources (recursive search, project fields, tasks, issues)`);
-            // Log each user for debugging
-            usersWithRoles.forEach((user, idx) => {
-              console.log(`[ZohoService] Final user ${idx + 1}: ${user.email || user.Email || 'no email'}, role: ${user.project_profile || user.role || 'no role'}`);
-            });
-            return usersWithRoles;
-          }
-        }
-      } catch (tasksError: any) {
-        console.log(`[ZohoService] ⚠️  Error extracting from tasks: ${tasksError.message}`);
-        // If we have users from project fields, return those even if tasks extraction failed
-        if (allExtractedUsers.length > 0) {
-          const uniqueUsers = allExtractedUsers.filter((user, index, self) => 
-            index === self.findIndex((u) => 
-              (u.email && u.email === user.email) ||
-              (u.zpuid && u.zpuid === user.zpuid) ||
-              (u.zuid && u.zuid === user.zuid) ||
-              (u.id && u.id === user.id)
-            )
-          );
-          if (uniqueUsers.length > 0) {
-            console.log(`[ZohoService] ✅ Returning ${uniqueUsers.length} users extracted from project fields (tasks extraction failed)`);
-            return uniqueUsers;
-          }
-        }
-      }
-      
-      // If no response and no lastError, or all extraction methods failed
-      if (!response && !lastError) {
-        throw new Error('Failed to get project members: No response from any endpoint');
-      }
-      
-      // If we have response but no members, and task extraction didn't return anything
-      console.log(`[ZohoService] ⚠️  No members found from any source, returning empty array`);
+      // If we got a response but no members were found in direct arrays, return empty
+      console.log(`[ZohoService] ⚠️  No direct project members found in any endpoint response`);
       return [];
     } catch (error: any) {
       console.error('[ZohoService] Error fetching project members:', {
