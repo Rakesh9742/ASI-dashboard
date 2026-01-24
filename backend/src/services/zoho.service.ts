@@ -818,34 +818,46 @@ class ZohoService {
       const projectIdString = projectFromList?.id_string || projectId;
       
       // Helper function to recursively search for users/members in response
-      const findUsersInResponse = (obj: any, path: string = ''): any[] => {
+      const findUsersInResponse = (obj: any, path: string = '', depth: number = 0, maxDepth: number = 10): any[] => {
         const users: any[] = [];
-        if (!obj || typeof obj !== 'object') return users;
+        if (!obj || typeof obj !== 'object' || depth > maxDepth) return users;
         
         // Check if this object itself is a user (has email or zpuid)
-        if ((obj.email || obj.Email || obj.zpuid || obj.zuid) && (obj.name || obj.Name || obj.first_name)) {
+        if ((obj.email || obj.Email || obj.zpuid || obj.zuid) && (obj.name || obj.Name || obj.first_name || obj.display_name)) {
           users.push(obj);
         }
         
         // Check common user array fields
-        const userFields = ['users', 'project_users', 'members', 'people', 'team_members', 'assignees'];
+        const userFields = ['users', 'project_users', 'members', 'people', 'team_members', 'assignees', 'tasks', 'issues', 'bugs'];
         for (const field of userFields) {
           if (obj[field] && Array.isArray(obj[field])) {
-            users.push(...obj[field]);
+            if (field === 'tasks' || field === 'issues' || field === 'bugs') {
+              // For tasks/issues, extract users from within them
+              obj[field].forEach((item: any) => {
+                if (typeof item === 'object') {
+                  // Extract from task/issue assignees, owners, creators, etc.
+                  const taskIssueUsers = findUsersInResponse(item, `${path}.${field}`, depth + 1, maxDepth);
+                  users.push(...taskIssueUsers);
+                }
+              });
+            } else {
+              // Direct user arrays
+              users.push(...obj[field]);
+            }
           }
         }
         
         // Recursively search nested objects and arrays
         for (const key in obj) {
-          if (obj.hasOwnProperty(key) && obj[key] !== null) {
+          if (obj.hasOwnProperty(key) && obj[key] !== null && !userFields.includes(key)) {
             if (Array.isArray(obj[key])) {
               obj[key].forEach((item: any, index: number) => {
                 if (typeof item === 'object') {
-                  users.push(...findUsersInResponse(item, `${path}.${key}[${index}]`));
+                  users.push(...findUsersInResponse(item, `${path}.${key}[${index}]`, depth + 1, maxDepth));
                 }
               });
             } else if (typeof obj[key] === 'object') {
-              users.push(...findUsersInResponse(obj[key], `${path}.${key}`));
+              users.push(...findUsersInResponse(obj[key], `${path}.${key}`, depth + 1, maxDepth));
             }
           }
         }
@@ -864,6 +876,7 @@ class ZohoService {
       
       let fullProject: any = null;
       let fullProjectResponseData: any = null;
+      let usersFromRecursiveSearch: any[] = [];
       for (const endpoint of projectDetailEndpoints) {
         try {
           const fullProjectResponse = await client.get(endpoint);
@@ -899,19 +912,31 @@ class ZohoService {
           const foundUsers = findUsersInResponse(fullProjectResponseData);
           if (foundUsers.length > 0) {
             console.log(`[ZohoService] ✅ Found ${foundUsers.length} users recursively in project details response`);
+            // Log details about found users for debugging
+            foundUsers.forEach((user, idx) => {
+              console.log(`[ZohoService] User ${idx + 1}: ${user.email || user.Email || 'no email'}, name: ${user.name || user.Name || 'no name'}, zpuid: ${user.zpuid || 'no zpuid'}, role: ${user.project_profile || user.role || 'no role'}`);
+            });
             // Deduplicate and return
-            const uniqueUsers = foundUsers.filter((user, index, self) => 
-              index === self.findIndex((u) => 
-                (u.email && u.email === user.email) ||
-                (u.Email && u.Email === user.Email) ||
-                (u.zpuid && u.zpuid === user.zpuid) ||
-                (u.zuid && u.zuid === user.zuid) ||
-                (u.id && u.id === user.id)
-              )
-            );
+            const uniqueUsers = foundUsers.filter((user, index, self) => {
+              const matchIndex = self.findIndex((u) => {
+                const emailMatch = (u.email && user.email && u.email.toLowerCase() === user.email.toLowerCase()) ||
+                                  (u.Email && user.Email && u.Email.toLowerCase() === user.Email.toLowerCase());
+                const idMatch = (u.zpuid && user.zpuid && u.zpuid === user.zpuid) ||
+                               (u.zuid && user.zuid && u.zuid === user.zuid) ||
+                               (u.id && user.id && String(u.id) === String(user.id));
+                return emailMatch || idMatch;
+              });
+              const isUnique = matchIndex === index;
+              if (!isUnique && index < 10) {
+                console.log(`[ZohoService] Duplicate user at index ${index}: ${user.email || user.Email || 'no email'} (matched with index ${matchIndex})`);
+              }
+              return isUnique;
+            });
+            console.log(`[ZohoService] After deduplication: ${uniqueUsers.length} unique users from ${foundUsers.length} total`);
             if (uniqueUsers.length > 0) {
-              console.log(`[ZohoService] ✅ Returning ${uniqueUsers.length} unique users from recursive search`);
-              return uniqueUsers;
+              // Store for later combination with users from tasks/issues
+              usersFromRecursiveSearch = uniqueUsers;
+              console.log(`[ZohoService] Stored ${usersFromRecursiveSearch.length} users from recursive search for later combination`);
             }
           }
           
@@ -1553,6 +1578,12 @@ class ZohoService {
       // Extract users from project fields and tasks
       let allExtractedUsers: any[] = [];
       
+      // Add users from recursive search if we found any
+      if (usersFromRecursiveSearch.length > 0) {
+        console.log(`[ZohoService] Adding ${usersFromRecursiveSearch.length} users from recursive search to fallback extraction`);
+        allExtractedUsers.push(...usersFromRecursiveSearch);
+      }
+      
       // Add users extracted from project details if we have them
       if (fullProject) {
         const extractedFromProject: any[] = [];
@@ -1873,17 +1904,28 @@ class ZohoService {
           console.log(`[ZohoService] ⚠️  Error extracting from issues: ${issuesError.message}`);
         }
         
+        // Combine with users from recursive search
+        if (usersFromRecursiveSearch.length > 0) {
+          console.log(`[ZohoService] Adding ${usersFromRecursiveSearch.length} users from recursive search to extraction`);
+          allExtractedUsers.push(...usersFromRecursiveSearch);
+        }
+        
         // Final deduplication and return
         if (allExtractedUsers.length > 0) {
-          const uniqueUsers = allExtractedUsers.filter((user, index, self) => 
-            index === self.findIndex((u) => 
-              (u.email && u.email === user.email) ||
-              (u.Email && u.Email === user.Email) ||
-              (u.zpuid && u.zpuid === user.zpuid) ||
-              (u.zuid && u.zuid === user.zuid) ||
-              (u.id && u.id === user.id)
-            )
-          );
+          console.log(`[ZohoService] Total users before deduplication: ${allExtractedUsers.length}`);
+          const uniqueUsers = allExtractedUsers.filter((user, index, self) => {
+            const matchIndex = self.findIndex((u) => {
+              const emailMatch = (u.email && user.email && u.email.toLowerCase() === user.email.toLowerCase()) ||
+                                (u.Email && user.Email && u.Email.toLowerCase() === user.Email.toLowerCase());
+              const idMatch = (u.zpuid && user.zpuid && u.zpuid === user.zpuid) ||
+                             (u.zuid && user.zuid && u.zuid === user.zuid) ||
+                             (u.id && user.id && String(u.id) === String(user.id));
+              return emailMatch || idMatch;
+            });
+            return matchIndex === index;
+          });
+          
+          console.log(`[ZohoService] After final deduplication: ${uniqueUsers.length} unique users from ${allExtractedUsers.length} total`);
           
           // Preserve project_profile/role from the first occurrence of each user
           const usersWithRoles = uniqueUsers.map(user => {
@@ -1895,7 +1937,11 @@ class ZohoService {
           });
           
           if (usersWithRoles.length > 0) {
-            console.log(`[ZohoService] ✅ Returning ${usersWithRoles.length} unique users from all sources (project fields, tasks, issues)`);
+            console.log(`[ZohoService] ✅ Returning ${usersWithRoles.length} unique users from all sources (recursive search, project fields, tasks, issues)`);
+            // Log each user for debugging
+            usersWithRoles.forEach((user, idx) => {
+              console.log(`[ZohoService] Final user ${idx + 1}: ${user.email || user.Email || 'no email'}, role: ${user.project_profile || user.role || 'no role'}`);
+            });
             return usersWithRoles;
           }
         }
