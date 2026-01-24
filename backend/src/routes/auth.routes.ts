@@ -483,7 +483,14 @@ router.put('/users/:id', authenticate, async (req, res) => {
     }
 
     // SSH columns exist in the database (confirmed by user's database query)
-    // We'll always try to update them if values are provided
+    // NOTE: We tried using information_schema.columns to check for column existence,
+    // but it was failing in production (returning empty array) even though columns exist.
+    // Root causes could be:
+    // 1. Case sensitivity issues with information_schema
+    // 2. Schema search path differences between local and production
+    // 3. Connection context differences
+    // Since we know the columns exist (migration 012_add_ssh_fields_to_users.sql),
+    // we'll always try to update them if values are provided.
     const hasSshUser = true;
     const hasSshPasswordHash = true;
     const hasIpaddress = true;
