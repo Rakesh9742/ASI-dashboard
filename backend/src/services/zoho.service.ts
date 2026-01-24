@@ -1270,6 +1270,10 @@ class ZohoService {
       );
 
       console.log(`[ZohoService] Found ${zohoMembers.length} members in Zoho project`);
+      
+      if (zohoMembers.length === 0) {
+        console.warn(`[ZohoService] ⚠️  No members found in Zoho project ${zohoProjectId}. This might indicate an API issue or the project has no members.`);
+      }
 
       let createdUsers = 0;
       let updatedAssignments = 0;
@@ -1331,22 +1335,68 @@ class ZohoService {
             // Create new user (Zoho-only user)
             // Set default role to 'engineer' in users table
             // Project-specific role will be stored in user_projects.role
-            const insertResult = await client.query(
-              `INSERT INTO users (
-                username, email, password_hash, full_name, role, is_active
-              ) VALUES ($1, $2, $3, $4, $5, $6)
-              RETURNING id`,
-              [
-                email.split('@')[0],
-                email,
-                'zoho_oauth_user',
-                name,
-                'engineer', // Default role - project-specific roles are in user_projects.role
-                true
-              ]
-            );
-            userId = insertResult.rows[0].id;
-            createdUsers++;
+            
+            // Generate username from email prefix, but handle conflicts
+            let baseUsername = email.split('@')[0].toLowerCase();
+            let username = baseUsername;
+            let usernameConflict = true;
+            let attempts = 0;
+            const maxAttempts = 10;
+            
+            // Check if username already exists and generate unique one if needed
+            while (usernameConflict && attempts < maxAttempts) {
+              const usernameCheck = await client.query(
+                'SELECT id FROM users WHERE username = $1',
+                [username]
+              );
+              
+              if (usernameCheck.rows.length === 0) {
+                usernameConflict = false;
+              } else {
+                // Username exists, try with suffix
+                attempts++;
+                username = `${baseUsername}_${attempts}`;
+              }
+            }
+            
+            // If still conflict after max attempts, use email as username (sanitized)
+            if (usernameConflict) {
+              username = email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+              console.log(`[ZohoService] Username conflict after ${maxAttempts} attempts, using email-based username: ${username}`);
+            }
+            
+            try {
+              const insertResult = await client.query(
+                `INSERT INTO users (
+                  username, email, password_hash, full_name, role, is_active
+                ) VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id`,
+                [
+                  username,
+                  email,
+                  'zoho_oauth_user',
+                  name,
+                  'engineer', // Default role - project-specific roles are in user_projects.role
+                  true
+                ]
+              );
+              userId = insertResult.rows[0].id;
+              createdUsers++;
+              console.log(`[ZohoService] ✅ Created new user: ${email} (username: ${username}, id: ${userId})`);
+            } catch (insertError: any) {
+              // Handle unique constraint violations
+              if (insertError.code === '23505') { // Unique violation
+                const constraint = insertError.constraint || 'unknown';
+                console.error(`[ZohoService] ❌ Unique constraint violation for user ${email}: ${constraint}`, insertError.message);
+                errors.push({
+                  email,
+                  error: `Username or email already exists: ${insertError.message}`
+                });
+                continue; // Skip this user and continue with next
+              } else {
+                throw insertError; // Re-throw other errors
+              }
+            }
           } else {
             userId = userCheck.rows[0].id;
             const existingName = userCheck.rows[0].full_name;
@@ -1423,10 +1473,17 @@ class ZohoService {
 
         } catch (memberError: any) {
           const errorMsg = memberError.message || 'Unknown error';
-          console.error(`[ZohoService] Error syncing member ${member.email || 'N/A'}:`, errorMsg, memberError);
+          const errorCode = memberError.code || 'N/A';
+          const errorDetail = memberError.detail || 'N/A';
+          console.error(`[ZohoService] ❌ Error syncing member ${member.email || 'N/A'}:`, {
+            message: errorMsg,
+            code: errorCode,
+            detail: errorDetail,
+            stack: memberError.stack?.substring(0, 200)
+          });
           errors.push({
-            email: member.email || member.Email || 'N/A',
-            error: errorMsg
+            email: member.email || member.Email || member.mail || 'N/A',
+            error: `${errorMsg}${errorCode !== 'N/A' ? ` (code: ${errorCode})` : ''}`
           });
         }
       }
