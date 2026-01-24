@@ -657,7 +657,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       }
     }
   }
-
+  
   Future<void> _openViewScreenInNewWindow() async {
     try {
       final projectName = widget.project['name'] ?? '';
@@ -697,7 +697,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       // Determine view type based on user role
       final userRole = ref.read(authProvider).user?['role'];
       final viewType = userRole == 'customer' ? 'customer' : 'engineer';
-      
+
       // Store data in localStorage for the new window
       final viewData = {
         'project': projectName,
@@ -753,30 +753,30 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                 right: BorderSide(color: Theme.of(context).dividerColor, width: 1),
                 ),
               ),
-              child: SingleChildScrollView(
+                    child: SingleChildScrollView(
                   padding: const EdgeInsets.all(24),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
                       // Block and Experiment Selectors
-                      _buildSelectionSection(),
+                          _buildSelectionSection(),
                       _buildRunDirectoryInfo(),
-                      const SizedBox(height: 24),
-                      // Command Console
-                      _buildCommandConsole(),
+                          const SizedBox(height: 24),
+                          // Command Console
+                          _buildCommandConsole(),
                       const SizedBox(height: 24),
                       // Command Output (if available)
                       if (_lastCommand != null || _isExecutingCommand)
                         _buildCommandOutput(),
                       if (_lastCommand != null || _isExecutingCommand)
-                        const SizedBox(height: 24),
-                      // Activity Log
-                      _buildActivityLog(),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+                          const SizedBox(height: 24),
+                          // Activity Log
+                          _buildActivityLog(),
+                        ],
+                      ),
+                    ),
+                      ),
+                    ),
             // Right Panel - Dashboard Tabs (55%)
             Expanded(
               flex: 55,
@@ -798,15 +798,15 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                           _buildDashboardTab('QMS', Icons.check_circle_outline, isSelected: _selectedTab == 'QMS'),
                           const SizedBox(width: 0),
                           _buildDashboardTab('<> Dev', Icons.code, isSelected: _selectedTab == '<> Dev'),
-                        ],
-                      ),
-                    ),
+                ],
+              ),
+              ),
                     
                     // Main Content (Scrollable)
-                    Expanded(
-                      child: _buildMainContent(),
-                    ),
-                  ],
+                  Expanded(
+                    child: _buildMainContent(),
+                  ),
+                ],
                 ),
               ),
             ),
@@ -820,56 +820,56 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         // Block Selector
         Expanded(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Block',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                ),
-              ),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Block',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+          ),
+        ),
               const SizedBox(height: 4),
-              Container(
-                width: double.infinity,
+        Container(
+          width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).cardColor,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Theme.of(context).dividerColor),
-                ),
-                child: _isLoadingBlocks
-                    ? const Center(
-                        child: Padding(
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Theme.of(context).dividerColor),
+          ),
+          child: _isLoadingBlocks
+              ? const Center(
+                  child: Padding(
                           padding: EdgeInsets.all(4.0),
-                          child: SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        ),
-                      )
+                    child: SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
                     : DropdownButtonHideUnderline(
                         child: DropdownButton<String>(
-                          value: _selectedBlock,
-                          isExpanded: true,
+            value: _selectedBlock,
+            isExpanded: true,
                           isDense: true,
                           style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface),
-                          dropdownColor: Theme.of(context).cardColor,
-                          items: [
-                            DropdownMenuItem(
-                              value: 'Select a block',
-                              child: Text('Select a block', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6))),
-                            ),
-                            ..._availableBlocks.map((block) => DropdownMenuItem(
-                              value: block,
-                              child: Text(block, style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                            )),
-                          ],
-                          onChanged: _onBlockChanged,
-                        ),
-                      ),
+                  dropdownColor: Theme.of(context).cardColor,
+                  items: [
+                    DropdownMenuItem(
+                      value: 'Select a block',
+                      child: Text('Select a block', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6))),
+                    ),
+                    ..._availableBlocks.map((block) => DropdownMenuItem(
+                      value: block,
+                          child: Text(block, style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                        )),
+                  ],
+                  onChanged: _onBlockChanged,
+          ),
+        ),
               ),
             ],
           ),
@@ -880,41 +880,41 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Experiment',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                ),
-              ),
+        Text(
+          'Experiment',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+          ),
+        ),
               const SizedBox(height: 4),
-              Container(
-                width: double.infinity,
+        Container(
+          width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).cardColor,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Theme.of(context).dividerColor),
-                ),
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Theme.of(context).dividerColor),
+          ),
                 child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: _selectedExperiment,
-                    isExpanded: true,
+          child: DropdownButton<String>(
+            value: _selectedExperiment,
+            isExpanded: true,
                     isDense: true,
                     style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface),
-                    dropdownColor: Theme.of(context).cardColor,
-                    items: [
-                      DropdownMenuItem(
-                        value: 'Select an experiment',
-                        child: Text('Select an experiment', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6))),
-                      ),
-                      ..._availableExperiments.map((exp) => DropdownMenuItem(
-                              value: exp,
-                            child: Text(exp, style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                          )),
-                    ],
-                    onChanged: _onExperimentChanged,
+            dropdownColor: Theme.of(context).cardColor,
+            items: [
+              DropdownMenuItem(
+                value: 'Select an experiment',
+                child: Text('Select an experiment', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6))),
+              ),
+              ..._availableExperiments.map((exp) => DropdownMenuItem(
+                      value: exp,
+                    child: Text(exp, style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                  )),
+            ],
+            onChanged: _onExperimentChanged,
                   ),
                 ),
               ),
@@ -948,16 +948,16 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
           const SizedBox(width: 8),
           Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
                   'Run Directory',
-                  style: TextStyle(
+          style: TextStyle(
                     fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                  ),
-                ),
+            fontWeight: FontWeight.w600,
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+          ),
+        ),
                 const SizedBox(height: 4),
                 SelectableText(
                   _currentRunDirectory ?? 'Loading...',
@@ -995,8 +995,8 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   Widget _buildCommandConsole() {
     return Container(
       padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Theme.of(context).dividerColor),
       ),
@@ -1015,23 +1015,23 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
           Container(
             decoration: BoxDecoration(
               color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.5),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Theme.of(context).dividerColor),
-            ),
-            child: TextField(
-              controller: _commandController,
-              maxLines: 6,
-              maxLength: 500,
-              style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
-              decoration: InputDecoration(
-                hintText: 'e.g., Run RTL validation, Execute synthesis, Check QMS gates...',
-                hintStyle: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
-                border: InputBorder.none,
-                contentPadding: const EdgeInsets.all(12),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Theme.of(context).dividerColor),
+          ),
+          child: TextField(
+            controller: _commandController,
+            maxLines: 6,
+            maxLength: 500,
+            style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+            decoration: InputDecoration(
+              hintText: 'e.g., Run RTL validation, Execute synthesis, Check QMS gates...',
+              hintStyle: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.all(12),
                 counterText: '', // Hide counter inside field, maybe show below or just hide
-              ),
             ),
           ),
+        ),
           const SizedBox(height: 4),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1042,9 +1042,9 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
               ),
               ElevatedButton.icon(
                 onPressed: _isExecutingCommand ? null : () {
-                  if (_commandController.text.isNotEmpty) {
-                    _executeCommand(_commandController.text);
-                    _commandController.clear();
+              if (_commandController.text.isNotEmpty) {
+                _executeCommand(_commandController.text);
+                _commandController.clear();
                     setState(() {}); // Update counter
                   }
                 },
@@ -1056,12 +1056,12 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                       )
                     : const Icon(Icons.play_arrow, size: 16),
                 label: Text(_isExecutingCommand ? 'Executing...' : 'Execute'),
-                style: ElevatedButton.styleFrom(
+            style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF5CCBDB), // Light cyan from image
-                  foregroundColor: Colors.white,
+              foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
                   minimumSize: const Size(0, 36),
-                  shape: RoundedRectangleBorder(
+              shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(6),
                   ),
                 ),
@@ -1154,10 +1154,10 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                         fontSize: 13,
                         color: Theme.of(context).colorScheme.onSurface,
                         fontFamily: 'monospace',
-                      ),
-                    ),
-                  ),
-                ],
+            ),
+          ),
+        ),
+      ],
               ),
             ),
           ],
@@ -1253,11 +1253,11 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         ],
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
               Row(
                 children: [
                   Icon(
@@ -1266,11 +1266,11 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                     color: Theme.of(context).colorScheme.primary,
                   ),
                   const SizedBox(width: 8),
-                  Text(
+            Text(
                     'Command History',
-                    style: TextStyle(
+              style: TextStyle(
                       fontSize: 15,
-                      fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w600,
                       color: Theme.of(context).colorScheme.onSurface,
                       letterSpacing: 0.2,
                     ),
@@ -1290,65 +1290,65 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                     color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
                   ),
                 ),
-                onPressed: () {
-                  setState(() {
-                    _activityLog.clear();
-                  });
-                },
+              onPressed: () {
+                setState(() {
+                  _activityLog.clear();
+                });
+              },
                 style: TextButton.styleFrom(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   minimumSize: Size.zero,
                   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
-              ),
-            ],
-          ),
+            ),
+          ],
+        ),
           const SizedBox(height: 12),
           // Log List Container with better styling
-          Container(
+        Container(
             height: 300,
-            decoration: BoxDecoration(
+          decoration: BoxDecoration(
               color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.5),
-              borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(8),
               border: Border.all(
                 color: Theme.of(context).dividerColor.withOpacity(0.3),
               ),
-            ),
-            child: _activityLog.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
+          ),
+          child: _activityLog.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
                         Icon(
                           Icons.terminal_outlined,
                           size: 48,
                           color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3),
                         ),
                         const SizedBox(height: 12),
-                        Text(
+                      Text(
                           'No commands executed',
                           style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w500,
                             color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
                           ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
                           'Command output will appear in the terminal',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-                          ),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
                         ),
-                      ],
-                    ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: _activityLog.length,
-                    itemBuilder: (context, index) {
-                      final log = _activityLog[index];
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: _activityLog.length,
+                  itemBuilder: (context, index) {
+                    final log = _activityLog[index];
                       final isSuccess = log['status'] == 'success';
                       final isError = log['status'] == 'error';
                       
@@ -1371,9 +1371,9 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                             width: 1,
                           ),
                         ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
                             Container(
                               padding: const EdgeInsets.all(4),
                               decoration: BoxDecoration(
@@ -1386,11 +1386,11 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                               ),
                               child: Icon(
                                 isSuccess
-                                    ? Icons.check_circle
+                                ? Icons.check_circle
                                     : isError
                                         ? Icons.error
                                         : Icons.play_arrow,
-                                size: 16,
+                            size: 16,
                                 color: isSuccess
                                     ? Colors.green.shade700
                                     : isError
@@ -1399,13 +1399,13 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                               ),
                             ),
                             const SizedBox(width: 12),
-                            Expanded(
+                          Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
                                     log['message'].toString(),
-                                    style: TextStyle(
+                              style: TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.w500,
                                       color: isSuccess
@@ -1425,15 +1425,15 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                                     ),
                                   ),
                                 ],
-                              ),
                             ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
       ),
     );
   }
@@ -1492,19 +1492,19 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                Column(
                  crossAxisAlignment: CrossAxisAlignment.start,
                  children: [
-                    Text(
-                      'Design Dashboard',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).colorScheme.onSurface,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Project: ${widget.project['name'] ?? 'Unknown'}',
-                      style: TextStyle(
-                        fontSize: 14,
+          Text(
+            'Design Dashboard',
+            style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Project: ${widget.project['name'] ?? 'Unknown'}',
+            style: TextStyle(
+              fontSize: 14,
                         color: const Color(0xFF1E96B1), // Cyan-ish color from image
                         fontWeight: FontWeight.w600,
                       ),
@@ -1518,33 +1518,33 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                      border: Border.all(color: Theme.of(context).dividerColor),
                      borderRadius: BorderRadius.circular(4),
                    ),
-                   child: TextButton.icon(
-                     onPressed: () {
+            child: TextButton.icon(
+              onPressed: () {
                        if (_selectedTab == 'Dashboard') {
-                         _openViewScreenInNewWindow();
+                _openViewScreenInNewWindow();
                        } else if (_selectedTab == 'QMS') {
                          _openQMSInNewWindow();
                        }
-                     },
+              },
                      icon: const Icon(Icons.open_in_new, size: 14),
                      label: const Text('Pop Out', style: TextStyle(fontSize: 12)),
-                     style: TextButton.styleFrom(
+              style: TextButton.styleFrom(
                        foregroundColor: Theme.of(context).colorScheme.onSurface,
                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                     ),
-                   ),
-                 ),
-             ],
+              ),
+            ),
+          ),
+            ],
           ),
           const SizedBox(height: 24),
 
           // Content based on selected tab
           if (_selectedTab == 'Dashboard') ...[
-            // Key Metrics Cards
-            _buildMetricsCards(),
-            const SizedBox(height: 32),
-            // Run History
-            _buildRunHistory(),
+          // Key Metrics Cards
+          _buildMetricsCards(),
+          const SizedBox(height: 32),
+          // Run History
+          _buildRunHistory(),
           ] else if (_selectedTab == 'QMS') ...[
             _buildQmsContent(),
           ] else if (_selectedTab == '<> Dev') ...[
@@ -1631,12 +1631,12 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             ),
             const SizedBox(width: 8),
             Text(
-              label,
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
                 color: isSelected ? const Color(0xFF1E96B1) : Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-              ),
+          ),
             ),
           ],
         ),
@@ -1887,48 +1887,48 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             ),
           )
         else
-          Container(
-            decoration: BoxDecoration(
-              color: Theme.of(context).cardColor,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Theme.of(context).dividerColor),
-            ),
-            child: Table(
-              columnWidths: const {
-                0: FlexColumnWidth(2),
-                1: FlexColumnWidth(2.5),
-                2: FlexColumnWidth(1.5),
-                3: FlexColumnWidth(1),
-              },
-              children: [
-                // Header
-                TableRow(
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                    borderRadius: const BorderRadius.only(
-                      topLeft: Radius.circular(12),
-                      topRight: Radius.circular(12),
-                    ),
+        Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Theme.of(context).dividerColor),
+          ),
+          child: Table(
+            columnWidths: const {
+              0: FlexColumnWidth(2),
+              1: FlexColumnWidth(2.5),
+              2: FlexColumnWidth(1.5),
+              3: FlexColumnWidth(1),
+            },
+            children: [
+              // Header
+              TableRow(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(12),
+                    topRight: Radius.circular(12),
                   ),
-                  children: [
-                    _buildTableHeader('Timestamp'),
-                    _buildTableHeader('Command'),
-                    _buildTableHeader('Status'),
-                    _buildTableHeader('Duration'),
-                  ],
                 ),
-                // Rows
+                children: [
+                  _buildTableHeader('Timestamp'),
+                  _buildTableHeader('Command'),
+                  _buildTableHeader('Status'),
+                  _buildTableHeader('Duration'),
+                ],
+              ),
+              // Rows
                 ..._runHistory.map((run) => TableRow(
-                      children: [
+                    children: [
                         _buildTableCell(run['timestamp']?.toString() ?? 'Unknown'),
                         _buildTableCell(run['command']?.toString() ?? 'Unknown'),
                         _buildTableStatus(run['status']?.toString() ?? 'UNKNOWN'),
                         _buildTableCell(run['duration']?.toString() ?? 'N/A'),
-                      ],
-                    )),
-              ],
-            ),
+                    ],
+                  )),
+            ],
           ),
+        ),
       ],
     );
   }
@@ -2053,8 +2053,8 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             if (errorText.contains('directory') && errorText.contains('does not exist')) {
               errorMsg = '✗ Directory not found';
             }
-            _activityLog.add({
-              'timestamp': DateTime.now(),
+          _activityLog.add({
+            'timestamp': DateTime.now(),
               'message': errorMsg,
               'status': 'error',
             });
@@ -2065,7 +2065,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
               _activityLog[lastIndex] = {
                 'timestamp': _activityLog[lastIndex]['timestamp'],
                 'message': '✓ ${_activityLog[lastIndex]['message'].toString().replaceFirst('→ ', '')}',
-                'status': 'success',
+            'status': 'success',
               };
             }
           }

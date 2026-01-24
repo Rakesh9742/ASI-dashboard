@@ -217,8 +217,8 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
 
     if (userId == null) return false;
 
-    final approval = item['approval'];
-    if (approval == null) return false;
+      final approval = item['approval'];
+      if (approval == null) return false;
 
     final approvalStatus = approval['status'] ?? 'pending';
     // Only pending/submitted items can be approved/rejected
@@ -1116,7 +1116,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                     margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                     clipBehavior: Clip.antiAlias,
                     child: Column(
-                      children: [
+                    children: [
                       // Clear filters button - appears above table when filters are active
                       if (_hasActiveFilters())
                         Container(
@@ -1323,16 +1323,16 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
 
                                                   Widget buildBodyCell(Widget child, {Alignment alignment = Alignment.centerLeft, VoidCallback? onTap}) {
                                                     return TableCell(
-                                                      child: Container(
-                                                        height: 80,
-                                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                                        alignment: alignment,
-                                                        decoration: BoxDecoration(
-                                                          border: Border(
-                                                            bottom: BorderSide(color: Colors.grey.shade100),
+                                                        child: Container(
+                                                          height: 80,
+                                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                                          alignment: alignment,
+                                                          decoration: BoxDecoration(
+                                                            border: Border(
+                                                              bottom: BorderSide(color: Colors.grey.shade100),
+                                                            ),
                                                           ),
-                                                        ),
-                                                        child: child,
+                                                          child: child,
                                                       ),
                                                     );
                                                   }
@@ -1389,7 +1389,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                                                       activeColor: const Color(0xFF14B8A6), // Teal for selected, green is reserved for approved
                                                     );
                                                   }
-                                                  
+
                                                   return TableRow(
                                                     children: [
                                                       buildBodyCell(
@@ -1633,9 +1633,9 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                                   backgroundColor: Colors.red,
                                   foregroundColor: Colors.white,
                                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                                ),
-                              ),
-                            ],
+                          ),
+                        ),
+                    ],
                           ),
                         ),
                       ],

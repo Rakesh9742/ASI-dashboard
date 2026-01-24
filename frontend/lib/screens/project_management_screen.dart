@@ -1673,9 +1673,9 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                                     onSyncComplete: () {
                                       // Optionally refresh or show success message
                                     },
-                                  ),
-                                ),
-                              ],
+                      ),
+                    ),
+                  ],
                             );
                           } catch (e) {
                             print('[MappedDialog] Error rendering sync button: $e');
@@ -2240,7 +2240,7 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                           ),
                         ),
                       ],
-                    ),
+                  ),
                 ),
                 // Mapped Structure: Domains -> Blocks -> Requirements
                 Expanded(
@@ -3555,19 +3555,19 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
                           children: [
                             Expanded(
                               child: Text(
-                                widget.project['name'] ?? 'Project',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
+                          widget.project['name'] ?? 'Project',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                             ),
-                            Text(
-                              '${_tasks.length} Tasks',
-                              style: TextStyle(
-                                color: Colors.grey.shade400,
-                                fontSize: 14,
+                        Text(
+                          '${_tasks.length} Tasks',
+                          style: TextStyle(
+                            color: Colors.grey.shade400,
+                            fontSize: 14,
                               ),
                             ),
                           ],
@@ -3985,20 +3985,20 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
                                         children: [
                                           // Domain/Tasklist Name
                                           Row(
-                                            children: [
-                                              Icon(
-                                                Icons.folder,
-                                                size: 18,
-                                                color: Colors.blue.shade300,
-                                              ),
-                                              const SizedBox(width: 10),
+                                    children: [
+                                          Icon(
+                                            Icons.folder,
+                                            size: 18,
+                                            color: Colors.blue.shade300,
+                                          ),
+                                          const SizedBox(width: 10),
                                               Expanded(
                                                 child: Text(
-                                                  tasklistName,
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 15,
-                                                    fontWeight: FontWeight.w600,
+                                            tasklistName,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w600,
                                                   ),
                                                 ),
                                               ),
@@ -4061,8 +4061,8 @@ class _ZohoProjectDetailsDialogState extends State<_ZohoProjectDetailsDialog> {
                                               ),
                                             ),
                                           ],
-                                        ],
-                                      ),
+                              ],
+                            ),
                                       children: tasksInList.map((task) {
                                         // Extract only the data we need: name, date, assigned person
                                         final taskName = task['name']?.toString() ?? 
