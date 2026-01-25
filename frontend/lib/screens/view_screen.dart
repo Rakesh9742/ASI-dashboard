@@ -207,29 +207,52 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       
       if (projectToLoad != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          _loadDomainsForProject(projectToLoad);
-          // For customers, auto-select first domain and load data
-          if (userRole == 'customer') {
-            // Wait for domains to load, then auto-select first domain
-            Future.delayed(const Duration(milliseconds: 800), () {
-              if (mounted && _availableDomainsForProject.isNotEmpty && _selectedDomain == null) {
+          // Load domains first, then select domain and load data
+          _loadDomainsForProject(projectToLoad).then((_) {
+            // After domains are loaded, select domain if provided
+            if (mounted) {
+              if (domainToLoad != null && domainToLoad.isNotEmpty) {
+                // Domain was provided - try to select it
+                if (_availableDomainsForProject.contains(domainToLoad)) {
+                  setState(() {
+                    _selectedDomain = domainToLoad;
+                  });
+                  _loadInitialData();
+                } else {
+                  // Try case-insensitive match
+                  final lowerDomainToLoad = domainToLoad.toLowerCase();
+                  final matchingDomain = _availableDomainsForProject.firstWhere(
+                    (d) => d.toLowerCase() == lowerDomainToLoad,
+                    orElse: () => '',
+                  );
+                  if (matchingDomain.isNotEmpty) {
+                    setState(() {
+                      _selectedDomain = matchingDomain;
+                    });
+                    _loadInitialData();
+                  } else if (_availableDomainsForProject.isNotEmpty) {
+                    // Use first available domain if provided domain not found
+                    setState(() {
+                      _selectedDomain = _availableDomainsForProject.first;
+                    });
+                    _loadInitialData();
+                  }
+                }
+              } else if (userRole == 'customer' && _availableDomainsForProject.isNotEmpty) {
+                // For customers, auto-select first domain
+                setState(() {
+                  _selectedDomain = _availableDomainsForProject.first;
+                });
+                _loadInitialData();
+              } else if (_availableDomainsForProject.length == 1) {
+                // Only one domain available
                 setState(() {
                   _selectedDomain = _availableDomainsForProject.first;
                 });
                 _loadInitialData();
               }
-            });
-          } else if (domainToLoad != null) {
-            // For other roles, use provided domain
-            Future.delayed(const Duration(milliseconds: 500), () {
-              if (mounted) {
-                setState(() {
-                  _selectedDomain = domainToLoad;
-                });
-                _loadInitialData();
-              }
-            });
-          }
+            }
+          });
         });
       } else if (_selectedProject != null && _selectedDomain != null) {
         // If project and domain are already selected, load data automatically
@@ -944,61 +967,138 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   }
 
   Future<void> _loadDomainsForProject(String projectName) async {
+    print('🔵 [VIEW_SCREEN] Loading domains for project: $projectName');
+    print('🔵 [VIEW_SCREEN] Initial domain from widget: ${widget.initialDomain}');
+    print('🔵 [VIEW_SCREEN] Current selected domain: $_selectedDomain');
     setState(() {
       _selectedProject = projectName;
       _isLoadingDomains = true;
     });
 
-    // Get domains for this project
+    // Get domains for this project from multiple sources
     try {
       final authState = ref.read(authProvider);
       final token = authState.token;
       
-      // Load EDA files to find domains for this project
-      final filesResponse = await _apiService.getEdaFiles(
-        token: token,
-        limit: 1000,
-      );
-      
-      final files = filesResponse['files'] ?? [];
       final domainSet = <String>{};
       
-      for (var file in files) {
-        final projectNameFromFile = file['project_name'] ?? 'Unknown';
-        final domainName = file['domain_name'] ?? '';
-        if (projectNameFromFile == projectName && domainName.isNotEmpty) {
-          domainSet.add(domainName);
+      // First, try to get domains from project data (project_domains table)
+      try {
+        final projects = await _apiService.getProjects(token: token);
+        final matchingProject = projects.firstWhere(
+          (p) => (p['name']?.toString() ?? '') == projectName,
+          orElse: () => null,
+        );
+        
+        if (matchingProject != null) {
+          // Check if project has domains array
+          final projectDomains = matchingProject['domains'];
+          if (projectDomains is List) {
+            for (var domain in projectDomains) {
+              if (domain is Map<String, dynamic>) {
+                final domainName = domain['name']?.toString();
+                if (domainName != null && domainName.isNotEmpty) {
+                  domainSet.add(domainName);
+                }
+              }
+            }
+          }
         }
+      } catch (e) {
+        print('Error loading domains from project data: $e');
+      }
+      
+      // Also load EDA files to find domains for this project
+      try {
+        final filesResponse = await _apiService.getEdaFiles(
+          token: token,
+          limit: 1000,
+        );
+        
+        final files = filesResponse['files'] ?? [];
+        
+        for (var file in files) {
+          final projectNameFromFile = file['project_name']?.toString() ?? 'Unknown';
+          final domainName = file['domain_name']?.toString() ?? '';
+          if (projectNameFromFile == projectName && domainName.isNotEmpty) {
+            domainSet.add(domainName);
+          }
+        }
+      } catch (e) {
+        print('Error loading domains from EDA files: $e');
+      }
+      
+      // If initialDomain is provided but not in the found domains, add it to the list
+      // This ensures the domain dropdown shows the passed domain even if it's not in the database yet
+      if (widget.initialDomain != null && 
+          widget.initialDomain!.isNotEmpty && 
+          !domainSet.contains(widget.initialDomain)) {
+        print('🔵 [VIEW_SCREEN] Initial domain ${widget.initialDomain} not found in available domains, adding it to list');
+        domainSet.add(widget.initialDomain!);
       }
       
       final availableDomains = domainSet.toList()..sort();
+      
+      print('🔵 [VIEW_SCREEN] Found ${availableDomains.length} domains: $availableDomains');
+      print('🔵 [VIEW_SCREEN] Initial domain from widget: ${widget.initialDomain}');
+      print('🔵 [VIEW_SCREEN] Current selected domain before update: $_selectedDomain');
       
       setState(() {
         _availableDomainsForProject = availableDomains;
         _isLoadingDomains = false;
         
         // Auto-select domain if:
-        // 1. Only one domain available, OR
-        // 2. initialDomain is provided and exists in available domains
-        // 3. For customers, always auto-select first domain
-        if (widget.initialDomain != null && availableDomains.contains(widget.initialDomain)) {
-          _selectedDomain = widget.initialDomain;
-          _loadInitialData();
+        // 1. initialDomain is provided - try exact match first, then case-insensitive match
+        if (widget.initialDomain != null && widget.initialDomain!.isNotEmpty) {
+          print('🔵 [VIEW_SCREEN] Attempting to match initial domain: ${widget.initialDomain}');
+          // Try exact match first
+          if (availableDomains.contains(widget.initialDomain)) {
+            print('🔵 [VIEW_SCREEN] Exact match found for domain: ${widget.initialDomain}');
+            _selectedDomain = widget.initialDomain;
+            _loadInitialData();
+          } else {
+            // Try case-insensitive match
+            final lowerInitialDomain = widget.initialDomain!.toLowerCase();
+            final matchingDomain = availableDomains.firstWhere(
+              (d) => d.toLowerCase() == lowerInitialDomain,
+              orElse: () => '',
+            );
+            if (matchingDomain.isNotEmpty) {
+              print('🔵 [VIEW_SCREEN] Case-insensitive match found: $matchingDomain');
+              _selectedDomain = matchingDomain;
+              _loadInitialData();
+            } else if (availableDomains.isNotEmpty) {
+              // If no match found, use first available domain
+              print('🔵 [VIEW_SCREEN] No match found, using first available domain: ${availableDomains.first}');
+              _selectedDomain = availableDomains.first;
+              _loadInitialData();
+            } else {
+              print('⚠️ [VIEW_SCREEN] No domains available for project: $projectName');
+            }
+          }
         } else if (availableDomains.length == 1) {
+          // 2. Only one domain available
+          print('🔵 [VIEW_SCREEN] Only one domain available, auto-selecting: ${availableDomains.first}');
           _selectedDomain = availableDomains.first;
           _loadInitialData();
         } else if (availableDomains.isNotEmpty && _selectedDomain == null) {
-          // For customers, always auto-select first domain
+          // 3. For customers, always auto-select first domain
           // For other roles, also auto-select first domain if available
           final authStateForRole = ref.read(authProvider);
           final userRoleForDomain = authStateForRole.user?['role'];
           final isCustomerForDomain = userRoleForDomain == 'customer';
           
           if (isCustomerForDomain || widget.initialDomain == null) {
-          _selectedDomain = availableDomains.first;
-          _loadInitialData();
+            print('🔵 [VIEW_SCREEN] Auto-selecting first domain: ${availableDomains.first}');
+            _selectedDomain = availableDomains.first;
+            _loadInitialData();
           }
+        } else {
+          print('⚠️ [VIEW_SCREEN] No domain selected. Available domains: $availableDomains, Initial domain: ${widget.initialDomain}');
         }
+        
+        print('🔵 [VIEW_SCREEN] Final selected domain after update: $_selectedDomain');
+        print('🔵 [VIEW_SCREEN] Available domains list: $_availableDomainsForProject');
       });
     } catch (e) {
       setState(() {
@@ -1096,52 +1196,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     // Fetch project-specific role first
     await _fetchProjectRole(projectName);
 
-    // Get domains for this project
-    try {
-      final authState = ref.read(authProvider);
-      final token = authState.token;
-      
-      // Load EDA files to find domains for this project
-      final filesResponse = await _apiService.getEdaFiles(
-        token: token,
-        limit: 1000,
-      );
-      
-      final files = filesResponse['files'] ?? [];
-      final domainSet = <String>{};
-      
-      for (var file in files) {
-        final projectNameFromFile = file['project_name'] ?? 'Unknown';
-        final domainName = file['domain_name'] ?? '';
-        if (projectNameFromFile == projectName && domainName.isNotEmpty) {
-          domainSet.add(domainName);
-        }
-      }
-      
-      final availableDomains = domainSet.toList()..sort();
-      
-      setState(() {
-        _availableDomainsForProject = availableDomains;
-        _isLoadingDomains = false;
-        // Auto-select if only one domain
-        if (availableDomains.length == 1) {
-          _selectedDomain = availableDomains.first;
-          _loadInitialData();
-        }
-      });
-    } catch (e) {
-      setState(() {
-        _isLoadingDomains = false;
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error loading domains: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
+    // Load domains for this project (reuse the same method)
+    await _loadDomainsForProject(projectName);
   }
 
   void _updateDomain(String? domainName) {

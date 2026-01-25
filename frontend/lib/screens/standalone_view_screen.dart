@@ -46,11 +46,16 @@ class _StandaloneViewScreenState extends ConsumerState<StandaloneViewScreen> {
         _projectName = data['project']?.toString();
         _domainName = data['domain']?.toString();
         _viewType = data['viewType']?.toString();
+        print('🔵 [STANDALONE_VIEW] Loaded from localStorage - Project: $_projectName, Domain: $_domainName, ViewType: $_viewType');
       } else if (params != null) {
         _projectName = params['project'] != null ? Uri.decodeComponent(params['project']!) : null;
         _domainName = params['domain'] != null ? Uri.decodeComponent(params['domain']!) : null;
         _viewType = params['viewType'] != null ? Uri.decodeComponent(params['viewType']!) : 'engineer';
+        print('🔵 [STANDALONE_VIEW] Loaded from URL params - Project: $_projectName, Domain: $_domainName, ViewType: $_viewType');
       }
+      
+      // Debug: Check what we have
+      print('🔵 [STANDALONE_VIEW] Final values - Project: $_projectName, Domain: $_domainName, ViewType: $_viewType');
 
       setState(() {
         _isLoading = false;

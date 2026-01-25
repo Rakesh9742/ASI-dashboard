@@ -149,17 +149,17 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         );
 
         final files = filesResponse['files'] ?? [];
-        for (var file in files) {
-          final blockName = file['block_name']?.toString();
-          final experiment = file['experiment']?.toString();
-          
-          if (blockName != null && blockName.isNotEmpty) {
-            blockSet.add(blockName);
-          }
-          
-          if (experiment != null && experiment.isNotEmpty) {
-            experimentSet.add(experiment);
-          }
+      for (var file in files) {
+        final blockName = file['block_name']?.toString();
+        final experiment = file['experiment']?.toString();
+        
+        if (blockName != null && blockName.isNotEmpty) {
+          blockSet.add(blockName);
+        }
+        
+        if (experiment != null && experiment.isNotEmpty) {
+          experimentSet.add(experiment);
+        }
         }
       } catch (e) {
         // Silently fail - we already have data from setup
@@ -381,13 +381,45 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       // Determine project identifier
       dynamic projectIdentifier;
       final zohoProjectId = widget.project['zoho_project_id']?.toString();
-      if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
+      final isZohoProject = zohoProjectId != null && zohoProjectId.isNotEmpty;
+      if (isZohoProject) {
         projectIdentifier = 'zoho_$zohoProjectId';
       } else {
         projectIdentifier = widget.project['id'] ?? projectName;
       }
 
-      // First, try to load from setup data (blocks-experiments endpoint)
+      String? runDirectoryFromEdaFiles;
+      String? runDirectoryFromSetup;
+
+      // First, try to load from EDA files (actual run directory from processed files)
+      // This is more accurate as it comes from the actual EDA output files
+      try {
+      final filesResponse = await _apiService.getEdaFiles(
+        token: token,
+        projectName: projectName,
+          limit: 1000, // Increased limit to find matching files
+      );
+
+      final files = filesResponse['files'] ?? [];
+      
+      // Find first matching file for this block and experiment
+      final matchingFile = files.firstWhere(
+        (file) {
+          final fileBlock = file['block_name']?.toString();
+          final fileExperiment = file['experiment']?.toString();
+          return fileBlock == _selectedBlock && fileExperiment == _selectedExperiment;
+        },
+        orElse: () => null,
+      );
+
+        if (matchingFile != null) {
+          runDirectoryFromEdaFiles = matchingFile['run_directory']?.toString();
+        }
+      } catch (e) {
+        print('Error loading run directory from EDA files: $e');
+      }
+
+      // Also try to load from setup data (zoho_project_run_directories for Zoho, blocks/runs for local)
       try {
         final blocksData = await _apiService.getBlocksAndExperiments(
           projectIdOrName: projectIdentifier,
@@ -403,12 +435,10 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
               for (var exp in experiments) {
                 final experiment = exp['experiment']?.toString();
                 if (experiment == _selectedExperiment) {
-                  final runDirectory = exp['run_directory']?.toString();
-                  if (runDirectory != null && runDirectory.isNotEmpty && mounted) {
-                    setState(() {
-                      _currentRunDirectory = runDirectory;
-                    });
-                    return; // Found in setup data, return early
+                  final runDir = exp['run_directory']?.toString();
+                  if (runDir != null && runDir.isNotEmpty) {
+                    runDirectoryFromSetup = runDir;
+                    break;
                   }
                 }
               }
@@ -419,38 +449,27 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         print('Error loading run directory from setup data: $e');
       }
 
-      // If not found in setup data, try EDA files
-      try {
-        final filesResponse = await _apiService.getEdaFiles(
-          token: token,
-          projectName: projectName,
-          limit: 100,
-        );
-
-        final files = filesResponse['files'] ?? [];
-        
-        // Find first matching file for this block and experiment
-        final matchingFile = files.firstWhere(
-          (file) {
-            final fileBlock = file['block_name']?.toString();
-            final fileExperiment = file['experiment']?.toString();
-            return fileBlock == _selectedBlock && fileExperiment == _selectedExperiment;
-          },
-          orElse: () => null,
-        );
-
-        if (matchingFile != null && mounted) {
-          final runDirectory = matchingFile['run_directory']?.toString();
-          setState(() {
-            _currentRunDirectory = runDirectory;
-          });
-        }
-      } catch (e) {
-        print('Error loading run directory from EDA files: $e');
+      // Prefer EDA files run directory (actual) over setup data, but use setup if EDA not available
+      final finalRunDirectory = runDirectoryFromEdaFiles ?? runDirectoryFromSetup;
+      
+      if (mounted && finalRunDirectory != null && finalRunDirectory.isNotEmpty) {
+        setState(() {
+          _currentRunDirectory = finalRunDirectory;
+        });
+      } else if (mounted) {
+        // Clear run directory if not found in either source
+        setState(() {
+          _currentRunDirectory = null;
+        });
       }
     } catch (e) {
       // Silently fail - run directory will remain null
       print('Error loading run directory: $e');
+      if (mounted) {
+        setState(() {
+          _currentRunDirectory = null;
+        });
+      }
     }
   }
   
@@ -662,20 +681,20 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
 
       // Also check EDA files for additional experiments
       try {
-        final filesResponse = await _apiService.getEdaFiles(
-          token: token,
-          projectName: projectName,
-          limit: 1000,
-        );
+      final filesResponse = await _apiService.getEdaFiles(
+        token: token,
+        projectName: projectName,
+        limit: 1000,
+      );
 
-        final files = filesResponse['files'] ?? [];
-        for (var file in files) {
-          final fileBlockName = file['block_name']?.toString();
-          final experiment = file['experiment']?.toString();
-          
-          if (fileBlockName == blockName && experiment != null && experiment.isNotEmpty) {
-            experimentSet.add(experiment);
-          }
+      final files = filesResponse['files'] ?? [];
+      for (var file in files) {
+        final fileBlockName = file['block_name']?.toString();
+        final experiment = file['experiment']?.toString();
+        
+        if (fileBlockName == blockName && experiment != null && experiment.isNotEmpty) {
+          experimentSet.add(experiment);
+        }
         }
       } catch (e) {
         // Silently fail - we already have data from setup
@@ -843,29 +862,83 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       }
 
       // Get first domain for the project (if available)
-      // Use minimal limit since we only need one file to get domain name
+      // Check both project domains and EDA files
       String? domainName;
       try {
         final token = ref.read(authProvider).token;
         if (token != null) {
-          final filesResponse = await _apiService.getEdaFiles(
-            token: token,
-            projectName: projectName,
-            limit: 10, // Reduced from 100 to 10 - we only need first file for domain name
-          );
-          final files = filesResponse['files'] ?? [];
-          if (files.isNotEmpty) {
-            final firstFile = files[0];
-            domainName = firstFile['domain_name']?.toString();
+          print('🔵 [SEMICON] Loading domain for project: $projectName');
+          
+          // First, try to get domain from project data (project_domains table)
+          try {
+            final projects = await _apiService.getProjects(token: token);
+            final matchingProject = projects.firstWhere(
+              (p) => (p['name']?.toString() ?? '') == projectName,
+              orElse: () => null,
+            );
+            
+            if (matchingProject != null) {
+              final projectDomains = matchingProject['domains'];
+              print('🔵 [SEMICON] Project domains from API: $projectDomains');
+              if (projectDomains is List && projectDomains.isNotEmpty) {
+                final firstDomain = projectDomains[0];
+                if (firstDomain is Map<String, dynamic>) {
+                  domainName = firstDomain['name']?.toString();
+                  print('🔵 [SEMICON] Found domain from project data: $domainName');
+                }
+              }
+            } else {
+              print('🔵 [SEMICON] Project not found in projects list');
+            }
+          } catch (e) {
+            print('❌ [SEMICON] Error loading domain from project data: $e');
+          }
+          
+          // If not found in project data, try EDA files
+          if (domainName == null || domainName.isEmpty) {
+            try {
+              print('🔵 [SEMICON] Trying to get domain from EDA files...');
+              final filesResponse = await _apiService.getEdaFiles(
+                token: token,
+                projectName: projectName,
+                limit: 100, // Increased to find domain from EDA files
+              );
+              final files = filesResponse['files'] ?? [];
+              print('🔵 [SEMICON] Found ${files.length} EDA files');
+              if (files.isNotEmpty) {
+                // Get all unique domains from files
+                final domainSet = <String>{};
+                for (var file in files) {
+                  final fileDomain = file['domain_name']?.toString();
+                  if (fileDomain != null && fileDomain.isNotEmpty) {
+                    domainSet.add(fileDomain);
+                  }
+                }
+                print('🔵 [SEMICON] Unique domains from EDA files: $domainSet');
+                // Use first domain found
+                if (domainSet.isNotEmpty) {
+                  domainName = domainSet.first;
+                  print('🔵 [SEMICON] Selected domain from EDA files: $domainName');
+                }
+              }
+            } catch (e) {
+              print('❌ [SEMICON] Error loading domain from EDA files: $e');
+            }
           }
         }
       } catch (e) {
         // Ignore domain loading errors - domain is optional
+        print('❌ [SEMICON] Error loading domain: $e');
       }
+      
+      print('🔵 [SEMICON] Final domain to pass: $domainName');
+      print('🔵 [SEMICON] Project name: $projectName');
+      print('🔵 [SEMICON] Domain name: $domainName');
 
       // Determine view type based on user role
       final userRole = ref.read(authProvider).user?['role'];
       final viewType = userRole == 'customer' ? 'customer' : 'engineer';
+      print('🔵 [SEMICON] View type: $viewType');
 
       // Store data in localStorage for the new window
       final viewData = {
@@ -1156,8 +1229,8 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   Widget _buildCommandConsole() {
     return Container(
       height: 600,
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Theme.of(context).dividerColor),
       ),
@@ -1169,29 +1242,29 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             decoration: BoxDecoration(
               border: Border(
                 bottom: BorderSide(color: Theme.of(context).dividerColor),
-              ),
-            ),
+          ),
+        ),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.terminal,
-                      size: 18,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.terminal,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
                       'Command Console',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).colorScheme.onSurface,
-                      ),
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
-                  ],
-                ),
+                  ),
+                ],
+              ),
                 Row(
                   children: [
                     if (_currentRunDirectory != null && 
@@ -1230,22 +1303,22 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                         ),
                       ),
                     if (_chatMessages.isNotEmpty)
-                      TextButton.icon(
+                TextButton.icon(
                         icon: const Icon(Icons.delete_outline, size: 16),
-                        label: const Text('Clear'),
-                        onPressed: () {
-                          setState(() {
+                  label: const Text('Clear'),
+                  onPressed: () {
+                    setState(() {
                             _chatMessages.clear();
-                          });
-                        },
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                      ),
-                  ],
+                    });
+                  },
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
                 ),
+            ],
+          ),
               ],
             ),
           ),
@@ -1255,31 +1328,31 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                 ? Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
+                children: [
                         Icon(
                           Icons.chat_bubble_outline,
                           size: 48,
                           color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3),
                         ),
                         const SizedBox(height: 12),
-                        Text(
+                  Text(
                           'No commands executed yet',
-                          style: TextStyle(
+                    style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w500,
                             color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                          ),
-                        ),
+                    ),
+                  ),
                         const SizedBox(height: 4),
                         Text(
                           'Enter a command below to get started',
-                          style: TextStyle(
+                      style: TextStyle(
                             fontSize: 12,
                             color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-                          ),
-                        ),
-                      ],
-                    ),
+          ),
+        ),
+      ],
+              ),
                   )
                 : ListView.builder(
                     controller: _chatScrollController,
@@ -1297,15 +1370,15 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                           children: [
                             // User message (command)
                             if (isUser)
-                              Container(
+            Container(
                                 constraints: BoxConstraints(
                                   maxWidth: MediaQuery.of(context).size.width * 0.35,
                                 ),
                                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                                decoration: BoxDecoration(
+              decoration: BoxDecoration(
                                   color: Theme.of(context).colorScheme.primary,
                                   borderRadius: BorderRadius.circular(12),
-                                ),
+              ),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
@@ -1314,7 +1387,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                                         Icon(
                                           Icons.person,
                                           size: 14,
-                                          color: Colors.white,
+                    color: Colors.white,
                                         ),
                                         const SizedBox(width: 6),
                                         Text(
@@ -1323,9 +1396,9 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                                             fontSize: 11,
                                             fontWeight: FontWeight.w600,
                                             color: Colors.white.withOpacity(0.9),
-                                          ),
-                                        ),
-                                      ],
+              ),
+            ),
+          ],
                                     ),
                                     const SizedBox(height: 6),
                                     SelectableText(
@@ -1333,22 +1406,22 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                                       style: const TextStyle(
                                         fontSize: 13,
                                         color: Colors.white,
-                                        fontFamily: 'monospace',
-                                      ),
-                                    ),
+                    fontFamily: 'monospace',
+              ),
+            ),
                                     if (message['directory'] != null && message['directory'].toString().isNotEmpty) ...[
                                       const SizedBox(height: 4),
                                       Text(
                                         'in: ${message['directory']}',
-                                        style: TextStyle(
+                style: TextStyle(
                                           fontSize: 10,
                                           color: Colors.white.withOpacity(0.8),
                                           fontFamily: 'monospace',
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
+              ),
+            ),
+          ],
+        ],
+      ),
                               ),
                             // Assistant message (output)
                             if (!isUser)
@@ -1357,17 +1430,17 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                                   maxWidth: MediaQuery.of(context).size.width * 0.35,
                                 ),
                                 padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
+      decoration: BoxDecoration(
                                   color: isExecuting
                                       ? Theme.of(context).scaffoldBackgroundColor
                                       : message['hasError'] == true
                                           ? Colors.red.shade50
                                           : Colors.grey.shade900,
-                                  borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(12),
                                   border: message['hasError'] == true
                                       ? Border.all(color: Colors.red.shade300, width: 1)
                                       : null,
-                                ),
+        ),
                                 child: isExecuting
                                     ? Row(
                                         mainAxisSize: MainAxisSize.min,
@@ -1387,15 +1460,15 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                                               fontSize: 12,
                                               color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
                                             ),
-                                          ),
-                                        ],
+          ),
+        ],
                                       )
                                     : Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            children: [
-                                              Icon(
+      crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+              Row(
+                children: [
+                  Icon(
                                                 message['hasError'] == true
                                                     ? Icons.error_outline
                                                     : Icons.terminal,
@@ -1403,60 +1476,60 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                                                 color: message['hasError'] == true
                                                     ? Colors.red.shade700
                                                     : Colors.green.shade400,
-                                              ),
+                  ),
                                               const SizedBox(width: 6),
-                                              Text(
+            Text(
                                                 message['hasError'] == true ? 'Error' : 'Output',
-                                                style: TextStyle(
+              style: TextStyle(
                                                   fontSize: 11,
-                                                  fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w600,
                                                   color: message['hasError'] == true
                                                       ? Colors.red.shade700
                                                       : Colors.green.shade400,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
+                    ),
+                  ),
+                ],
+              ),
                                           if (message['output'] != null && message['output'].toString().isNotEmpty) ...[
                                             const SizedBox(height: 8),
                                             SelectableText(
                                               message['output'],
-                                              style: TextStyle(
-                                                fontSize: 12,
+                  style: TextStyle(
+                    fontSize: 12,
                                                 color: message['hasError'] == true
                                                     ? Colors.red.shade900
                                                     : Colors.white,
                                                 fontFamily: 'monospace',
-                                              ),
-                                            ),
-                                          ],
+                ),
+            ),
+          ],
                                           if (message['error'] != null && message['error'].toString().isNotEmpty) ...[
                                             const SizedBox(height: 8),
                                             SelectableText(
                                               message['error'],
-                                              style: TextStyle(
+                          style: TextStyle(
                                                 fontSize: 12,
                                                 color: Colors.red.shade900,
                                                 fontFamily: 'monospace',
-                                                fontWeight: FontWeight.w500,
-                                              ),
-                                            ),
+                            fontWeight: FontWeight.w500,
+                          ),
+                      ),
                                           ],
                                           if ((message['output'] == null || message['output'].toString().isEmpty) &&
                                               (message['error'] == null || message['error'].toString().isEmpty) &&
                                               message['hasError'] != true) ...[
-                                            const SizedBox(height: 4),
-                                            Text(
+                      const SizedBox(height: 4),
+                      Text(
                                               'Command executed successfully (no output)',
-                                              style: TextStyle(
-                                                fontSize: 12,
+                        style: TextStyle(
+                          fontSize: 12,
                                                 color: Colors.grey.shade400,
                                                 fontStyle: FontStyle.italic,
-                                              ),
-                                            ),
+                        ),
+                      ),
                                           ],
-                                        ],
-                                      ),
+                    ],
+                  ),
                               ),
                           ],
                         ),
@@ -1467,15 +1540,15 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
           // Input area (ChatGPT-like)
           Container(
             padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
+                        decoration: BoxDecoration(
               border: Border(
                 top: BorderSide(color: Theme.of(context).dividerColor),
-              ),
-            ),
+                          ),
+                        ),
             child: Column(
-              children: [
-                Container(
-                  decoration: BoxDecoration(
+                        children: [
+                            Container(
+                              decoration: BoxDecoration(
                     color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.5),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Theme.of(context).dividerColor),
@@ -1536,32 +1609,32 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                 const SizedBox(height: 8),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
+                                children: [
+                                  Text(
                       '${_commandController.text.length}/500',
-                      style: TextStyle(
+                              style: TextStyle(
                         fontSize: 11,
                         color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
-                      ),
-                    ),
+                                    ),
+                                  ),
                     if (_currentRunDirectory != null && 
                         _selectedBlock != 'Select a block' && 
                         _selectedExperiment != 'Select an experiment')
-                      Text(
+                                  Text(
                         'Working directory: ${_currentRunDirectory!.length > 50 ? '...${_currentRunDirectory!.substring(_currentRunDirectory!.length - 50)}' : _currentRunDirectory!}',
-                        style: TextStyle(
+                                    style: TextStyle(
                           fontSize: 10,
                           color: Theme.of(context).colorScheme.primary,
                           fontFamily: 'monospace',
-                        ),
+                                    ),
                         overflow: TextOverflow.ellipsis,
-                      ),
-                  ],
+                                  ),
+                                ],
+                          ),
+                        ],
                 ),
-              ],
-            ),
-          ),
-        ],
+        ),
+      ],
       ),
     );
   }
@@ -2187,7 +2260,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
               'error': stderr,
               'hasError': hasError,
               'exitCode': exitCode,
-              'timestamp': DateTime.now(),
+            'timestamp': DateTime.now(),
             };
           }
         });
