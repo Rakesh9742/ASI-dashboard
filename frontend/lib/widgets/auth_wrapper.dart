@@ -6,6 +6,8 @@ import '../screens/login_screen.dart';
 import '../screens/main_navigation_screen.dart';
 import '../screens/standalone_project_screen.dart';
 import '../screens/standalone_view_screen.dart';
+import '../screens/terminal_screen.dart';
+import '../screens/vnc_screen.dart';
 
 class AuthWrapper extends ConsumerWidget {
   const AuthWrapper({super.key});
@@ -18,10 +20,22 @@ class AuthWrapper extends ConsumerWidget {
     final url = html.window.location.href;
     final isStandaloneProject = url.contains('#/project');
     final isStandaloneView = url.contains('#/view');
+    final isTerminal = url.contains('#/terminal');
+    final isVnc = url.contains('#/vnc');
 
     // Show login if not authenticated
     if (!authState.isAuthenticated) {
       return const LoginScreen();
+    }
+    
+    // If terminal window, show terminal screen
+    if (isTerminal) {
+      return const TerminalScreen();
+    }
+    
+    // If VNC window, show VNC screen
+    if (isVnc) {
+      return const VncScreen();
     }
     
     // If standalone project window, show project screen

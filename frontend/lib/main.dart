@@ -5,6 +5,8 @@ import 'widgets/auth_wrapper.dart';
 import 'screens/standalone_project_screen.dart';
 import 'screens/standalone_view_screen.dart';
 import 'screens/qms_dashboard_screen.dart';
+import 'screens/terminal_screen.dart';
+import 'screens/vnc_screen.dart';
 import 'providers/theme_provider.dart';
 
 void main() {
@@ -132,6 +134,16 @@ class MyApp extends ConsumerWidget {
           } catch (e) {
             // Ignore errors
           }
+        }
+        if (settings.name == '/terminal' || settings.name?.contains('/terminal') == true) {
+          return MaterialPageRoute(
+            builder: (context) => const TerminalScreen(),
+          );
+        }
+        if (settings.name == '/vnc' || settings.name?.contains('/vnc') == true) {
+          return MaterialPageRoute(
+            builder: (context) => const VncScreen(),
+          );
         }
         return null;
       },

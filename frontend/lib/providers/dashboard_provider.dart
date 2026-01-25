@@ -64,6 +64,22 @@ class DashboardNotifier extends StateNotifier<AsyncValue<Map<String, dynamic>>> 
       // Calculate Project Stats
       final totalProjects = projects.length;
       
+      // Calculate project status counts (running, completed, failed)
+      int running = 0;
+      int completed = 0;
+      int failed = 0;
+      
+      for (var project in projects) {
+        final status = (project['status'] ?? '').toString().toUpperCase();
+        if (status == 'RUNNING') {
+          running++;
+        } else if (status == 'COMPLETED') {
+          completed++;
+        } else if (status == 'FAILED') {
+          failed++;
+        }
+      }
+      
       // Calculate Domain Stats - count unique active domains (normalize to handle typos)
       final uniqueDomains = <String>{};
       final domainDebugList = <String>[];
@@ -94,7 +110,9 @@ class DashboardNotifier extends StateNotifier<AsyncValue<Map<String, dynamic>>> 
       final stats = {
         'projects': {
           'total': totalProjects,
-          'active': totalProjects, // Placeholder
+          'running': running,
+          'completed': completed,
+          'failed': failed,
           'list': projects, // Pass the full list for displaying Recent Projects
         },
         'domains': {

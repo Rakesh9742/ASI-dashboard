@@ -46,6 +46,12 @@ interface PortalsCacheEntry {
   timestamp: number;
 }
 
+interface ProjectsCacheEntry {
+  projects: ZohoProject[];
+  portalId?: string;
+  timestamp: number;
+}
+
 class ZohoService {
   private clientId: string;
   private clientSecret: string;
@@ -55,6 +61,9 @@ class ZohoService {
   // Cache for portals data to reduce API calls (TTL: 10 minutes)
   private portalsCache: Map<number, PortalsCacheEntry> = new Map();
   private readonly PORTALS_CACHE_TTL = 10 * 60 * 1000; // 10 minutes in milliseconds
+  // Cache for projects data to reduce API calls (TTL: 5 minutes)
+  private projectsCache: Map<string, ProjectsCacheEntry> = new Map(); // key: userId_portalId
+  private readonly PROJECTS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds
 
   constructor() {
     this.clientId = process.env.ZOHO_CLIENT_ID || '';
@@ -721,9 +730,54 @@ class ZohoService {
   }
 
   /**
-   * Get all projects from Zoho Projects
+   * Clear projects cache for a specific user or all users
    */
-  async getProjects(userId: number, portalId?: string): Promise<ZohoProject[]> {
+  clearProjectsCache(userId?: number, portalId?: string): void {
+    if (userId) {
+      const cacheKey = portalId ? `${userId}_${portalId}` : `${userId}_default`;
+      this.projectsCache.delete(cacheKey);
+      // Also clear all caches for this user (different portals)
+      const keysToDelete: string[] = [];
+      this.projectsCache.forEach((_, key) => {
+        if (key.startsWith(`${userId}_`)) {
+          keysToDelete.push(key);
+        }
+      });
+      keysToDelete.forEach(key => this.projectsCache.delete(key));
+      console.log(`[Cache Cleared] Cleared projects cache for user ${userId}`);
+    } else {
+      this.projectsCache.clear();
+      console.log(`[Cache Cleared] Cleared all projects cache`);
+    }
+  }
+
+  /**
+   * Get all projects from Zoho Projects
+   * Uses caching to reduce API calls and prevent rate limiting
+   */
+  async getProjects(userId: number, portalId?: string, forceRefresh: boolean = false): Promise<ZohoProject[]> {
+    // Check cache first (unless force refresh is requested)
+    const cacheKey = portalId ? `${userId}_${portalId}` : `${userId}_default`;
+    if (!forceRefresh) {
+      const cached = this.projectsCache.get(cacheKey);
+      if (cached) {
+        const age = Date.now() - cached.timestamp;
+        if (age < this.PROJECTS_CACHE_TTL) {
+          // If portalId was requested but cache has different portal, still use cache if it's recent
+          if (!portalId || !cached.portalId || cached.portalId === portalId) {
+            console.log(`[Cache Hit] Returning cached projects for user ${userId} (age: ${Math.round(age / 1000)}s)`);
+            return cached.projects;
+          }
+        } else {
+          // Cache expired, remove it
+          console.log(`[Cache Expired] Removing expired cache for user ${userId}`);
+          this.projectsCache.delete(cacheKey);
+        }
+      }
+    } else {
+      console.log(`[Cache Bypass] Force refresh requested for user ${userId}`);
+    }
+
     try {
       const client = await this.getAuthenticatedClient(userId);
       
@@ -737,6 +791,7 @@ class ZohoService {
         portal = portals[0].id;
       }
 
+      console.log(`[API Call] Fetching projects from Zoho API for user ${userId}, portal ${portal}`);
       // Use singular "portal" not plural "portals" - based on Zoho API format
       const response = await client.get(`/restapi/portal/${portal}/projects/`);
 
@@ -751,8 +806,43 @@ class ZohoService {
         projects = response.data;
       }
 
+      // Cache the result
+      this.projectsCache.set(cacheKey, {
+        projects,
+        portalId: portal,
+        timestamp: Date.now()
+      });
+      console.log(`[Cache Updated] Cached projects for user ${userId} (${projects.length} projects)`);
+
       return projects;
     } catch (error: any) {
+      // Check if this is a rate limit error
+      const isRateLimitError = error.response?.data?.error?.title === 'URL_ROLLING_THROTTLES_LIMIT_EXCEEDED' ||
+                               error.response?.status === 429 ||
+                               (error.response?.data?.error?.details?.message?.includes('100 requests per API in 2 minutes'));
+
+      // If API call fails but we have cached data, return cached data as fallback
+      const cached = this.projectsCache.get(cacheKey);
+      if (cached && !forceRefresh) {
+        const age = Date.now() - cached.timestamp;
+        // Use stale cache if it's less than 30 minutes old
+        if (age < 30 * 60 * 1000) {
+          console.log(`[Cache Fallback] API call failed, returning stale cache for user ${userId} (age: ${Math.round(age / 1000)}s)`);
+          return cached.projects;
+        }
+      }
+
+      // If rate limit error and no cache, return empty array gracefully instead of throwing
+      if (isRateLimitError) {
+        const waitTime = error.response?.data?.error?.details?.message?.match(/after (\d+) minutes?/)?.[1] || 'unknown';
+        console.warn(`[Rate Limit] Zoho API rate limit exceeded for user ${userId}. Try again after ${waitTime} minutes.`);
+        if (cached) {
+          console.warn(`[Rate Limit] Returning cached data as fallback.`);
+          return cached.projects;
+        }
+        return []; // Return empty array instead of throwing error
+      }
+
       console.error('Error fetching projects:', error.response?.data || error.message);
       throw new Error(`Failed to fetch projects: ${error.response?.data?.error?.message || error.message}`);
     }

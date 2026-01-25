@@ -130,20 +130,14 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       final token = authState.token;
       final userRole = authState.user?['role'];
       
-      // Check Zoho status and load projects with Zoho support
-      bool isZohoConnected = false;
-      try {
-        final zohoStatus = await _apiService.getZohoStatus(token: token);
-        isZohoConnected = zohoStatus['connected'] ?? false;
-      } catch (e) {
-        // Zoho not connected, continue without it
-      }
-      
-      // Load projects with Zoho option if connected
+      // Load projects with Zoho option - backend will check if Zoho is connected
+      // This avoids an extra API call to check Zoho status
       Map<String, dynamic> projectsData;
-      if (isZohoConnected) {
+      try {
+        // Try to load with Zoho first - backend handles gracefully if not connected
         projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
-      } else {
+      } catch (e) {
+        // If Zoho fails, fallback to regular projects
         final projects = await _apiService.getProjects(token: token);
         projectsData = {'all': projects, 'local': projects, 'zoho': []};
       }

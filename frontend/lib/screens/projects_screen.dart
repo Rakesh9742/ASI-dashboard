@@ -56,64 +56,33 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       });
 
       final token = ref.read(authProvider).token;
-      final userRole = ref.read(authProvider).user?['role'];
       if (token == null) {
         throw Exception('No authentication token');
       }
 
-      // For customers, use regular getProjects API which filters by user_projects
-      // For others, try Zoho first, fallback to regular projects
-      if (userRole == 'customer') {
-        // Customers should use the regular projects API (filters by user_projects)
-        final projectsResponse = await _apiService.getProjects(token: token);
-        if (mounted) {
-          setState(() {
-            // Handle both array and object response formats
-            if (projectsResponse is List) {
-              _projects = List<Map<String, dynamic>>.from(projectsResponse);
-            } else {
-              // Try to get from map structure
-              final projectsMap = projectsResponse as dynamic;
-              final allProjects = projectsMap['all'] ?? projectsMap['local'] ?? [];
-              if (allProjects is List) {
-                _projects = List<Map<String, dynamic>>.from(allProjects);
-              } else {
-                _projects = [];
-              }
-            }
-            _isLoading = false;
-          });
-        }
-      } else {
-        // For non-customers, try Zoho first
-        try {
-          final response = await _apiService.getZohoProjects(token: token);
-          if (mounted) {
-            setState(() {
-              _projects = List<Map<String, dynamic>>.from(response['projects'] ?? []);
-              _isLoading = false;
-            });
+      // Use getProjectsWithZoho which handles Zoho connection check in backend
+      // This avoids unnecessary frontend API calls and lets backend optimize
+      Map<String, dynamic> projectsData;
+      try {
+        // Try with Zoho first - backend will gracefully handle if not connected
+        projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
+      } catch (e) {
+        // If that fails, fallback to regular projects
+        final projects = await _apiService.getProjects(token: token);
+        projectsData = {'all': projects, 'local': projects, 'zoho': []};
+      }
+      
+      if (mounted) {
+        setState(() {
+          // Handle both array and object response formats
+          final allProjects = projectsData['all'] ?? projectsData['local'] ?? [];
+          if (allProjects is List) {
+            _projects = List<Map<String, dynamic>>.from(allProjects);
+          } else {
+            _projects = [];
           }
-        } catch (zohoError) {
-          // Fallback to regular projects API if Zoho fails
-          final projectsResponse = await _apiService.getProjects(token: token);
-          if (mounted) {
-            setState(() {
-              if (projectsResponse is List) {
-                _projects = List<Map<String, dynamic>>.from(projectsResponse);
-              } else {
-                final projectsMap = projectsResponse as dynamic;
-                final allProjects = projectsMap['all'] ?? projectsMap['local'] ?? [];
-                if (allProjects is List) {
-                  _projects = List<Map<String, dynamic>>.from(allProjects);
-                } else {
-                  _projects = [];
-                }
-              }
-              _isLoading = false;
-            });
-          }
-        }
+          _isLoading = false;
+        });
       }
     } catch (e) {
       if (mounted) {
@@ -149,7 +118,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     int failed = 0;
 
     for (var project in _projects) {
-      final status = (project['status'] ?? '').toString().toUpperCase();
+      final status = _getProjectStatus(project);
       if (status == 'RUNNING') {
         running++;
       } else if (status == 'COMPLETED') {
@@ -387,7 +356,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
   String _getProjectStatus(Map<String, dynamic> project) {
     final status = (project['status'] ?? '').toString().toUpperCase();
     
-    // Check if project is exported to Linux - if so, show as RUNNING
+    // Check if project is exported to Linux - ONLY show RUNNING if exported
     // Handle both boolean true and string "true" values
     final exportedValue = project['exported_to_linux'];
     final isExported = exportedValue == true || 
@@ -398,13 +367,13 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       return 'RUNNING';
     }
     
-    if (status == 'RUNNING' || status == 'IN_PROGRESS') {
-      return 'RUNNING';
-    } else if (status == 'COMPLETED' || status == 'COMPLETE') {
+    // If not exported, show other statuses or default to IDLE
+    if (status == 'COMPLETED' || status == 'COMPLETE') {
       return 'COMPLETED';
     } else if (status == 'FAILED' || status == 'ERROR') {
       return 'FAILED';
     }
+    // Default to IDLE for all other cases (including RUNNING/IN_PROGRESS if not exported)
     return 'IDLE';
   }
 
@@ -1065,10 +1034,11 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
               width: 1,
             ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
               // Header with Icon and Status Badge
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1384,6 +1354,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                 ],
               ),
             ],
+            ),
           ),
         ),
       ),

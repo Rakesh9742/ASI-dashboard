@@ -12,6 +12,7 @@ import zohoRoutes from './routes/zoho.routes';
 import edaFilesRoutes from './routes/edaFiles.routes';
 import sshRoutes from './routes/ssh.routes';
 import terminalRoutes, { initializeTerminalWebSocket } from './routes/terminal.routes';
+import vncRoutes, { initializeVncWebSocket } from './routes/vnc.routes';
 import qmsRoutes from './routes/qms.routes';
 import fileWatcherService from './services/fileWatcher.service';
 import { authenticate } from './middleware/auth.middleware';
@@ -153,6 +154,7 @@ app.use('/api/zoho', zohoRoutes);
 app.use('/api/eda-files', edaFilesRoutes);
 app.use('/api/ssh', sshRoutes);
 app.use('/api/terminal', terminalRoutes);
+app.use('/api/vnc', vncRoutes);
 app.use('/api/qms', qmsRoutes);
 
 // Error handling middleware
@@ -166,6 +168,9 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 
 // Initialize WebSocket server for terminal
 initializeTerminalWebSocket(server);
+
+// Initialize WebSocket server for VNC
+initializeVncWebSocket(server);
 
 // Start server
 server.listen(PORT, async () => {

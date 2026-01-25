@@ -224,10 +224,12 @@ class DashboardScreen extends ConsumerWidget {
   }
 
   Widget _buildStatRow(BuildContext context, Map<String, dynamic> stats, {required bool isMobile}) {
-    final projectStats = stats['projects'] ?? {'total': 0, 'active': 0};
-    final domainStats = stats['domains'] ?? {'total': 0};
-    final engineerStats = stats['engineers'] ?? {'total': 0};
-    // final designsStats = stats['designs'] ?? {'total': 0};
+    final projectStats = stats['projects'] ?? {
+      'total': 0,
+      'running': 0,
+      'completed': 0,
+      'failed': 0,
+    };
 
     final children = [
       Expanded(
@@ -243,9 +245,9 @@ class DashboardScreen extends ConsumerWidget {
       Expanded(
         flex: isMobile ? 0 : 1,
         child: StatCard(
-          title: 'Total Engineers', // Or Users
-          value: engineerStats['total'].toString(),
-          icon: Icons.people,
+          title: 'Running',
+          value: (projectStats['running'] ?? 0).toString(),
+          icon: Icons.play_circle_outline,
           color: Colors.orange,
         ),
       ),
@@ -253,20 +255,20 @@ class DashboardScreen extends ConsumerWidget {
       Expanded(
         flex: isMobile ? 0 : 1,
         child: StatCard(
-          title: 'Total Domains',
-          value: domainStats['total'].toString(),
-          icon: Icons.category,
-          color: Colors.purple,
+          title: 'Completed',
+          value: (projectStats['completed'] ?? 0).toString(),
+          icon: Icons.check_circle_outline,
+          color: Colors.green,
         ),
       ),
       SizedBox(width: isMobile ? 0 : 16, height: isMobile ? 16 : 0),
       Expanded(
         flex: isMobile ? 0 : 1,
         child: StatCard(
-          title: 'Active Projects',
-          value: projectStats['active'].toString(),
-          icon: Icons.rocket_launch,
-          color: Colors.green,
+          title: 'Failed',
+          value: (projectStats['failed'] ?? 0).toString(),
+          icon: Icons.error_outline,
+          color: Colors.red,
         ),
       ),
     ];

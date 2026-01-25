@@ -657,6 +657,53 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       }
     }
   }
+
+  Future<void> _openVncInNewWindow() async {
+    try {
+      final token = ref.read(authProvider).token;
+      final user = ref.read(authProvider).user;
+      
+      if (token == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Not authenticated. Please login again.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      // Store auth data in localStorage for the new window
+      html.window.localStorage['vnc_auth_token'] = token;
+      if (user != null) {
+        html.window.localStorage['vnc_auth_user'] = jsonEncode(user);
+      }
+      
+      // Get current URL and construct new window URL
+      final currentUrl = html.window.location.href;
+      final baseUrl = currentUrl.split('?')[0].split('#')[0];
+      
+      // Open new window with VNC route
+      String newWindowUrl = '$baseUrl#/vnc';
+      
+      html.window.open(
+        newWindowUrl,
+        'vnc',
+        'width=1400,height=900,scrollbars=no,resizable=yes',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to open VNC viewer: $e'),
+            backgroundColor: Colors.red.shade600,
+          ),
+        );
+      }
+    }
+  }
   
   Future<void> _openViewScreenInNewWindow() async {
     try {

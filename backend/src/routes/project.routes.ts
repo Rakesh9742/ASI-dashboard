@@ -178,7 +178,7 @@ router.get('/', authenticate, async (req, res) => {
       }
     }
 
-    // Get local projects with run directory info for the current user
+    // Get local projects with run directory info and latest run status for the current user
     const result = await pool.query(
       `
         SELECT 
@@ -214,7 +214,16 @@ router.get('/', authenticate, async (req, res) => {
               r.last_updated DESC NULLS LAST, 
               r.created_at DESC
             LIMIT 1
-          ) as user_run_directory` : 'NULL as user_run_directory'}
+          ) as user_run_directory` : 'NULL as user_run_directory'},
+          (
+            SELECT s.run_status
+            FROM stages s
+            INNER JOIN runs r ON s.run_id = r.id
+            INNER JOIN blocks b ON r.block_id = b.id
+            WHERE b.project_id = p.id
+            ORDER BY s.timestamp DESC
+            LIMIT 1
+          ) as latest_run_status
         FROM projects p
         ${joinClause}
         LEFT JOIN project_domains pd ON pd.project_id = p.id
@@ -226,13 +235,28 @@ router.get('/', authenticate, async (req, res) => {
       userUsername ? [...queryParams, userUsername] : queryParams
     );
 
-    // Check mapping status for local projects
+    // Check mapping status for local projects and derive status from latest run
     const localProjects = await Promise.all(
       result.rows.map(async (p: any) => {
         const isMapped = await checkProjectMapping(p.name);
+        
+        // Derive status from latest run status
+        let projectStatus = 'RUNNING'; // Default to RUNNING
+        if (p.latest_run_status) {
+          const statusLower = p.latest_run_status.toLowerCase();
+          if (statusLower === 'pass' || statusLower === 'completed' || statusLower === 'done') {
+            projectStatus = 'COMPLETED';
+          } else if (statusLower === 'fail' || statusLower === 'failed' || statusLower === 'error') {
+            projectStatus = 'FAILED';
+          } else if (statusLower === 'running' || statusLower === 'in progress' || statusLower === 'active') {
+            projectStatus = 'RUNNING';
+          }
+        }
+        
         return {
           ...p,
           source: 'local',
+          status: projectStatus, // Add normalized status
           is_mapped: isMapped,
           run_directory: p.user_run_directory || null // Include run directory for the user
         };
@@ -250,11 +274,26 @@ router.get('/', authenticate, async (req, res) => {
         
         if (hasToken) {
           const { portalId } = req.query;
-          const zohoProjects = await zohoService.getProjects(
-            userId,
-            portalId as string | undefined
-          );
           
+          // OPTIMIZATION: Fetch portals and projects in parallel if portalId is not provided
+          let currentPortalId = portalId as string | undefined;
+          let zohoProjects: any[];
+          
+          if (!currentPortalId) {
+            // Fetch portals and projects in parallel
+            const [portals, projects] = await Promise.all([
+              zohoService.getPortals(userId),
+              zohoService.getProjects(userId, undefined)
+            ]);
+            
+            if (portals.length > 0) {
+              currentPortalId = portals[0].id;
+            }
+            zohoProjects = projects;
+          } else {
+            // Portal ID provided, just fetch projects
+            zohoProjects = await zohoService.getProjects(userId, currentPortalId);
+          }
           console.log(`🔵 Found ${zohoProjects.length} Zoho projects, now checking run directories...`);
 
           // Filter Zoho projects based on user role
@@ -268,232 +307,233 @@ router.get('/', authenticate, async (req, res) => {
             // For now, Zoho API returns projects the user has access to, so we keep all
             console.log(`Filtering Zoho projects for ${userRole} role: ${zohoProjects.length} projects available`);
           }
-
-          // Check mapping status for Zoho projects (show all, but indicate mapping status)
-          // Also get linked ASI project ID from zoho_projects_mapping table
-          // Get portal ID to include in project data
-          let currentPortalId = portalId as string | undefined;
-          if (!currentPortalId) {
-            const portals = await zohoService.getPortals(userId);
-            if (portals.length > 0) {
-              currentPortalId = portals[0].id;
-            }
-          }
           
-          const formattedZohoProjects = await Promise.all(
-            filteredZohoProjects.map(async (zp: any) => {
-              const isMapped = await checkProjectMapping(zp.name);
-              
-              // Get linked ASI project ID from zoho_projects_mapping table
-              let asiProjectId: number | null = null;
-              try {
-                const mappingResult = await pool.query(
-                  'SELECT local_project_id FROM zoho_projects_mapping WHERE zoho_project_id = $1',
-                  [zp.id]
-                );
-                if (mappingResult.rows.length > 0 && mappingResult.rows[0].local_project_id) {
-                  asiProjectId = mappingResult.rows[0].local_project_id;
+          // OPTIMIZATION: Batch fetch all data at once instead of per-project queries
+          console.log(`🔵 Optimizing: Batch fetching data for ${filteredZohoProjects.length} projects...`);
+          
+          // Extract all project IDs and names for batch queries
+          const zohoProjectIds = filteredZohoProjects.map(zp => zp.id.toString());
+          const zohoProjectNames = filteredZohoProjects.map(zp => zp.name);
+          const zohoProjectNamesLower = zohoProjectNames.map(name => name.toLowerCase());
+          
+          // Batch 1: Check project mappings (which projects have EDA output)
+          const mappedProjectsSet = new Set<string>();
+          try {
+            if (zohoProjectNames.length > 0) {
+              const mappingCheckResult = await pool.query(
+                `SELECT DISTINCT LOWER(p.name) as name
+                 FROM projects p
+                 INNER JOIN blocks b ON b.project_id = p.id
+                 INNER JOIN runs r ON r.block_id = b.id
+                 INNER JOIN stages s ON s.run_id = r.id
+                 WHERE LOWER(p.name) = ANY($1)`,
+                [zohoProjectNamesLower]
+              );
+              mappingCheckResult.rows.forEach((row: any) => {
+                mappedProjectsSet.add(row.name);
+              });
                 }
               } catch (e) {
-                // If table doesn't exist or query fails, continue without ASI project ID
-                console.log('Could not get ASI project ID from mapping table:', e);
+            console.error('Error batch checking project mappings:', e);
+          }
+          
+          // Batch 2: Get all mappings from zoho_projects_mapping table
+          const projectMappings = new Map<string, number>(); // zoho_project_id -> asi_project_id
+          try {
+            if (zohoProjectIds.length > 0) {
+              const mappingResult = await pool.query(
+                'SELECT zoho_project_id, local_project_id FROM zoho_projects_mapping WHERE zoho_project_id = ANY($1)',
+                [zohoProjectIds]
+              );
+              mappingResult.rows.forEach((row: any) => {
+                if (row.local_project_id) {
+                  projectMappings.set(row.zoho_project_id, row.local_project_id);
+                }
+              });
+                  }
+                } catch (e) {
+            console.log('Could not batch fetch ASI project IDs from mapping table:', e);
+          }
+          
+          // Batch 3: Get ASI project IDs by name for mapped projects without explicit mapping
+          const nameToProjectId = new Map<string, number>(); // project_name_lower -> asi_project_id
+          try {
+            const unmappedNames = zohoProjectNamesLower.filter(name => 
+              mappedProjectsSet.has(name) && !Array.from(projectMappings.values()).some(asiId => {
+                // Check if this name is already mapped via zoho_projects_mapping
+                return Array.from(projectMappings.entries()).some(([zohoId, asiId]) => {
+                  const zp = filteredZohoProjects.find(p => p.id.toString() === zohoId);
+                  return zp && zp.name.toLowerCase() === name;
+                });
+              })
+            );
+            
+            if (unmappedNames.length > 0) {
+              const nameMatchResult = await pool.query(
+                'SELECT id, LOWER(name) as name_lower FROM projects WHERE LOWER(name) = ANY($1)',
+                [unmappedNames]
+              );
+              nameMatchResult.rows.forEach((row: any) => {
+                nameToProjectId.set(row.name_lower, row.id);
+              });
+                  }
+                } catch (e) {
+            console.log('Could not batch find ASI projects by name:', e);
+          }
+          
+          // Batch 4: Get all run directories for mapped projects (from runs table)
+          const mappedProjectRunDirs = new Map<number, string>(); // asi_project_id -> run_directory
+          try {
+            const mappedAsiProjectIds = Array.from(new Set(Array.from(projectMappings.values()).concat(
+              Array.from(nameToProjectId.values())
+            )));
+            
+            if (mappedAsiProjectIds.length > 0 && userUsername) {
+              const runDirResult = await pool.query(
+                `SELECT DISTINCT ON (b.project_id) b.project_id, r.run_directory
+                 FROM runs r
+                 INNER JOIN blocks b ON r.block_id = b.id
+                 WHERE b.project_id = ANY($1) 
+                   AND (r.user_name = $2 OR r.user_name LIKE $2 || '%' OR r.user_name LIKE '%' || $2)
+                 ORDER BY b.project_id, r.last_updated DESC NULLS LAST, r.created_at DESC`,
+                [mappedAsiProjectIds, userUsername]
+              );
+              runDirResult.rows.forEach((row: any) => {
+                if (row.run_directory) {
+                  mappedProjectRunDirs.set(row.project_id, row.run_directory);
+                }
+              });
+            }
+          } catch (e) {
+            console.log('Could not batch fetch run directories from runs table:', e);
+          }
+          
+          // Batch 5: Get all run directories from zoho_project_run_directories table
+          const zohoProjectRunDirs = new Map<string, { directory: string; directories: string[] }>(); // zoho_project_id -> { directory, directories }
+          try {
+            if (zohoProjectIds.length > 0 && userId) {
+              const zohoRunDirResult = await pool.query(
+                `SELECT run_directory, zoho_project_id, zoho_project_name, block_name, experiment_name, user_id, updated_at, created_at
+                       FROM zoho_project_run_directories 
+                 WHERE (zoho_project_id = ANY($1) OR LOWER(zoho_project_name) = ANY($2))
+                   AND user_id = $3
+                 ORDER BY zoho_project_id, updated_at DESC, created_at DESC`,
+                [zohoProjectIds, zohoProjectNamesLower, userId]
+              );
+              
+              // Group by project
+              const projectRunDirsMap = new Map<string, any[]>();
+              zohoRunDirResult.rows.forEach((row: any) => {
+                const key = row.zoho_project_id || row.zoho_project_name?.toLowerCase();
+                if (key) {
+                  if (!projectRunDirsMap.has(key)) {
+                    projectRunDirsMap.set(key, []);
+                  }
+                  projectRunDirsMap.get(key)!.push(row);
+                }
+              });
+              
+              projectRunDirsMap.forEach((rows, key) => {
+                const directories = rows
+                  .filter((row: any) => row.run_directory)
+                  .map((row: any) => row.run_directory);
+                if (directories.length > 0) {
+                  zohoProjectRunDirs.set(key, {
+                    directory: directories[0],
+                    directories: directories
+                  });
+                }
+              });
+                  }
+                } catch (e) {
+            console.log('Could not batch fetch run directories from zoho_project_run_directories table:', e);
               }
+
+          // Batch 6: Get all export statuses
+          const exportStatuses = new Map<string, boolean>(); // zoho_project_id -> exportedToLinux
+              try {
+            if (zohoProjectIds.length > 0) {
+                const exportResult = await pool.query(
+                `SELECT DISTINCT ON (zoho_project_id) zoho_project_id, exported_to_linux
+                 FROM zoho_project_exports 
+                 WHERE zoho_project_id = ANY($1)
+                   AND (portal_id = $2 OR portal_id IS NULL) 
+                 ORDER BY zoho_project_id, 
+                     CASE WHEN portal_id = $2 THEN 1 ELSE 2 END,
+                   portal_id DESC NULLS LAST, exported_at DESC`,
+                [zohoProjectIds, currentPortalId]
+              );
+              exportResult.rows.forEach((row: any) => {
+                exportStatuses.set(row.zoho_project_id, row.exported_to_linux === true);
+              });
+              
+              // For projects without portal-specific export, check for any export
+              const projectsWithoutExport = zohoProjectIds.filter(id => !exportStatuses.has(id));
+              if (projectsWithoutExport.length > 0) {
+                  const exportResultNoPortal = await pool.query(
+                  `SELECT DISTINCT ON (zoho_project_id) zoho_project_id, exported_to_linux
+                   FROM zoho_project_exports 
+                   WHERE zoho_project_id = ANY($1)
+                   ORDER BY zoho_project_id, exported_at DESC`,
+                  [projectsWithoutExport]
+                );
+                exportResultNoPortal.rows.forEach((row: any) => {
+                  if (!exportStatuses.has(row.zoho_project_id)) {
+                    exportStatuses.set(row.zoho_project_id, row.exported_to_linux === true);
+                  }
+                });
+                  }
+                }
+              } catch (e) {
+            console.log('Could not batch fetch export statuses:', e);
+          }
+          
+          console.log(`🔵 Batch fetch complete. Processing ${filteredZohoProjects.length} projects...`);
+          
+          // Now process each project using the batched data
+          const formattedZohoProjects = filteredZohoProjects.map((zp: any) => {
+              const projectNameLower = zp.name.toLowerCase();
+              const isMapped = mappedProjectsSet.has(projectNameLower);
+              
+              // Get linked ASI project ID from batched data
+              let asiProjectId: number | null = projectMappings.get(zp.id.toString()) || null;
               
               // If no mapping found but project is mapped, try to find ASI project by name
               if (isMapped && asiProjectId == null) {
-                try {
-                  const nameMatchResult = await pool.query(
-                    'SELECT id FROM projects WHERE LOWER(name) = LOWER($1) LIMIT 1',
-                    [zp.name]
-                  );
-                  if (nameMatchResult.rows.length > 0) {
-                    asiProjectId = nameMatchResult.rows[0].id;
-                  }
-                } catch (e) {
-                  console.log('Could not find ASI project by name:', e);
-                }
+                asiProjectId = nameToProjectId.get(projectNameLower) || null;
               }
               
-              // Get run directory for this Zoho project
-              // First check mapped local project, then check unmapped Zoho project table
+              // Get run directory from batched data
               let zohoRunDirectory: string | null = null;
-              let zohoRunDirectories: string[] = []; // Store all run directories for this project and user
+              let zohoRunDirectories: string[] = [];
               
               // Check mapped local project first
-              if (asiProjectId && userUsername) {
-                try {
-                  // Try exact match first
-                  let runDirResult = await pool.query(
-                    `SELECT r.run_directory 
-                     FROM runs r
-                     INNER JOIN blocks b ON r.block_id = b.id
-                     WHERE b.project_id = $1 AND r.user_name = $2
-                     ORDER BY r.last_updated DESC NULLS LAST, r.created_at DESC
-                     LIMIT 1`,
-                    [asiProjectId, userUsername]
-                  );
-                  
-                  // If not found, try with LIKE pattern (for username variations like "rakesh" vs "rakesh.p_zoho")
-                  if (runDirResult.rows.length === 0 || !runDirResult.rows[0].run_directory) {
-                    runDirResult = await pool.query(
-                      `SELECT r.run_directory 
-                       FROM runs r
-                       INNER JOIN blocks b ON r.block_id = b.id
-                       WHERE b.project_id = $1 AND (r.user_name = $2 OR r.user_name LIKE $2 || '%' OR r.user_name LIKE '%' || $2)
-                       ORDER BY r.last_updated DESC NULLS LAST, r.created_at DESC
-                       LIMIT 1`,
-                      [asiProjectId, userUsername]
-                    );
-                  }
-                  
-                  if (runDirResult.rows.length > 0 && runDirResult.rows[0].run_directory) {
-                    zohoRunDirectory = runDirResult.rows[0].run_directory;
-                  }
-                } catch (e) {
-                  // If query fails, continue to check unmapped table
+              if (asiProjectId && mappedProjectRunDirs.has(asiProjectId)) {
+                zohoRunDirectory = mappedProjectRunDirs.get(asiProjectId)!;
+                zohoRunDirectories = [zohoRunDirectory];
+              } else {
+                // Check unmapped Zoho project table
+                const projectKey = zp.id.toString();
+                const runDirData = zohoProjectRunDirs.get(projectKey) || 
+                                 zohoProjectRunDirs.get(projectNameLower);
+                if (runDirData) {
+                  zohoRunDirectory = runDirData.directory;
+                  zohoRunDirectories = runDirData.directories;
                 }
               }
               
-              // If not found in mapped project, check unmapped Zoho project table
-              // Get ALL run directories for this project and user (not just the latest)
-              // IMPORTANT: Query by user_id first (logged-in user's ID), not username
-              if (!zohoRunDirectory) {
-                try {
-                  console.log(`\n🔵 ========== CHECKING RUN DIRECTORY FOR ZOHO PROJECT ==========`);
-                  console.log(`🔵 Project: ${zp.name} (ID: ${zp.id})`);
-                  console.log(`🔵 Logged-in user_id: ${userId}, username: ${userUsername}`);
-                  
-                  // First try: Query by user_id (logged-in user's ID) - this is the most reliable
-                  // IMPORTANT: Only show run directories for the logged-in user (by user_id), not by username
-                  // Get ALL run directories, not just the latest one
-                  if (userId) {
-                    console.log(`   🔍 Querying by logged-in user_id: ${userId} for project ${zp.id} (${zp.name})`);
-                    
-                    let zohoRunDirResult = await pool.query(
-                      `SELECT run_directory, user_name, zoho_project_id, zoho_project_name, block_name, experiment_name, user_id, updated_at, created_at
-                       FROM zoho_project_run_directories 
-                       WHERE (zoho_project_id = $1 OR LOWER(zoho_project_name) = LOWER($2))
-                         AND user_id = $3
-                       ORDER BY updated_at DESC, created_at DESC`,
-                      [zp.id.toString(), zp.name, userId]
-                    );
-                    
-                    console.log(`   📊 Query result: Found ${zohoRunDirResult.rows.length} records for logged-in user_id ${userId}`);
-                    if (zohoRunDirResult.rows.length > 0) {
-                      // Get all run directories
-                      zohoRunDirectories = zohoRunDirResult.rows
-                        .filter(row => row.run_directory)
-                        .map(row => row.run_directory);
-                      
-                      // Use the latest one for backward compatibility
-                      zohoRunDirectory = zohoRunDirectories[0] || null;
-                      
-                      console.log(`   📝 All run directories for user_id ${userId}:`);
-                      zohoRunDirResult.rows.forEach((row, idx) => {
-                        console.log(`      ${idx + 1}. ${row.run_directory} (block: ${row.block_name}, experiment: ${row.experiment_name}, updated: ${row.updated_at})`);
-                      });
-                      
-                      console.log(`✅ ✅ ✅ FOUND ${zohoRunDirectories.length} run directory(ies) by logged-in user_id ${userId} for Zoho project ${zp.id} (${zp.name})`);
-                    } else {
-                      console.log(`   ❌ No run directory found for logged-in user_id ${userId} in project ${zp.id} (${zp.name})`);
-                    }
-                  } else {
-                    console.log(`   ⚠️ No user_id available, cannot query by user_id`);
-                  }
-                  
-                  // Second try: Query by username if user_id didn't work
-                  if (!zohoRunDirectory && userUsername) {
-                    let zohoRunDirResult = await pool.query(
-                      `SELECT run_directory, user_name, zoho_project_id, zoho_project_name, block_name, experiment_name
-                       FROM zoho_project_run_directories 
-                       WHERE (zoho_project_id = $1 OR LOWER(zoho_project_name) = LOWER($2))
-                         AND user_name = $3
-                       ORDER BY updated_at DESC, created_at DESC
-                       LIMIT 1`,
-                      [zp.id.toString(), zp.name, userUsername]
-                    );
-                    
-                    // If not found, try with LIKE pattern for username variations
-                    if (zohoRunDirResult.rows.length === 0 || !zohoRunDirResult.rows[0].run_directory) {
-                      zohoRunDirResult = await pool.query(
-                        `SELECT run_directory, user_name, zoho_project_id, zoho_project_name, block_name, experiment_name
-                         FROM zoho_project_run_directories 
-                         WHERE (zoho_project_id = $1 OR LOWER(zoho_project_name) = LOWER($2))
-                           AND (user_name = $3 OR user_name LIKE $3 || '%' OR user_name LIKE '%' || $3)
-                         ORDER BY 
-                           CASE 
-                             WHEN user_name = $3 THEN 1
-                             WHEN user_name LIKE $3 || '%' THEN 2
-                             ELSE 3
-                           END,
-                           updated_at DESC, created_at DESC
-                         LIMIT 1`,
-                        [zp.id.toString(), zp.name, userUsername]
-                      );
-                    }
-                    
-                    if (zohoRunDirResult.rows.length > 0 && zohoRunDirResult.rows[0].run_directory) {
-                      zohoRunDirectory = zohoRunDirResult.rows[0].run_directory;
-                      console.log(`✅ Found run directory by username for Zoho project ${zp.id} (${zp.name}), user ${userUsername}: ${zohoRunDirectory}`);
-                    }
-                  }
-                  
-                  // Debug: Show what's in the database for this project
-                  if (!zohoRunDirectory) {
-                    const debugResult = await pool.query(
-                      `SELECT zoho_project_id, zoho_project_name, user_id, user_name, block_name, experiment_name, run_directory, updated_at
-                       FROM zoho_project_run_directories 
-                       WHERE zoho_project_id = $1 OR LOWER(zoho_project_name) = LOWER($2)
-                       ORDER BY updated_at DESC
-                       LIMIT 10`,
-                      [zp.id.toString(), zp.name]
-                    );
-                    console.log(`   📊 Debug: Found ${debugResult.rows.length} total records for project ${zp.id} (${zp.name}):`);
-                    debugResult.rows.forEach((row: any, idx: number) => {
-                      console.log(`      ${idx + 1}. user_id: ${row.user_id}, user_name: ${row.user_name}, zoho_project_id: ${row.zoho_project_id}, block: ${row.block_name}, exp: ${row.experiment_name}, run_dir: ${row.run_directory?.substring(0, 60)}...`);
-                    });
-                    console.log(`   ⚠️ No run directory found for Zoho project ${zp.id} (${zp.name}), user_id ${userId}, user ${userUsername}`);
-                  }
-                } catch (e) {
-                  console.error(`❌ Error fetching run directory for Zoho project ${zp.id}:`, e);
-                  // If table doesn't exist or query fails, continue without run directory
-                }
-              }
-
-              // Check export status from zoho_project_exports table
-              // This should be visible to all users who have access to the project
-              let exportedToLinux = false;
-              try {
-                // Try with portal_id first, then without portal_id (for projects exported without portal_id)
-                const exportResult = await pool.query(
-                  `SELECT exported_to_linux FROM zoho_project_exports 
-                   WHERE zoho_project_id = $1 
-                   AND (portal_id = $2 OR portal_id IS NULL) 
-                   ORDER BY 
-                     CASE WHEN portal_id = $2 THEN 1 ELSE 2 END,
-                     portal_id DESC NULLS LAST 
-                   LIMIT 1`,
-                  [zp.id.toString(), currentPortalId]
-                );
-                if (exportResult.rows.length > 0) {
-                  exportedToLinux = exportResult.rows[0].exported_to_linux === true;
-                  console.log(`[Projects API] Found export status for project ${zp.id} (portal ${currentPortalId}): ${exportedToLinux}`);
-                } else {
-                  // Also try without portal_id constraint to catch exports that might not have portal_id set
-                  const exportResultNoPortal = await pool.query(
-                    'SELECT exported_to_linux FROM zoho_project_exports WHERE zoho_project_id = $1 ORDER BY exported_at DESC LIMIT 1',
-                    [zp.id.toString()]
-                  );
-                  if (exportResultNoPortal.rows.length > 0) {
-                    exportedToLinux = exportResultNoPortal.rows[0].exported_to_linux === true;
-                    console.log(`[Projects API] Found export status for project ${zp.id} (no portal match): ${exportedToLinux}`);
-                  } else {
-                    console.log(`[Projects API] No export record found for project ${zp.id} (portal ${currentPortalId})`);
-                  }
-                }
-              } catch (e) {
-                // If table doesn't exist or query fails, continue without export status
-                console.log('Could not get export status from zoho_project_exports table:', e);
+              // Get export status from batched data
+              const exportedToLinux = exportStatuses.get(zp.id.toString()) || false;
+              
+              // Map Zoho status to standard status format
+              let projectStatus = 'RUNNING'; // Default to RUNNING
+              const zohoStatus = (zp.status || zp.custom_status_name || '').toLowerCase();
+              if (zohoStatus.includes('completed') || zohoStatus.includes('closed') || zohoStatus.includes('done')) {
+                projectStatus = 'COMPLETED';
+              } else if (zohoStatus.includes('failed') || zohoStatus.includes('cancelled') || zohoStatus.includes('error')) {
+                projectStatus = 'FAILED';
+              } else if (zohoStatus.includes('running') || zohoStatus.includes('in progress') || zohoStatus.includes('active') || zohoStatus.includes('open')) {
+                projectStatus = 'RUNNING';
               }
               
               return {
@@ -508,6 +548,7 @@ router.get('/', authenticate, async (req, res) => {
                 updated_at: zp.created_time || null,
                 domains: [],
                 source: 'zoho',
+                status: projectStatus, // Add normalized status
                 zoho_project_id: zp.id,
                 zoho_data: {
                   ...zp,
@@ -521,8 +562,7 @@ router.get('/', authenticate, async (req, res) => {
                 run_directory: zohoRunDirectory, // Latest run directory (for backward compatibility)
                 run_directories: zohoRunDirectories // All run directories for the logged-in user
               };
-            })
-          );
+          });
 
           console.log(`Showing ${formattedZohoProjects.length} Zoho projects for ${userRole} (mapping status included)`);
 
