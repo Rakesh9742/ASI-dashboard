@@ -1244,17 +1244,18 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
               constraints: const BoxConstraints(maxHeight: 200),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.red.shade900.withOpacity(0.3),
+                color: Colors.red.shade50,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.red.shade700),
+                border: Border.all(color: Colors.red.shade400, width: 2),
               ),
               child: SingleChildScrollView(
                 child: SelectableText(
                   _lastCommandError!,
                   style: TextStyle(
                     fontSize: 12,
-                    color: Colors.red.shade200,
+                    color: Colors.red.shade900,
                     fontFamily: 'monospace',
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ),
