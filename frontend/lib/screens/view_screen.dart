@@ -33,6 +33,50 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   // Data structure: project -> block -> rtl_tag -> experiment -> stages
   Map<String, dynamic> _groupedData = {};
   
+  /// Normalize domain name to handle case variations and abbreviations
+  /// Returns uppercase abbreviation (PD, DV, RTL, DFT, AL) for consistency
+  String _normalizeDomainName(String domain) {
+    if (domain.isEmpty) return domain;
+    
+    final lower = domain.trim().toLowerCase();
+    
+    // Map to standard abbreviations
+    if (lower == 'pd' || lower == 'physical design' || lower.contains('physical') && lower.contains('design')) {
+      return 'PD';
+    } else if (lower == 'dv' || lower == 'design verification' || (lower.contains('design') && lower.contains('verification'))) {
+      return 'DV';
+    } else if (lower == 'rtl' || lower == 'register transfer level' || lower.contains('rtl')) {
+      return 'RTL';
+    } else if (lower == 'dft' || lower == 'design for testability' || (lower.contains('testability') || lower.contains('dft'))) {
+      return 'DFT';
+    } else if (lower == 'al' || lower == 'analog layout' || (lower.contains('analog') && lower.contains('layout'))) {
+      return 'AL';
+    }
+    
+    // If no match, return uppercase version
+    return domain.trim().toUpperCase();
+  }
+  
+  /// Convert domain abbreviation to full name for backend queries
+  /// Backend stores full lowercase names like "physical design", "design verification"
+  String _domainToFullName(String domain) {
+    final normalized = _normalizeDomainName(domain);
+    switch (normalized) {
+      case 'PD':
+        return 'physical design';
+      case 'DV':
+        return 'design verification';
+      case 'RTL':
+        return 'register transfer level';
+      case 'DFT':
+        return 'design for testability';
+      case 'AL':
+        return 'analog layout';
+      default:
+        return domain.toLowerCase();
+    }
+  }
+  
   // Selection state
   String? _selectedProject;
   String? _selectedDomain;
@@ -297,14 +341,18 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       
       // Load EDA files with backend filtering by project and domain
       // This reduces data transfer and improves performance
+      // Convert domain abbreviation to full name for backend query
+      final domainForQuery = _selectedDomain != null ? _domainToFullName(_selectedDomain!) : null;
       final filesResponse = await _apiService.getEdaFiles(
         token: token,
         projectName: _selectedProject,
-        domainName: _selectedDomain,
+        domainName: domainForQuery, // Use full name for backend query
         limit: 500, // Reduced from 1000 for faster initial load
       );
       
       final files = filesResponse['files'] ?? [];
+      
+      print('🔵 [VIEW_SCREEN] Loaded ${files.length} files for project: $_selectedProject, domain: $_selectedDomain (query used: $domainForQuery)');
       
       // Files are already filtered by backend, no need to filter again
       final filteredFiles = files;
@@ -983,17 +1031,25 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       final domainSet = <String>{};
       
       // First, try to get domains from project data (project_domains table)
+      Map<String, dynamic>? matchingProject;
       try {
-        final projects = await _apiService.getProjects(token: token);
-        final matchingProject = projects.firstWhere(
+        // Use getProjectsWithZoho to get both local and Zoho projects
+        final projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
+        final allProjects = projectsData['all'] ?? [];
+        
+        matchingProject = allProjects.firstWhere(
           (p) => (p['name']?.toString() ?? '') == projectName,
           orElse: () => null,
         );
         
         if (matchingProject != null) {
-          // Check if project has domains array
+          // Check if it's a Zoho project
+          final isZohoProject = matchingProject['source'] == 'zoho' || 
+                                matchingProject['zoho_project_id'] != null;
+          
+          // Check if project has domains array (from project_domains table)
           final projectDomains = matchingProject['domains'];
-          if (projectDomains is List) {
+          if (projectDomains is List && projectDomains.isNotEmpty) {
             for (var domain in projectDomains) {
               if (domain is Map<String, dynamic>) {
                 final domainName = domain['name']?.toString();
@@ -1001,6 +1057,47 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                   domainSet.add(domainName);
                 }
               }
+            }
+          }
+          
+          // For Zoho projects, also try to get domains from Zoho tasklists
+          if (isZohoProject && domainSet.isEmpty) {
+            try {
+              final zohoProjectId = matchingProject['zoho_project_id']?.toString();
+              final zohoData = matchingProject['zoho_data'] as Map<String, dynamic>?;
+              final portalId = zohoData?['portal_id']?.toString() ?? 
+                              zohoData?['portal']?.toString();
+              
+              if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
+                print('🔵 [VIEW_SCREEN] Fetching domains from Zoho tasklists for project: $projectName');
+                final tasksResponse = await _apiService.getZohoTasks(
+                  projectId: zohoProjectId,
+                  token: token,
+                  portalId: portalId,
+                );
+                
+                final tasks = tasksResponse['tasks'] ?? [];
+                final tasklistNames = <String>{};
+                
+                for (final task in tasks) {
+                  final tasklistName = (task['tasklist_name'] ?? task['tasklistName'] ?? '').toString();
+                  if (tasklistName.isNotEmpty) {
+                    tasklistNames.add(tasklistName);
+                  }
+                }
+                
+                // Add tasklist names as domains (normalized to avoid duplicates)
+                for (final tasklistName in tasklistNames) {
+                  final normalized = _normalizeDomainName(tasklistName);
+                  if (normalized.isNotEmpty) {
+                    domainSet.add(normalized);
+                  }
+                }
+                
+                print('🔵 [VIEW_SCREEN] Found ${tasklistNames.length} domains from Zoho tasklists: $tasklistNames');
+              }
+            } catch (e) {
+              print('Error loading domains from Zoho tasklists: $e');
             }
           }
         }
@@ -1021,20 +1118,97 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           final projectNameFromFile = file['project_name']?.toString() ?? 'Unknown';
           final domainName = file['domain_name']?.toString() ?? '';
           if (projectNameFromFile == projectName && domainName.isNotEmpty) {
-            domainSet.add(domainName);
+            final normalized = _normalizeDomainName(domainName);
+            if (normalized.isNotEmpty) {
+              domainSet.add(normalized);
+            }
           }
         }
       } catch (e) {
         print('Error loading domains from EDA files: $e');
       }
       
+      // For Zoho projects, also extract domains from run_directory paths
+      // Run directory format: /CX_RUN_NEW/{project}/{domain}/users/{username}/{block}/{experiment}
+      if (matchingProject != null) {
+        try {
+          final isZohoProject = matchingProject['source'] == 'zoho' || 
+                                matchingProject['zoho_project_id'] != null;
+          
+          if (isZohoProject) {
+            // Try to get domains from run directories
+            final runDirectories = matchingProject['run_directories'] as List<dynamic>? ?? [];
+            if (runDirectories.isEmpty) {
+              final runDirectory = matchingProject['run_directory']?.toString();
+              if (runDirectory != null && runDirectory.isNotEmpty) {
+                runDirectories.add(runDirectory);
+              }
+            }
+            
+            // Extract domain from run directory paths
+            // Format: /CX_RUN_NEW/{project}/{domain}/users/...
+            for (var runDir in runDirectories) {
+              final runDirStr = runDir.toString();
+              // Match pattern: /CX_RUN_NEW/{project}/{domain}/
+              final match = RegExp(r'/CX_RUN_NEW/[^/]+/([^/]+)/').firstMatch(runDirStr);
+              if (match != null && match.groupCount >= 1) {
+                final domainFromPath = match.group(1);
+                if (domainFromPath != null && domainFromPath.isNotEmpty) {
+                  final normalized = _normalizeDomainName(domainFromPath);
+                  if (normalized.isNotEmpty) {
+                    domainSet.add(normalized);
+                  }
+                }
+              }
+            }
+            
+            // Also check if project is mapped to local project and get domains from there
+            // Need to fetch projects again to get local projects list
+            final asiProjectId = matchingProject['asi_project_id'];
+            if (asiProjectId != null) {
+              try {
+                final projectsDataForLocal = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
+                final localProjects = projectsDataForLocal['local'] ?? [];
+                final localProject = localProjects.firstWhere(
+                  (p) => p['id'] == asiProjectId,
+                  orElse: () => null,
+                );
+                
+                if (localProject != null) {
+                  final localProjectDomains = localProject['domains'];
+                  if (localProjectDomains is List) {
+                    for (var domain in localProjectDomains) {
+                      if (domain is Map<String, dynamic>) {
+                        final domainName = domain['name']?.toString();
+                        if (domainName != null && domainName.isNotEmpty) {
+                          final normalized = _normalizeDomainName(domainName);
+                          if (normalized.isNotEmpty) {
+                            domainSet.add(normalized);
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              } catch (e) {
+                print('Error loading domains from mapped local project: $e');
+              }
+            }
+          }
+        } catch (e) {
+          print('Error extracting domains from run directories: $e');
+        }
+      }
+      
       // If initialDomain is provided but not in the found domains, add it to the list
       // This ensures the domain dropdown shows the passed domain even if it's not in the database yet
       if (widget.initialDomain != null && 
-          widget.initialDomain!.isNotEmpty && 
-          !domainSet.contains(widget.initialDomain)) {
-        print('🔵 [VIEW_SCREEN] Initial domain ${widget.initialDomain} not found in available domains, adding it to list');
-        domainSet.add(widget.initialDomain!);
+          widget.initialDomain!.isNotEmpty) {
+        final normalizedInitial = _normalizeDomainName(widget.initialDomain!);
+        if (normalizedInitial.isNotEmpty && !domainSet.contains(normalizedInitial)) {
+          print('🔵 [VIEW_SCREEN] Initial domain ${widget.initialDomain} (normalized: $normalizedInitial) not found in available domains, adding it to list');
+          domainSet.add(normalizedInitial);
+        }
       }
       
       final availableDomains = domainSet.toList()..sort();
@@ -1048,33 +1222,22 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         _isLoadingDomains = false;
         
         // Auto-select domain if:
-        // 1. initialDomain is provided - try exact match first, then case-insensitive match
+        // 1. initialDomain is provided - normalize and match
         if (widget.initialDomain != null && widget.initialDomain!.isNotEmpty) {
-          print('🔵 [VIEW_SCREEN] Attempting to match initial domain: ${widget.initialDomain}');
-          // Try exact match first
-          if (availableDomains.contains(widget.initialDomain)) {
-            print('🔵 [VIEW_SCREEN] Exact match found for domain: ${widget.initialDomain}');
-            _selectedDomain = widget.initialDomain;
+          final normalizedInitial = _normalizeDomainName(widget.initialDomain!);
+          print('🔵 [VIEW_SCREEN] Attempting to match initial domain: ${widget.initialDomain} (normalized: $normalizedInitial)');
+          // Try normalized match (availableDomains are already normalized)
+          if (normalizedInitial.isNotEmpty && availableDomains.contains(normalizedInitial)) {
+            print('🔵 [VIEW_SCREEN] Match found for domain: $normalizedInitial');
+            _selectedDomain = normalizedInitial;
+            _loadInitialData();
+          } else if (availableDomains.isNotEmpty) {
+            // If no match found, use first available domain
+            print('🔵 [VIEW_SCREEN] No match found for ${widget.initialDomain}, using first available domain: ${availableDomains.first}');
+            _selectedDomain = availableDomains.first;
             _loadInitialData();
           } else {
-            // Try case-insensitive match
-            final lowerInitialDomain = widget.initialDomain!.toLowerCase();
-            final matchingDomain = availableDomains.firstWhere(
-              (d) => d.toLowerCase() == lowerInitialDomain,
-              orElse: () => '',
-            );
-            if (matchingDomain.isNotEmpty) {
-              print('🔵 [VIEW_SCREEN] Case-insensitive match found: $matchingDomain');
-              _selectedDomain = matchingDomain;
-              _loadInitialData();
-            } else if (availableDomains.isNotEmpty) {
-              // If no match found, use first available domain
-              print('🔵 [VIEW_SCREEN] No match found, using first available domain: ${availableDomains.first}');
-              _selectedDomain = availableDomains.first;
-              _loadInitialData();
-            } else {
-              print('⚠️ [VIEW_SCREEN] No domains available for project: $projectName');
-            }
+            print('⚠️ [VIEW_SCREEN] No domains available for project: $projectName');
           }
         } else if (availableDomains.length == 1) {
           // 2. Only one domain available

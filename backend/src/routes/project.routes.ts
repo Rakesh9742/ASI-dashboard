@@ -1,18 +1,18 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import { pool } from '../config/database';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import zohoService from '../services/zoho.service';
 
 const router = express.Router();
 
-// Shape helpers
+// Shape helpersF
 const fetchProjectWithDomains = async (projectId: number, client: any) => {
   const projectResult = await client.query(
     `
       SELECT 
         p.*,
         COALESCE(
-          json_agg(
+          json_agg(F
             json_build_object(
               'id', d.id,
               'name', d.name,
@@ -61,7 +61,7 @@ async function checkProjectMapping(projectName: string): Promise<boolean> {
 }
 
 // List projects with their domains (optionally include Zoho projects)
-router.get('/', authenticate, async (req, res) => {
+router.get('/', authenticate, async (req: Request, res: Response) => {
   try {
     const { includeZoho } = req.query;
     const userId = (req as any).user?.id;
@@ -630,7 +630,7 @@ router.get('/', authenticate, async (req, res) => {
 });
 
 // Delete project (admin only) - MUST come before GET /:id to avoid route conflicts
-router.delete('/:id', authenticate, authorize('admin'), async (req, res) => {
+router.delete('/:id', authenticate, authorize('admin'), async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
@@ -676,7 +676,7 @@ router.delete('/:id', authenticate, authorize('admin'), async (req, res) => {
 });
 
 // Get single project with domains
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', authenticate, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
@@ -719,7 +719,7 @@ router.post(
   '/',
   authenticate,
   authorize('admin', 'project_manager'),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const client = await pool.connect();
     try {
       const {
@@ -807,7 +807,7 @@ router.post(
 router.get(
   '/:projectId/blocks',
   authenticate,
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     try {
       const projectId = parseInt(req.params.projectId, 10);
       const userId = (req as any).user?.id;
@@ -876,7 +876,7 @@ router.get(
 router.get(
   '/:projectId/run-history',
   authenticate,
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     try {
       const projectId = parseInt(req.params.projectId, 10);
       const { blockName, experiment, limit = '20' } = req.query;
@@ -1023,7 +1023,7 @@ router.post(
   '/:projectId/sync-zoho-members',
   authenticate,
   authorize('admin', 'project_manager', 'lead'),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const projectId = parseInt(req.params.projectId, 10);
     const userId = (req as any).user?.id;
     const userRole = (req as any).user?.role;
@@ -1109,7 +1109,7 @@ router.post(
  * Get user's role for a specific project (project-specific role from user_projects, or global role)
  * projectIdentifier can be: project ID (number), project name, or Zoho project ID
  */
-router.get('/:projectIdentifier/user-role', authenticate, async (req, res) => {
+router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id;
     const { projectIdentifier } = req.params;
@@ -1320,7 +1320,7 @@ router.post(
   '/map-zoho-project',
   authenticate,
   authorize('admin', 'project_manager', 'lead'),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     try {
       const { zohoProjectId, asiProjectId, portalId, zohoProjectName, createIfNotExists } = req.body;
       const userId = (req as any).user?.id;
@@ -1421,7 +1421,7 @@ router.post(
  * Get project status overview for management view
  * Returns status for all projects with RTL, DV, PD, AL, DFT stages and milestone information
  */
-router.get('/management/status', authenticate, async (req, res) => {
+router.get('/management/status', authenticate, async (req: Request, res: Response) => {
   try {
     const userRole = (req as any).user?.role;
     const userId = (req as any).user?.id;
@@ -1532,7 +1532,7 @@ router.get('/management/status', authenticate, async (req, res) => {
  *  - Global role cad_engineer or admin, OR
  *  - Project-specific role cad_engineer in user_projects for this project
  */
-router.get('/:projectIdentifier/cad-status', authenticate, async (req, res) => {
+router.get('/:projectIdentifier/cad-status', authenticate, async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id;
     const globalRole = (req as any).user?.role;
@@ -1901,7 +1901,7 @@ function extractUsernameFromEmail(email: string | null | undefined): string | nu
 router.post(
   '/save-run-directory',
   authenticate,
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const client = await pool.connect();
     try {
       const { projectName, blockName, experimentName, runDirectory, zohoProjectId: providedZohoProjectId, username: sshUsername, domainCode } = req.body;
@@ -2239,7 +2239,7 @@ router.post(
 router.get(
   '/:projectIdOrName/blocks-experiments',
   authenticate,
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const client = await pool.connect();
     try {
       const projectIdOrName = req.params.projectIdOrName;
@@ -2449,7 +2449,9 @@ router.get(
     }
   }
 );
-
 export default router;
+
+
+
 
 

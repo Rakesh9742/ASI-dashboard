@@ -862,83 +862,29 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       }
 
       // Get first domain for the project (if available)
-      // Check both project domains and EDA files
+      // Use minimal limit since we only need one file to get domain name
       String? domainName;
       try {
         final token = ref.read(authProvider).token;
         if (token != null) {
-          print('🔵 [SEMICON] Loading domain for project: $projectName');
-          
-          // First, try to get domain from project data (project_domains table)
-          try {
-            final projects = await _apiService.getProjects(token: token);
-            final matchingProject = projects.firstWhere(
-              (p) => (p['name']?.toString() ?? '') == projectName,
-              orElse: () => null,
-            );
-            
-            if (matchingProject != null) {
-              final projectDomains = matchingProject['domains'];
-              print('🔵 [SEMICON] Project domains from API: $projectDomains');
-              if (projectDomains is List && projectDomains.isNotEmpty) {
-                final firstDomain = projectDomains[0];
-                if (firstDomain is Map<String, dynamic>) {
-                  domainName = firstDomain['name']?.toString();
-                  print('🔵 [SEMICON] Found domain from project data: $domainName');
-                }
-              }
-            } else {
-              print('🔵 [SEMICON] Project not found in projects list');
-            }
-          } catch (e) {
-            print('❌ [SEMICON] Error loading domain from project data: $e');
-          }
-          
-          // If not found in project data, try EDA files
-          if (domainName == null || domainName.isEmpty) {
-            try {
-              print('🔵 [SEMICON] Trying to get domain from EDA files...');
-              final filesResponse = await _apiService.getEdaFiles(
-                token: token,
-                projectName: projectName,
-                limit: 100, // Increased to find domain from EDA files
-              );
-              final files = filesResponse['files'] ?? [];
-              print('🔵 [SEMICON] Found ${files.length} EDA files');
-              if (files.isNotEmpty) {
-                // Get all unique domains from files
-                final domainSet = <String>{};
-                for (var file in files) {
-                  final fileDomain = file['domain_name']?.toString();
-                  if (fileDomain != null && fileDomain.isNotEmpty) {
-                    domainSet.add(fileDomain);
-                  }
-                }
-                print('🔵 [SEMICON] Unique domains from EDA files: $domainSet');
-                // Use first domain found
-                if (domainSet.isNotEmpty) {
-                  domainName = domainSet.first;
-                  print('🔵 [SEMICON] Selected domain from EDA files: $domainName');
-                }
-              }
-            } catch (e) {
-              print('❌ [SEMICON] Error loading domain from EDA files: $e');
-            }
+          final filesResponse = await _apiService.getEdaFiles(
+            token: token,
+            projectName: projectName,
+            limit: 10, // Reduced from 100 to 10 - we only need first file for domain name
+          );
+          final files = filesResponse['files'] ?? [];
+          if (files.isNotEmpty) {
+            final firstFile = files[0];
+            domainName = firstFile['domain_name']?.toString();
           }
         }
       } catch (e) {
         // Ignore domain loading errors - domain is optional
-        print('❌ [SEMICON] Error loading domain: $e');
       }
-      
-      print('🔵 [SEMICON] Final domain to pass: $domainName');
-      print('🔵 [SEMICON] Project name: $projectName');
-      print('🔵 [SEMICON] Domain name: $domainName');
 
       // Determine view type based on user role
       final userRole = ref.read(authProvider).user?['role'];
       final viewType = userRole == 'customer' ? 'customer' : 'engineer';
-      print('🔵 [SEMICON] View type: $viewType');
 
       // Store data in localStorage for the new window
       final viewData = {

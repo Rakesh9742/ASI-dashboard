@@ -811,7 +811,9 @@ class FileProcessorService {
         throw new Error('Project name is required');
       }
 
-      // 1. Find or create domain ID (if domain name is provided)
+      // 1. Find domain ID (if domain name is provided)
+      // IMPORTANT: EDA files should NOT create domains - domains are already created during CAD engineer setup
+      // Only find existing domains, do not create new ones
       let domainId: number | null = null;
       if (domainName) {
         // Normalize domain name: trim and handle typos
@@ -832,21 +834,10 @@ class FileProcessorService {
             // Use existing domain with similar name (case-insensitive match)
             domainId = similarDomainCheck.rows[0].id;
           } else {
-            // Create domain if it doesn't exist
-            // Generate a code from the domain name (uppercase, replace spaces with underscores)
-            const domainCode = normalizedDomainName.toUpperCase().replace(/\s+/g, '_').substring(0, 50);
-            try {
-              const domainResult = await client.query(
-                'INSERT INTO public.domains (name, code, description, is_active) VALUES ($1, $2, $3, $4) RETURNING id',
-                [normalizedDomainName, domainCode, `Domain: ${normalizedDomainName}`, true]
-              );
-              domainId = domainResult.rows[0].id;
-            } catch (error: any) {
-              // If domain already exists (unique constraint), try to find it again
-              if (error.code === '23505') { // Unique violation
-                domainId = await this.findDomainId(normalizedDomainName);
-              }
-            }
+            // Domain doesn't exist - log warning but continue (domain should have been created during setup)
+            console.log(`⚠️ [EDA UPLOAD] Domain "${domainName}" not found in database. Domain should have been created during CAD engineer setup. Continuing without domain_id.`);
+            // Do NOT create domain - it should already exist from setup
+            domainId = null;
           }
         }
       }
@@ -858,6 +849,11 @@ class FileProcessorService {
 
       // Check if this is a Zoho project by checking zoho_projects_mapping
       try {
+        console.log(`🔍 [EDA UPLOAD] Checking if project is Zoho project:`, {
+          project_name: projectName,
+          project_id: projectId
+        });
+        
         const zohoMappingResult = await client.query(
           'SELECT zoho_project_id FROM zoho_projects_mapping WHERE LOWER(zoho_project_name) = LOWER($1) OR local_project_id = $2',
           [projectName, projectId || 0]
@@ -866,6 +862,10 @@ class FileProcessorService {
         if (zohoMappingResult.rows.length > 0) {
           isZohoProject = true;
           zohoProjectId = zohoMappingResult.rows[0].zoho_project_id;
+          console.log(`✅ [EDA UPLOAD] Found Zoho project via mapping:`, {
+            zoho_project_id: zohoProjectId,
+            project_name: projectName
+          });
         } else if (!projectId) {
           // Project not found in local projects - check if it exists as Zoho project by name only
           // This handles unmapped Zoho projects
@@ -877,6 +877,12 @@ class FileProcessorService {
           if (zohoByNameResult.rows.length > 0) {
             isZohoProject = true;
             zohoProjectId = zohoByNameResult.rows[0].zoho_project_id;
+            console.log(`✅ [EDA UPLOAD] Found Zoho project via run_directories:`, {
+              zoho_project_id: zohoProjectId,
+              project_name: projectName
+            });
+          } else {
+            console.log(`ℹ️ [EDA UPLOAD] Project not found as Zoho project, treating as local project`);
           }
         }
       } catch (error: any) {
@@ -897,26 +903,19 @@ class FileProcessorService {
         throw new Error(`Project "${projectName}" not found and could not be created`);
       }
 
-      // 2.5. Link domain to project if domain exists (for dashboard domain distribution)
-      // Only for local projects (Zoho projects don't use project_domains)
-      if (domainId && projectId && !isZohoProject) {
-        try {
-          // Check if link already exists (project_domains uses composite primary key, no id column)
-          const linkCheck = await client.query(
-            'SELECT project_id, domain_id FROM public.project_domains WHERE project_id = $1 AND domain_id = $2',
-            [projectId, domainId]
-          );
-          
-          if (linkCheck.rows.length === 0) {
-            // Create link between project and domain (composite primary key handles conflicts)
-            await client.query(
-              'INSERT INTO public.project_domains (project_id, domain_id) VALUES ($1, $2) ON CONFLICT (project_id, domain_id) DO NOTHING',
-              [projectId, domainId]
-            );
-          }
-        } catch (error: any) {
-          // Skip linking if table doesn't exist (table will be created by migration)
-        }
+      // 2.5. Domain creation and linking is NOT done from EDA files
+      // IMPORTANT: 
+      // - Domains are already created during CAD engineer setup
+      // - Domains are already mapped to projects during CAD engineer setup
+      // - EDA files only extract domain_name for display purposes in the dashboard
+      // - When project name in DB matches incoming project name, we save all the data but:
+      //   * DO NOT create new domains (only find existing ones)
+      //   * DO NOT link/map domains to projects (already done during setup)
+      // - Domain creation and mapping should only happen during CAD engineer setup, not during EDA file upload
+      if (projectId && domainId) {
+        console.log(`ℹ️ [EDA UPLOAD] Project "${projectName}" exists (ID: ${projectId}), Domain found (ID: ${domainId}). Skipping domain creation and linking - already done during CAD engineer setup.`);
+      } else if (projectId && !domainId) {
+        console.log(`ℹ️ [EDA UPLOAD] Project "${projectName}" exists (ID: ${projectId}), but domain not found. Domain should have been created during CAD engineer setup. Continuing without domain_id.`);
       }
 
       // 3. Get block name from first row
@@ -987,20 +986,50 @@ class FileProcessorService {
       if (isZohoProject && zohoProjectId) {
         // Check zoho_project_run_directories for Zoho projects
         // Note: zoho_project_run_directories doesn't have rtl_tag, so we only match by block and experiment
+        // Ensure zoho_project_id is string (as stored in database)
+        const zohoProjectIdStr = zohoProjectId.toString();
+        
+        // Normalize experiment name (trim whitespace, same as setup does)
+        const normalizedExperiment = experiment.trim();
+        
+        console.log(`🔍 [EDA UPLOAD] Checking experiment in zoho_project_run_directories:`, {
+          zoho_project_id: zohoProjectIdStr,
+          block_name: blockName,
+          experiment_name: normalizedExperiment,
+          project_name: projectName
+        });
+        
         const zohoRunResult = await client.query(
-          `SELECT id, experiment_name, user_name, run_directory
+          `SELECT id, experiment_name, user_name, run_directory, zoho_project_name
            FROM zoho_project_run_directories 
-           WHERE zoho_project_id = $1 AND block_name = $2 AND experiment_name = $3`,
-          [zohoProjectId, blockName, experiment]
+           WHERE zoho_project_id = $1 AND block_name = $2 AND TRIM(experiment_name) = $3`,
+          [zohoProjectIdStr, blockName, normalizedExperiment]
         );
 
         if (zohoRunResult.rows.length === 0) {
+          // Try to find what experiments exist for debugging
+          const debugResult = await client.query(
+            `SELECT experiment_name, block_name, zoho_project_name 
+             FROM zoho_project_run_directories 
+             WHERE zoho_project_id = $1 AND block_name = $2`,
+            [zohoProjectIdStr, blockName]
+          );
+          
+          console.log(`⚠️ [EDA UPLOAD] Experiment not found. Available experiments for block "${blockName}":`, 
+            debugResult.rows.map(r => r.experiment_name));
+          
           // Experiment does not exist in Zoho project setup
           throw new Error(
             `Experiment "${experiment}" does not exist for block "${blockName}" in Zoho project "${projectName}". ` +
             `Please run the setup command first with: setup -proj ${projectName} -domain <domain> -block ${blockName} -exp ${experiment}`
           );
         }
+        
+        console.log(`✅ [EDA UPLOAD] Found experiment in zoho_project_run_directories:`, {
+          id: zohoRunResult.rows[0].id,
+          experiment_name: zohoRunResult.rows[0].experiment_name,
+          user_name: zohoRunResult.rows[0].user_name
+        });
         
         // For Zoho projects, rtl_tag from EDA file is allowed even if setup didn't specify it
         // The EDA file's rtl_tag will be used when creating the local run record

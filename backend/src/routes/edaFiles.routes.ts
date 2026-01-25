@@ -308,8 +308,47 @@ router.get('/', authenticate, async (req, res) => {
 
     if (domain_name) {
       paramCount++;
-      query += ` AND LOWER(d.name) LIKE LOWER($${paramCount})`;
-      params.push(`%${domain_name}%`);
+      // For Zoho projects, domain might not be linked in project_domains
+      // So we also check run_directory path: /CX_RUN_NEW/{project}/{domain}/...
+      // Match domain name in d.name OR extract from run_directory path
+      const domainNameStr = Array.isArray(domain_name) ? domain_name[0] : domain_name;
+      const domainNameLower = String(domainNameStr).toLowerCase().trim();
+      console.log(`🔍 [EDA_FILES] Filtering by domain: "${domainNameStr}" (normalized: "${domainNameLower}")`);
+      // Map domain name to domain codes that appear in run_directory paths
+      // Run directory format: /CX_RUN_NEW/{project}/{domain_code}/users/...
+      // Domain codes are typically: pd, dv, rtl, dft, al (lowercase in paths)
+      let domainCodes: string[] = [];
+      if (domainNameLower === 'pd' || domainNameLower.includes('physical')) {
+        domainCodes = ['pd', 'physical.?design'];
+      } else if (domainNameLower === 'dv' || (domainNameLower.includes('design') && domainNameLower.includes('verification'))) {
+        domainCodes = ['dv', 'design.?verification'];
+      } else if (domainNameLower === 'rtl' || domainNameLower.includes('register')) {
+        domainCodes = ['rtl', 'register.?transfer'];
+      } else if (domainNameLower === 'dft' || domainNameLower.includes('testability')) {
+        domainCodes = ['dft', 'design.?for.?testability'];
+      } else if (domainNameLower === 'al' || (domainNameLower.includes('analog') && domainNameLower.includes('layout'))) {
+        domainCodes = ['al', 'analog.?layout'];
+      } else {
+        // Use the domain name as-is (might be a code or full name)
+        domainCodes = [domainNameLower];
+      }
+      
+      // Build regex pattern to match any of the domain codes
+      const domainPattern = domainCodes.join('|');
+      
+      // Check both domain name from project_domains AND run_directory path
+      // This handles both cases: linked domains and Zoho projects without domain linking
+      query += ` AND (
+        LOWER(d.name) LIKE LOWER($${paramCount}) OR
+        (r.run_directory IS NOT NULL AND r.run_directory ~* $${paramCount + 1})
+      )`;
+      params.push(`%${domainNameStr}%`);
+      // Pattern to match domain in run_directory: /CX_RUN_NEW/{project}/{domain_code}/
+      // Match case-insensitively: /CX_RUN_NEW/{project}/pd/ or /CX_RUN_NEW/{project}/dv/ etc.
+      const runDirPattern = `(?i)/CX_RUN_NEW/[^/]+/(${domainPattern})/`;
+      params.push(runDirPattern);
+      console.log(`🔍 [EDA_FILES] Domain filter - checking d.name LIKE "%${domainNameStr}%" OR run_directory ~* "${runDirPattern}"`);
+      paramCount++; // Increment for the second parameter
     }
 
     if (project_id) {
