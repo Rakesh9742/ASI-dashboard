@@ -491,20 +491,15 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         // Get effective role (project-specific if available, otherwise global)
         final effectiveRole = snapshot.hasData ? snapshot.data!['effectiveRole'] : userRole;
         
-        // Check if user is CAD engineer or admin (global or project-specific)
-        // CAD engineers and admins should see Export to Linux button
+        // Check if user is CAD engineer (global or project-specific)
+        // Only CAD engineers should see Export to Linux button
         final isCadEngineerForProject = effectiveRole == 'cad_engineer' || 
-                                        effectiveRole == 'admin' ||
-                                        userRole == 'cad_engineer' || 
-                                        userRole == 'admin';
+                                        userRole == 'cad_engineer';
         
-        // Check if user is regular engineer (not CAD engineer, not admin)
-        // Setup button is only for regular engineers
-        final isEngineerForProject = (effectiveRole == 'engineer' || userRole == 'engineer') && 
-            effectiveRole != 'cad_engineer' &&
-            effectiveRole != 'admin' &&
-            userRole != 'cad_engineer' &&
-            userRole != 'admin';
+        // Check if user is NOT a CAD engineer
+        // Setup button is for all roles except CAD engineer (admin, manager, engineer, etc.)
+        final isEngineerForProject = effectiveRole != 'cad_engineer' && 
+                                     userRole != 'cad_engineer';
         
         // Check export status from project data (from API) - handle both boolean and string values
         final exportedValue = project['exported_to_linux'];
