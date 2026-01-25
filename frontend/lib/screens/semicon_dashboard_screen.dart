@@ -2487,13 +2487,12 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             Expanded(
               child: _buildDevCard(
                 title: 'GUI',
-                description: 'Open graphical design viewer in new tab',
+                description: 'Open remote desktop (VNC) viewer',
                 icon: Icons.desktop_windows,
                 iconColor: Colors.green,
-                buttonText: 'Opens in new tab',
+                buttonText: 'Click to open',
                 onPressed: () {
-                  // TODO: Open GUI viewer
-                  _openViewScreenInNewWindow();
+                  _openVncInNewWindow();
                 },
               ),
             ),

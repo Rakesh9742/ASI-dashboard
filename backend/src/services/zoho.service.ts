@@ -1466,14 +1466,19 @@ class ZohoService {
 
     const roleLower = zohoProjectRole.toLowerCase().trim();
     
-    // Admin roles in Zoho Project
+    // Admin roles in Zoho Project - These roles should have full admin access matching DB admin role
+    // Note: Check AFTER project_manager to avoid conflicts (project manager is more specific)
     const adminKeywords = [
-      'admin', 'administrator', 'owner', 'project owner'
+      'admin', 'administrator', 'owner', 'project owner',
+      'director', 'head', 'ceo', 'cto', 'cfo', 'vp', 'vice president',
+      'president', 'founder', 'principal', 'executive', 'exec', 'chief',
+      'manager' // General manager (not project manager - checked first)
     ];
     
-    // Project Manager roles
+    // Project Manager roles - Check FIRST (more specific than general manager/admin)
     const projectManagerKeywords = [
-      'manager', 'project manager', 'pm', 'program manager'
+      'project manager', 'pm', 'program manager', 'product manager',
+      'delivery manager', 'project lead', 'project coordinator'
     ];
     
     // Lead roles
@@ -1496,12 +1501,14 @@ class ZohoService {
       'customer', 'client', 'stakeholder', 'viewer', 'read-only'
     ];
 
-    if (adminKeywords.some(keyword => roleLower.includes(keyword))) {
-      return 'admin';
-    }
-    
+    // Check for project manager roles FIRST (more specific than general manager/admin)
     if (projectManagerKeywords.some(keyword => roleLower.includes(keyword))) {
       return 'project_manager';
+    }
+    
+    // Check for admin roles (after project_manager to avoid conflicts)
+    if (adminKeywords.some(keyword => roleLower.includes(keyword))) {
+      return 'admin';
     }
     
     if (leadKeywords.some(keyword => roleLower.includes(keyword))) {

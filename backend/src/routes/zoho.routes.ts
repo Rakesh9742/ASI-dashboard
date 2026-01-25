@@ -17,20 +17,23 @@ function mapZohoRoleToAppRole(designation: string | undefined): string {
   
   console.log(`Mapping Zoho designation: "${designation}" (normalized: "${designationLower}")`);
 
-  // Admin/Management roles
+  // Admin/Management roles - These roles should have full admin access matching DB admin role
+  // Note: Check AFTER project_manager to avoid conflicts (project manager is more specific)
   const adminKeywords = [
-    'admin', 'administrator', 'manager', 'director', 'head', 'lead', 
+    'admin', 'administrator', 'director', 'head of', 'head',
     'ceo', 'cto', 'cfo', 'vp', 'vice president', 'president',
-    'founder', 'owner', 'principal', 'senior manager', 'general manager'
+    'founder', 'owner', 'principal', 'senior manager', 'general manager',
+    'executive', 'exec', 'chief', 'head of department', 'department head',
+    'manager' // General manager (not project manager - checked first)
   ];
   
-  // Project Manager roles
+  // Project Manager roles - Check FIRST (more specific than general manager)
   const projectManagerKeywords = [
     'project manager', 'pm', 'program manager', 'product manager',
     'delivery manager', 'project lead', 'project coordinator'
   ];
   
-  // Lead roles (senior technical)
+  // Lead roles (senior technical) - Check after admin to avoid conflicts
   const leadKeywords = [
     'tech lead', 'technical lead', 'team lead', 'senior lead',
     'engineering lead', 'development lead', 'architect', 'senior architect',
@@ -48,16 +51,16 @@ function mapZohoRoleToAppRole(designation: string | undefined): string {
     'customer', 'client', 'stakeholder', 'external'
   ];
 
-  // Check for admin roles
-  if (adminKeywords.some(keyword => designationLower.includes(keyword))) {
-    console.log(`Mapped "${designation}" to role: admin`);
-    return 'admin';
-  }
-  
-  // Check for project manager roles
+  // Check for project manager roles FIRST (more specific than general manager/admin)
   if (projectManagerKeywords.some(keyword => designationLower.includes(keyword))) {
     console.log(`Mapped "${designation}" to role: project_manager`);
     return 'project_manager';
+  }
+  
+  // Check for admin roles (after project_manager to avoid conflicts)
+  if (adminKeywords.some(keyword => designationLower.includes(keyword))) {
+    console.log(`Mapped "${designation}" to role: admin`);
+    return 'admin';
   }
   
   // Check for lead roles
