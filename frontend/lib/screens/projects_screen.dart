@@ -60,11 +60,11 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         throw Exception('No authentication token');
       }
 
-      // Use getProjectsWithZoho which handles Zoho connection check in backend
-      // This avoids unnecessary frontend API calls and lets backend optimize
+      // Use getProjectsWithZoho - backend checks Zoho connection and handles gracefully
+      // Backend will only fetch Zoho projects if user has valid token, avoiding unnecessary calls
       Map<String, dynamic> projectsData;
       try {
-        // Try with Zoho first - backend will gracefully handle if not connected
+        // Backend handles Zoho connection check efficiently
         projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
       } catch (e) {
         // If that fails, fallback to regular projects
@@ -213,8 +213,6 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
               Row(
                 children: [
                   Expanded(child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981))),
-                  const SizedBox(width: 16),
-                  Expanded(child: _buildStatCard('Failed', stats['failed']!.toString(), const Color(0xFFEF4444))),
                 ],
               ),
             ],
@@ -233,10 +231,6 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
             const SizedBox(width: 16),
             Expanded(
               child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981)),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: _buildStatCard('Failed', stats['failed']!.toString(), const Color(0xFFEF4444)),
             ),
           ],
         );

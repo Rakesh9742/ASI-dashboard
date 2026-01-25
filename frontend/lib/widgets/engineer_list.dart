@@ -8,6 +8,11 @@ class EngineerList extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final dashboardState = ref.watch(dashboardProvider);
+    // Trigger load if not already loading/loaded
+    final notifier = ref.read(dashboardProvider.notifier);
+    if (!dashboardState.isLoading && !dashboardState.hasValue) {
+      notifier.loadStats();
+    }
 
     return dashboardState.when(
       data: (stats) {

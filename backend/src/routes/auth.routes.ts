@@ -220,16 +220,14 @@ router.post('/login', async (req, res) => {
       { expiresIn: jwtExpiresIn } as SignOptions
     );
 
-    // Establish SSH connection at login time (only once per login)
-    // Check if connection already exists, if not create it
-    try {
-      await getSSHConnection(user.id);
-      console.log(`SSH connection established for user ${user.id} during login`);
-    } catch (err: any) {
-      console.error(`Failed to establish SSH connection for user ${user.id} during login:`, err);
-      // Don't fail login if SSH connection fails, but log the error
-      // User can still use the app, but SSH commands won't work until connection is established
-    }
+    // Establish SSH connection in background (non-blocking) to avoid login delay
+    // Connection will be ready when user needs it, but login completes immediately
+    getSSHConnection(user.id).then(() => {
+      console.log(`SSH connection established for user ${user.id} (background)`);
+    }).catch((err: any) => {
+      console.error(`Failed to establish SSH connection for user ${user.id} (background):`, err);
+      // Connection will be retried when user actually needs SSH functionality
+    });
 
     res.json({
       message: 'Login successful',

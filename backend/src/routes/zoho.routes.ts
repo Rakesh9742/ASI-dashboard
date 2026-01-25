@@ -341,15 +341,14 @@ router.get('/callback', async (req, res) => {
           { expiresIn: jwtExpiresIn } as SignOptions
         );
 
-        // Establish SSH connection at login time (only once per login)
-        try {
-          const { getSSHConnection } = await import('../services/ssh.service');
-          await getSSHConnection(user.id);
-          console.log(`SSH connection established for user ${user.id} during Zoho login`);
-        } catch (err: any) {
-          console.error(`Failed to establish SSH connection for user ${user.id} during Zoho login:`, err);
-          // Don't fail login if SSH connection fails
-        }
+        // Establish SSH connection in background (non-blocking) to avoid login delay
+        const { getSSHConnection } = await import('../services/ssh.service');
+        getSSHConnection(user.id).then(() => {
+          console.log(`SSH connection established for user ${user.id} (background, Zoho login)`);
+        }).catch((err: any) => {
+          console.error(`Failed to establish SSH connection for user ${user.id} (background, Zoho login):`, err);
+          // Connection will be retried when user actually needs SSH functionality
+        });
 
         // Return success page with token (for frontend to capture)
         return res.send(`

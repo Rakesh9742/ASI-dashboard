@@ -12,6 +12,11 @@ class DashboardScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final dashboardState = ref.watch(dashboardProvider);
+    // Trigger load if not already loading/loaded
+    final notifier = ref.read(dashboardProvider.notifier);
+    if (!dashboardState.isLoading && !dashboardState.hasValue) {
+      notifier.loadStats();
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA), // Light grey background
@@ -259,16 +264,6 @@ class DashboardScreen extends ConsumerWidget {
           value: (projectStats['completed'] ?? 0).toString(),
           icon: Icons.check_circle_outline,
           color: Colors.green,
-        ),
-      ),
-      SizedBox(width: isMobile ? 0 : 16, height: isMobile ? 16 : 0),
-      Expanded(
-        flex: isMobile ? 0 : 1,
-        child: StatCard(
-          title: 'Failed',
-          value: (projectStats['failed'] ?? 0).toString(),
-          icon: Icons.error_outline,
-          color: Colors.red,
         ),
       ),
     ];

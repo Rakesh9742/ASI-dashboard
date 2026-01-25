@@ -9,6 +9,11 @@ class ProjectList extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // We can get projects from the dashboard state since we already fetched them there
     final dashboardState = ref.watch(dashboardProvider);
+    // Trigger load if not already loading/loaded
+    final notifier = ref.read(dashboardProvider.notifier);
+    if (!dashboardState.isLoading && !dashboardState.hasValue) {
+      notifier.loadStats();
+    }
 
     return dashboardState.when(
       data: (stats) {

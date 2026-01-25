@@ -18,48 +18,48 @@ final dashboardProvider = StateNotifierProvider<DashboardNotifier, AsyncValue<Ma
 class DashboardNotifier extends StateNotifier<AsyncValue<Map<String, dynamic>>> {
   final ApiService _apiService;
   final String? _token;
+  bool _isLoading = false;
 
   DashboardNotifier(this._apiService, {String? token}) 
       : _token = token,
-        super(const AsyncValue.loading()) {
-    loadStats();
+        super(const AsyncValue.data({})) {
+    // Don't load immediately - lazy load when first accessed
   }
 
-  Future<void> loadStats() async {
+  Future<void> loadStats({bool force = false}) async {
+    // Prevent duplicate loads
+    if (_isLoading && !force) return;
+    if (!force && state.hasValue && state.value != null && state.value!.isNotEmpty) {
+      return; // Already loaded
+    }
+    
+    _isLoading = true;
     state = const AsyncValue.loading();
     try {
-      // Fetch data from real endpoints in parallel
+      // Fetch data from real endpoints in parallel (including users with error handling)
       final results = await Future.wait([
         _apiService.getProjects(token: _token),
         _apiService.getDomains(token: _token),
         _apiService.getDesigns(),
         _apiService.getChips(),
-        // Attempt to fetch users, separate try/catch inside might be cleaner but Future.wait fails if one fails.
-        // Let's assume getProjects/Domains work. For users, we might need a separate call or handle failure.
-        // Actually, if getUsers fails (403), Future.wait will throw.
-        // So we should wrap it or allow it to fail gracefully?
-        // Let's do a safe fetch for users.
+        // Fetch users in parallel with error handling
+        _apiService.getUsers(token: _token).catchError((e) {
+          print('Could not fetch users: $e');
+          return <dynamic>[]; // Return empty list on error
+        }),
       ]);
       
       final projects = results[0] as List<dynamic>;
       final domains = results[1] as List<dynamic>;
       final designs = results[2] as List<dynamic>;
       final chips = results[3] as List<dynamic>;
+      final users = results[4] as List<dynamic>;
 
-      // Fetch users (accessible to engineers now)
-      List<dynamic> users = [];
-      List<dynamic> engineers = [];
-      int totalEngineers = 0;
-      try {
-        users = await _apiService.getUsers(token: _token);
-        // Filter to only engineers
-        engineers = users.where((user) => 
-          user['role']?.toString().toLowerCase() == 'engineer'
-        ).toList();
-        totalEngineers = engineers.length;
-      } catch (e) {
-        print('Could not fetch users: $e');
-      }
+      // Filter to only engineers
+      final engineers = users.where((user) => 
+        user['role']?.toString().toLowerCase() == 'engineer'
+      ).toList();
+      final totalEngineers = engineers.length;
 
       // Calculate Project Stats
       final totalProjects = projects.length;
