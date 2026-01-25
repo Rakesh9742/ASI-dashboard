@@ -996,6 +996,7 @@ class ApiService {
     required String runDirectory,
     required String username, // Username from SSH session (whoami)
     String? zohoProjectId,
+    String? domainCode, // Domain code from setup command
     String? token,
   }) async {
     final body = <String, dynamic>{
@@ -1011,6 +1012,11 @@ class ApiService {
       body['zohoProjectId'] = zohoProjectId;
     }
     
+    // Include domain code if provided (for linking domain to project)
+    if (domainCode != null && domainCode.isNotEmpty) {
+      body['domainCode'] = domainCode;
+    }
+    
     final response = await http.post(
       Uri.parse('$baseUrl/projects/save-run-directory'),
       headers: _getHeaders(token: token),
@@ -1022,6 +1028,30 @@ class ApiService {
     } else {
       final error = json.decode(response.body);
       throw Exception(error['error'] ?? error['message'] ?? 'Failed to save run directory');
+    }
+  }
+
+  // Get blocks and experiments for a project (from setup data and EDA files)
+  // projectIdOrName can be either an int (for local projects), a string like "zoho_123" (for Zoho projects), or project name
+  Future<List<dynamic>> getBlocksAndExperiments({
+    required dynamic projectIdOrName, // Can be int, String like "zoho_123", or project name
+    String? token,
+  }) async {
+    final projectIdOrNameStr = projectIdOrName.toString();
+    final response = await http.get(
+      Uri.parse('$baseUrl/projects/$projectIdOrNameStr/blocks-experiments'),
+      headers: _getHeaders(token: token),
+    );
+    
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      if (data is Map && data.containsKey('data')) {
+        return data['data'] as List;
+      }
+      return [];
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to load blocks and experiments');
     }
   }
 }

@@ -1181,10 +1181,10 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                 ),
               ),
               
-              // Run Directories (if available) - show all
+              // Run Directories (if available) - show only latest
               if (widget.runDirectories.isNotEmpty) ...[
                 const SizedBox(height: 8),
-                ...widget.runDirectories.map((dir) => Padding(
+                Padding(
                   padding: const EdgeInsets.only(bottom: 6),
                   child: Container(
                     padding: const EdgeInsets.all(8),
@@ -1206,7 +1206,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            dir,
+                            widget.runDirectories.last, // Show only the latest directory
                             style: TextStyle(
                               fontSize: 11,
                               color: Theme.of(context).colorScheme.primary,
@@ -1219,7 +1219,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                       ],
                     ),
                   ),
-                )).toList(),
+                ),
               ],
               
               const SizedBox(height: 12),
@@ -1334,7 +1334,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                                   ),
                                   icon: const Icon(Icons.file_download, size: 16),
                                   label: const Text(
-                                    'Export to Linux',
+                                    'Project Setup',
                                     style: TextStyle(fontSize: 12),
                                   ),
                                 ),
@@ -1972,8 +1972,8 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                     children: [
                       Text(
                         isComplete 
-                          ? (isSuccess ? 'Export Completed Successfully' : 'Export Failed')
-                          : 'Exporting to Linux...',
+                          ? (isSuccess ? 'Project Setup Completed Successfully' : 'Project Setup Failed')
+                          : 'Setting up project...',
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
@@ -2425,7 +2425,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  'Export to Linux',
+                  'Project Setup',
                   style: TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.bold,
@@ -2784,6 +2784,7 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
             runDirectory: actualRunDirectory,
             username: actualUsername, // Pass the actual username from SSH session
             zohoProjectId: widget.zohoProjectId,
+            domainCode: domainCode, // Pass domain code to link domain to project
             token: token,
           );
           

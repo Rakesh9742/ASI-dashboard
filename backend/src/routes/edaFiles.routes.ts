@@ -128,7 +128,6 @@ router.get('/', authenticate, async (req, res) => {
           
           // Get Zoho project names for this user
           zohoProjectNames = await getUserZohoProjectNames(userId);
-          console.log(`Zoho project names for user: ${zohoProjectNames.join(', ')}`);
         }
       } catch (error: any) {
         console.error('Error getting user email or Zoho projects:', error.message);
@@ -275,8 +274,10 @@ router.get('/', authenticate, async (req, res) => {
         params.push(userId);
       }
       
-      // Condition 3: Zoho project match (if user has Zoho projects and username)
-      if (zohoProjectNames.length > 0 && extractedUsername) {
+      // Condition 3: Zoho project match (if user has Zoho projects)
+      // For Zoho projects, allow access if project name matches, regardless of user_name
+      // This is because EDA files might have different user_name than the logged-in user
+      if (zohoProjectNames.length > 0) {
         // Create array of project names for IN clause
         const projectNamePlaceholders: string[] = [];
         zohoProjectNames.forEach((projectName) => {
@@ -285,22 +286,16 @@ router.get('/', authenticate, async (req, res) => {
           params.push(projectName);
         });
         
-        // Match if project name is in Zoho projects AND user_name matches
-        paramCount++;
+        // Match if project name is in Zoho projects (user_name match not required for Zoho projects)
+        // This allows EDA files with different user_name to be visible
         conditions.push(
-          `(LOWER(p.name) IN (${projectNamePlaceholders.join(', ')}) AND LOWER(r.user_name) = LOWER($${paramCount}))`
+          `LOWER(p.name) IN (${projectNamePlaceholders.join(', ')})`
         );
-        params.push(extractedUsername);
       }
       
       if (conditions.length > 0) {
         query += ` AND (${conditions.join(' OR ')})`;
-        console.log(`Filtering EDA files for ${userRole}:`);
-        console.log(`  - User ID: ${userId}`);
-        console.log(`  - Extracted username: ${extractedUsername}`);
-        console.log(`  - Zoho projects: ${zohoProjectNames.length} projects`);
-        console.log(`  - Conditions: ${conditions.length} condition(s)`);
-        console.log(`  - Including user_projects check for project access`);
+        // Filtering EDA files based on user role and project access
       }
     }
     // Admin sees all runs (no filter)
@@ -332,16 +327,7 @@ router.get('/', authenticate, async (req, res) => {
     query += ` ORDER BY s.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     params.push(parseInt(limit as string), parseInt(offset as string));
 
-    // DEBUG: Verify search_path and table existence
-    try {
-      const debugSearchPath = await pool.query('SHOW search_path');
-      console.log('🔍 [DEBUG] DB search_path:', debugSearchPath.rows[0]?.search_path);
-      
-      const debugTableCheck = await pool.query("SELECT to_regclass('public.stages')");
-      console.log('🔍 [DEBUG] Table check (public.stages):', debugTableCheck.rows[0]?.to_regclass);
-    } catch (debugError: any) {
-      console.error('⚠️ [DEBUG] Debug query failed:', debugError.message);
-    }
+    // DEBUG queries removed to reduce log verbosity
 
     const result = await pool.query(query, params);
 
@@ -406,8 +392,9 @@ router.get('/', authenticate, async (req, res) => {
         countParams.push(userId);
       }
       
-      // Condition 3: Zoho project match (if user has Zoho projects and username)
-      if (zohoProjectNames.length > 0 && extractedUsername) {
+      // Condition 3: Zoho project match (if user has Zoho projects)
+      // For Zoho projects, allow access if project name matches, regardless of user_name
+      if (zohoProjectNames.length > 0) {
         const projectNamePlaceholders: string[] = [];
         zohoProjectNames.forEach((projectName) => {
           countParamCount++;
@@ -415,12 +402,10 @@ router.get('/', authenticate, async (req, res) => {
           countParams.push(projectName);
         });
         
-        // Match if project name is in Zoho projects AND user_name matches
-        countParamCount++;
+        // Match if project name is in Zoho projects (user_name match not required for Zoho projects)
         conditions.push(
-          `(LOWER(p.name) IN (${projectNamePlaceholders.join(', ')}) AND LOWER(r.user_name) = LOWER($${countParamCount}))`
+          `LOWER(p.name) IN (${projectNamePlaceholders.join(', ')})`
         );
-        countParams.push(extractedUsername);
       }
       
       if (conditions.length > 0) {

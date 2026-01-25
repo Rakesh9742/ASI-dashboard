@@ -851,10 +851,41 @@ class FileProcessorService {
         }
       }
 
-      // 2. Find or get project ID
+      // 2. Find or get project ID and check if it's a Zoho project
       let projectId = await this.findProjectId(projectName);
-      if (!projectId && projectName) {
-        // Create project if it doesn't exist
+      let isZohoProject = false;
+      let zohoProjectId: string | null = null;
+
+      // Check if this is a Zoho project by checking zoho_projects_mapping
+      try {
+        const zohoMappingResult = await client.query(
+          'SELECT zoho_project_id FROM zoho_projects_mapping WHERE LOWER(zoho_project_name) = LOWER($1) OR local_project_id = $2',
+          [projectName, projectId || 0]
+        );
+        
+        if (zohoMappingResult.rows.length > 0) {
+          isZohoProject = true;
+          zohoProjectId = zohoMappingResult.rows[0].zoho_project_id;
+        } else if (!projectId) {
+          // Project not found in local projects - check if it exists as Zoho project by name only
+          // This handles unmapped Zoho projects
+          const zohoByNameResult = await client.query(
+            'SELECT DISTINCT zoho_project_id FROM zoho_project_run_directories WHERE LOWER(zoho_project_name) = LOWER($1) LIMIT 1',
+            [projectName]
+          );
+          
+          if (zohoByNameResult.rows.length > 0) {
+            isZohoProject = true;
+            zohoProjectId = zohoByNameResult.rows[0].zoho_project_id;
+          }
+        }
+      } catch (error: any) {
+        // Table might not exist, continue with local project logic
+        console.log('Could not check Zoho project mapping:', error.message);
+      }
+
+      if (!projectId && projectName && !isZohoProject) {
+        // Create project if it doesn't exist (only for local projects)
         const projectResult = await client.query(
           'INSERT INTO public.projects (name, created_by) VALUES ($1, $2) RETURNING id',
           [projectName, uploadedBy || null]
@@ -862,12 +893,13 @@ class FileProcessorService {
         projectId = projectResult.rows[0].id;
       }
 
-      if (!projectId) {
+      if (!projectId && !isZohoProject) {
         throw new Error(`Project "${projectName}" not found and could not be created`);
       }
 
       // 2.5. Link domain to project if domain exists (for dashboard domain distribution)
-      if (domainId && projectId) {
+      // Only for local projects (Zoho projects don't use project_domains)
+      if (domainId && projectId && !isZohoProject) {
         try {
           // Check if link already exists (project_domains uses composite primary key, no id column)
           const linkCheck = await client.query(
@@ -893,54 +925,176 @@ class FileProcessorService {
         throw new Error('Block name is required');
       }
 
-      // 4. Find or create block
-      let blockResult = await client.query(
-        'SELECT id FROM public.blocks WHERE project_id = $1 AND block_name = $2',
-        [projectId, blockName]
-      );
+      // 4. Find block - must exist from setup process
+      // For Zoho projects, check zoho_project_run_directories
+      // For local projects, check blocks table
+      let blockId: number | null = null;
+      
+      if (isZohoProject && zohoProjectId) {
+        // Check zoho_project_run_directories for Zoho projects
+        const zohoBlockResult = await client.query(
+          `SELECT DISTINCT block_name, experiment_name 
+           FROM zoho_project_run_directories 
+           WHERE zoho_project_id = $1 AND block_name = $2`,
+          [zohoProjectId, blockName]
+        );
 
-      let blockId: number;
-      if (blockResult.rows.length > 0) {
-        blockId = blockResult.rows[0].id;
-      } else {
-        const insertBlockResult = await client.query(
-          'INSERT INTO public.blocks (project_id, block_name) VALUES ($1, $2) RETURNING id',
+        if (zohoBlockResult.rows.length === 0) {
+          // Block does not exist in Zoho project setup
+          throw new Error(
+            `Block "${blockName}" does not exist for Zoho project "${projectName}". ` +
+            `Please run the setup command first with: setup -proj ${projectName} -domain <domain> -block ${blockName} -exp <experiment>`
+          );
+        }
+        // For Zoho projects, we don't have a block_id, but we can continue with validation
+        // We'll use a placeholder or handle it differently in the run validation
+      } else if (projectId) {
+        // Check blocks table for local projects
+        let blockResult = await client.query(
+          'SELECT id FROM public.blocks WHERE project_id = $1 AND block_name = $2',
           [projectId, blockName]
         );
-        blockId = insertBlockResult.rows[0].id;
+
+        if (blockResult.rows.length > 0) {
+          blockId = blockResult.rows[0].id;
+        } else {
+          // Block does not exist - this means setup was not run first
+          throw new Error(
+            `Block "${blockName}" does not exist for project "${projectName}". ` +
+            `Please run the setup command first with: setup -proj ${projectName} -domain <domain> -block ${blockName} -exp <experiment>`
+          );
+        }
+      } else {
+        throw new Error(`Project "${projectName}" not found`);
       }
 
       // 5. Get run info from first row
       const experiment = firstRow.experiment;
-      const rtlTag = firstRow.rtl_tag;
+      const rtlTag = firstRow.rtl_tag || ''; // Allow empty rtl_tag for validation
       const userName = firstRow.user_name;
       const runDirectory = firstRow.run_directory;
       const lastUpdated = firstRow.run_end_time ? new Date(firstRow.run_end_time) : new Date();
 
-      if (!experiment || !rtlTag) {
-        throw new Error('Experiment and RTL tag are required');
+      if (!experiment) {
+        throw new Error('Experiment is required');
       }
 
-      // 6. Find or create run
-      let runResult = await client.query(
-        'SELECT id FROM public.runs WHERE block_id = $1 AND experiment = $2 AND rtl_tag = $3',
-        [blockId, experiment, rtlTag]
-      );
+      // 6. Find run (experiment) - must exist from setup process
+      // For Zoho projects, check zoho_project_run_directories
+      // For local projects, check runs table
+      let runId: number | null = null;
+      
+      if (isZohoProject && zohoProjectId) {
+        // Check zoho_project_run_directories for Zoho projects
+        // Note: zoho_project_run_directories doesn't have rtl_tag, so we only match by block and experiment
+        const zohoRunResult = await client.query(
+          `SELECT id, experiment_name, user_name, run_directory
+           FROM zoho_project_run_directories 
+           WHERE zoho_project_id = $1 AND block_name = $2 AND experiment_name = $3`,
+          [zohoProjectId, blockName, experiment]
+        );
 
-      let runId: number;
-      if (runResult.rows.length > 0) {
-        runId = runResult.rows[0].id;
-        // Update run info
-        await client.query(
-          'UPDATE public.runs SET user_name = $1, run_directory = $2, last_updated = $3 WHERE id = $4',
-          [userName, runDirectory, lastUpdated, runId]
+        if (zohoRunResult.rows.length === 0) {
+          // Experiment does not exist in Zoho project setup
+          throw new Error(
+            `Experiment "${experiment}" does not exist for block "${blockName}" in Zoho project "${projectName}". ` +
+            `Please run the setup command first with: setup -proj ${projectName} -domain <domain> -block ${blockName} -exp ${experiment}`
+          );
+        }
+        
+        // For Zoho projects, rtl_tag from EDA file is allowed even if setup didn't specify it
+        // The EDA file's rtl_tag will be used when creating the local run record
+        // For Zoho projects, we need to create a local run record to store EDA data
+        // First, ensure we have a local project (create if needed for mapping)
+        if (!projectId) {
+          const createProjectResult = await client.query(
+            'INSERT INTO public.projects (name, created_by) VALUES ($1, $2) RETURNING id',
+            [projectName, uploadedBy || null]
+          );
+          projectId = createProjectResult.rows[0].id;
+          
+          // Create mapping if it doesn't exist
+          try {
+            await client.query(
+              'INSERT INTO zoho_projects_mapping (zoho_project_id, local_project_id, zoho_project_name) VALUES ($1, $2, $3) ON CONFLICT (zoho_project_id) DO NOTHING',
+              [zohoProjectId, projectId, projectName]
+            );
+          } catch (e) {
+            // Mapping might already exist or table doesn't exist
+          }
+        }
+        
+        // Create or find block in local projects table for EDA data storage
+        let localBlockResult = await client.query(
+          'SELECT id FROM public.blocks WHERE project_id = $1 AND block_name = $2',
+          [projectId, blockName]
         );
+        
+        if (localBlockResult.rows.length === 0) {
+          const insertBlockResult = await client.query(
+            'INSERT INTO public.blocks (project_id, block_name) VALUES ($1, $2) RETURNING id',
+            [projectId, blockName]
+          );
+          blockId = insertBlockResult.rows[0].id;
+        } else {
+          blockId = localBlockResult.rows[0].id;
+        }
+        
+        // Create or find run in local runs table for EDA data storage
+        // For Zoho projects, match by block + experiment first (rtl_tag may differ from setup)
+        // If a run exists with empty rtl_tag from setup, update it with the EDA file's rtl_tag
+        let localRunResult = await client.query(
+          `SELECT id, rtl_tag FROM public.runs 
+           WHERE block_id = $1 AND experiment = $2`,
+          [blockId, experiment]
+        );
+        
+        if (localRunResult.rows.length > 0) {
+          // Found existing run - update it with EDA file's rtl_tag and other info
+          runId = localRunResult.rows[0].id;
+          const existingRtlTag = localRunResult.rows[0].rtl_tag || '';
+          
+          // Update run info including rtl_tag from EDA file
+          await client.query(
+            'UPDATE public.runs SET rtl_tag = $1, user_name = $2, run_directory = $3, last_updated = $4 WHERE id = $5',
+            [rtlTag || existingRtlTag, userName, runDirectory, lastUpdated, runId]
+          );
+        } else {
+          // Create new run for EDA data with rtl_tag from EDA file
+          const insertRunResult = await client.query(
+            'INSERT INTO public.runs (block_id, experiment, rtl_tag, user_name, run_directory, last_updated) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+            [blockId, experiment, rtlTag, userName, runDirectory, lastUpdated]
+          );
+          runId = insertRunResult.rows[0].id;
+        }
+      } else if (blockId) {
+        // Check runs table for local projects
+        let runResult = await client.query(
+          `SELECT id FROM public.runs 
+           WHERE block_id = $1 AND experiment = $2 AND COALESCE(rtl_tag, '') = $3`,
+          [blockId, experiment, rtlTag]
+        );
+
+        if (runResult.rows.length > 0) {
+          runId = runResult.rows[0].id;
+          // Update run info (allow updates to existing runs from setup)
+          await client.query(
+            'UPDATE public.runs SET user_name = $1, run_directory = $2, last_updated = $3 WHERE id = $4',
+            [userName, runDirectory, lastUpdated, runId]
+          );
+        } else {
+          // Run (experiment) does not exist - this means setup was not run first
+          throw new Error(
+            `Experiment "${experiment}" does not exist for block "${blockName}" in project "${projectName}". ` +
+            `Please run the setup command first with: setup -proj ${projectName} -domain <domain> -block ${blockName} -exp ${experiment}`
+          );
+        }
       } else {
-        const insertRunResult = await client.query(
-          'INSERT INTO public.runs (block_id, experiment, rtl_tag, user_name, run_directory, last_updated) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-          [blockId, experiment, rtlTag, userName, runDirectory, lastUpdated]
-        );
-        runId = insertRunResult.rows[0].id;
+        throw new Error(`Block "${blockName}" not found for project "${projectName}"`);
+      }
+      
+      if (!runId) {
+        throw new Error(`Failed to create or find run for experiment "${experiment}"`);
       }
 
       // 7. Process each stage

@@ -33,7 +33,6 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   String _selectedExperiment = 'Select an experiment';
   String? _currentRunDirectory;
   final TextEditingController _commandController = TextEditingController();
-  final List<Map<String, dynamic>> _activityLog = [];
   late String _selectedTab;
   
   List<String> _availableBlocks = [];
@@ -43,11 +42,12 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   // Store block data with IDs for QMS navigation
   Map<String, int> _blockNameToId = {};
   
-  // Command output storage
-  String? _lastCommandOutput;
-  String? _lastCommandError;
-  String? _lastCommand;
+  // Command execution state
   bool _isExecutingCommand = false;
+  
+  // Chat messages for command console (ChatGPT-like interface)
+  final List<Map<String, dynamic>> _chatMessages = [];
+  final ScrollController _chatScrollController = ScrollController();
   
   // Metrics data
   Map<String, dynamic>? _metricsData;
@@ -77,6 +77,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   @override
   void dispose() {
     _commandController.dispose();
+    _chatScrollController.dispose();
     super.dispose();
   }
 
@@ -99,31 +100,70 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         return;
       }
 
-      // Load EDA files for this project - use smaller limit for faster loading
-      // We only need unique block and experiment names, not all file data
-      final filesResponse = await _apiService.getEdaFiles(
+      // Determine project identifier for API call
+      // For Zoho projects, use "zoho_<zoho_project_id>" format
+      // For local projects, use project ID or name
+      dynamic projectIdentifier;
+      final zohoProjectId = widget.project['zoho_project_id']?.toString();
+      if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
+        projectIdentifier = 'zoho_$zohoProjectId';
+      } else {
+        // Try project ID first, fallback to project name
+        projectIdentifier = widget.project['id'] ?? projectName;
+      }
+
+      // Load blocks and experiments from setup data (and EDA files)
+      final blocksData = await _apiService.getBlocksAndExperiments(
+        projectIdOrName: projectIdentifier,
         token: token,
-        projectName: projectName,
-        limit: 200, // Reduced from 1000 to 200 for faster loading
       );
 
-      final files = filesResponse['files'] ?? [];
-      
-      // Extract unique blocks and experiments
+      // Extract unique blocks and experiments from setup data
       final blockSet = <String>{};
       final experimentSet = <String>{};
       
-      for (var file in files) {
-        final blockName = file['block_name']?.toString();
-        final experiment = file['experiment']?.toString();
-        
+      for (var blockData in blocksData) {
+        final blockName = blockData['block_name']?.toString();
         if (blockName != null && blockName.isNotEmpty) {
           blockSet.add(blockName);
         }
         
-        if (experiment != null && experiment.isNotEmpty) {
-          experimentSet.add(experiment);
+        // Extract experiments from this block
+        final experiments = blockData['experiments'];
+        if (experiments is List) {
+          for (var exp in experiments) {
+            final experiment = exp['experiment']?.toString();
+            if (experiment != null && experiment.isNotEmpty) {
+              experimentSet.add(experiment);
+            }
+          }
         }
+      }
+
+      // Also load from EDA files to get any additional blocks/experiments
+      try {
+        final filesResponse = await _apiService.getEdaFiles(
+          token: token,
+          projectName: projectName,
+          limit: 200,
+        );
+
+        final files = filesResponse['files'] ?? [];
+        for (var file in files) {
+          final blockName = file['block_name']?.toString();
+          final experiment = file['experiment']?.toString();
+          
+          if (blockName != null && blockName.isNotEmpty) {
+            blockSet.add(blockName);
+          }
+          
+          if (experiment != null && experiment.isNotEmpty) {
+            experimentSet.add(experiment);
+          }
+        }
+      } catch (e) {
+        // Silently fail - we already have data from setup
+        print('Failed to load from EDA files (non-critical): $e');
       }
 
       // Load block IDs from API
@@ -277,7 +317,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     }
   }
 
-  void _onBlockChanged(String? value) {
+  void _onBlockChanged(String? value) async {
     setState(() {
       _selectedBlock = value ?? 'Select a block';
       _selectedExperiment = 'Select an experiment'; // Reset experiment when block changes
@@ -305,7 +345,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     _loadRunHistory();
   }
   
-  void _onExperimentChanged(String? value) {
+  void _onExperimentChanged(String? value) async {
     setState(() {
       _selectedExperiment = value ?? 'Select an experiment';
       _currentRunDirectory = null; // Reset run directory when experiment changes
@@ -313,8 +353,9 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     
     // Load metrics and run directory when experiment is selected
     if (_selectedBlock != 'Select a block' && _selectedExperiment != 'Select an experiment') {
+      // Load run directory first so it's available for command console
+      await _loadRunDirectory();
       _loadMetricsData(); // This will also load the run directory
-      _loadRunDirectory(); // Also try to load it directly
     }
     
     // Reload run history with new experiment filter
@@ -337,30 +378,75 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         return;
       }
 
-      // Load EDA files to get run directory
-      final filesResponse = await _apiService.getEdaFiles(
-        token: token,
-        projectName: projectName,
-        limit: 100,
-      );
+      // Determine project identifier
+      dynamic projectIdentifier;
+      final zohoProjectId = widget.project['zoho_project_id']?.toString();
+      if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
+        projectIdentifier = 'zoho_$zohoProjectId';
+      } else {
+        projectIdentifier = widget.project['id'] ?? projectName;
+      }
 
-      final files = filesResponse['files'] ?? [];
-      
-      // Find first matching file for this block and experiment
-      final matchingFile = files.firstWhere(
-        (file) {
-          final fileBlock = file['block_name']?.toString();
-          final fileExperiment = file['experiment']?.toString();
-          return fileBlock == _selectedBlock && fileExperiment == _selectedExperiment;
-        },
-        orElse: () => null,
-      );
+      // First, try to load from setup data (blocks-experiments endpoint)
+      try {
+        final blocksData = await _apiService.getBlocksAndExperiments(
+          projectIdOrName: projectIdentifier,
+          token: token,
+        );
 
-      if (matchingFile != null && mounted) {
-        final runDirectory = matchingFile['run_directory']?.toString();
-        setState(() {
-          _currentRunDirectory = runDirectory;
-        });
+        // Find the matching block and experiment
+        for (var blockData in blocksData) {
+          final blockName = blockData['block_name']?.toString();
+          if (blockName == _selectedBlock) {
+            final experiments = blockData['experiments'];
+            if (experiments is List) {
+              for (var exp in experiments) {
+                final experiment = exp['experiment']?.toString();
+                if (experiment == _selectedExperiment) {
+                  final runDirectory = exp['run_directory']?.toString();
+                  if (runDirectory != null && runDirectory.isNotEmpty && mounted) {
+                    setState(() {
+                      _currentRunDirectory = runDirectory;
+                    });
+                    return; // Found in setup data, return early
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        print('Error loading run directory from setup data: $e');
+      }
+
+      // If not found in setup data, try EDA files
+      try {
+        final filesResponse = await _apiService.getEdaFiles(
+          token: token,
+          projectName: projectName,
+          limit: 100,
+        );
+
+        final files = filesResponse['files'] ?? [];
+        
+        // Find first matching file for this block and experiment
+        final matchingFile = files.firstWhere(
+          (file) {
+            final fileBlock = file['block_name']?.toString();
+            final fileExperiment = file['experiment']?.toString();
+            return fileBlock == _selectedBlock && fileExperiment == _selectedExperiment;
+          },
+          orElse: () => null,
+        );
+
+        if (matchingFile != null && mounted) {
+          final runDirectory = matchingFile['run_directory']?.toString();
+          setState(() {
+            _currentRunDirectory = runDirectory;
+          });
+        }
+      } catch (e) {
+        print('Error loading run directory from EDA files: $e');
       }
     } catch (e) {
       // Silently fail - run directory will remain null
@@ -541,23 +627,58 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       final projectName = widget.project['name'] ?? '';
       if (projectName.isEmpty) return;
 
-      // Load EDA files for this project and block
-      final filesResponse = await _apiService.getEdaFiles(
+      // Determine project identifier
+      dynamic projectIdentifier;
+      final zohoProjectId = widget.project['zoho_project_id']?.toString();
+      if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
+        projectIdentifier = 'zoho_$zohoProjectId';
+      } else {
+        projectIdentifier = widget.project['id'] ?? projectName;
+      }
+
+      // Load blocks and experiments from setup data
+      final blocksData = await _apiService.getBlocksAndExperiments(
+        projectIdOrName: projectIdentifier,
         token: token,
-        projectName: projectName,
-        limit: 1000,
       );
 
-      final files = filesResponse['files'] ?? [];
       final experimentSet = <String>{};
       
-      for (var file in files) {
-        final fileBlockName = file['block_name']?.toString();
-        final experiment = file['experiment']?.toString();
-        
-        if (fileBlockName == blockName && experiment != null && experiment.isNotEmpty) {
-          experimentSet.add(experiment);
+      // Find the selected block and extract its experiments
+      for (var blockData in blocksData) {
+        final fileBlockName = blockData['block_name']?.toString();
+        if (fileBlockName == blockName) {
+          final experiments = blockData['experiments'];
+          if (experiments is List) {
+            for (var exp in experiments) {
+              final experiment = exp['experiment']?.toString();
+              if (experiment != null && experiment.isNotEmpty) {
+                experimentSet.add(experiment);
+              }
+            }
+          }
         }
+      }
+
+      // Also check EDA files for additional experiments
+      try {
+        final filesResponse = await _apiService.getEdaFiles(
+          token: token,
+          projectName: projectName,
+          limit: 1000,
+        );
+
+        final files = filesResponse['files'] ?? [];
+        for (var file in files) {
+          final fileBlockName = file['block_name']?.toString();
+          final experiment = file['experiment']?.toString();
+          
+          if (fileBlockName == blockName && experiment != null && experiment.isNotEmpty) {
+            experimentSet.add(experiment);
+          }
+        }
+      } catch (e) {
+        // Silently fail - we already have data from setup
       }
 
       setState(() {
@@ -565,6 +686,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       });
     } catch (e) {
       // Silently fail - experiments list will remain empty
+      print('Error loading experiments for block: $e');
     }
   }
   
@@ -809,16 +931,8 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                           _buildSelectionSection(),
                       _buildRunDirectoryInfo(),
                           const SizedBox(height: 24),
-                          // Command Console
+                          // Command Console (ChatGPT-like interface)
                           _buildCommandConsole(),
-                      const SizedBox(height: 24),
-                      // Command Output (if available)
-                      if (_lastCommand != null || _isExecutingCommand)
-                        _buildCommandOutput(),
-                      if (_lastCommand != null || _isExecutingCommand)
-                          const SizedBox(height: 24),
-                          // Activity Log
-                          _buildActivityLog(),
                         ],
                       ),
                     ),
@@ -1041,465 +1155,418 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
 
   Widget _buildCommandConsole() {
     return Container(
-      padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardColor,
+      height: 600,
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Theme.of(context).dividerColor),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Command Console',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-              color: Theme.of(context).colorScheme.onSurface,
-            ),
-          ),
-          const SizedBox(height: 16),
+          // Header
           Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
-              color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.5),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Theme.of(context).dividerColor),
-          ),
-          child: TextField(
-            controller: _commandController,
-            maxLines: 6,
-            maxLength: 500,
-            style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
-            decoration: InputDecoration(
-              hintText: 'e.g., Run RTL validation, Execute synthesis, Check QMS gates...',
-              hintStyle: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.all(12),
-                counterText: '', // Hide counter inside field, maybe show below or just hide
+              border: Border(
+                bottom: BorderSide(color: Theme.of(context).dividerColor),
+              ),
             ),
-          ),
-        ),
-          const SizedBox(height: 4),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-               Text(
-                '${_commandController.text.length}/500',
-                style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4)),
-              ),
-              ElevatedButton.icon(
-                onPressed: _isExecutingCommand ? null : () {
-              if (_commandController.text.isNotEmpty) {
-                _executeCommand(_commandController.text);
-                _commandController.clear();
-                    setState(() {}); // Update counter
-                  }
-                },
-                icon: _isExecutingCommand 
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                      )
-                    : const Icon(Icons.play_arrow, size: 16),
-                label: Text(_isExecutingCommand ? 'Executing...' : 'Execute'),
-            style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF5CCBDB), // Light cyan from image
-              foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
-                  minimumSize: const Size(0, 36),
-              shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCommandOutput() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Theme.of(context).dividerColor),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.terminal,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Command Output',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      color: Theme.of(context).colorScheme.onSurface,
-                    ),
-                  ),
-                ],
-              ),
-              if (_lastCommand != null)
-                TextButton.icon(
-                  icon: const Icon(Icons.close, size: 16),
-                  label: const Text('Clear'),
-                  onPressed: () {
-                    setState(() {
-                      _lastCommand = null;
-                      _lastCommandOutput = null;
-                      _lastCommandError = null;
-                    });
-                  },
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    minimumSize: Size.zero,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                ),
-            ],
-          ),
-          if (_lastCommand != null) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.5),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: Theme.of(context).dividerColor.withOpacity(0.5),
-                ),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '\$ ',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.terminal,
+                      size: 18,
                       color: Theme.of(context).colorScheme.primary,
-                      fontFamily: 'monospace',
                     ),
-                  ),
-                  Expanded(
-                    child: SelectableText(
-                      _lastCommand!,
+                    const SizedBox(width: 8),
+                    Text(
+                      'Command Console',
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
                         color: Theme.of(context).colorScheme.onSurface,
-                        fontFamily: 'monospace',
-            ),
-          ),
-        ),
-      ],
-              ),
-            ),
-          ],
-          if (_isExecutingCommand) ...[
-            const SizedBox(height: 16),
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.all(16.0),
-                child: CircularProgressIndicator(),
-              ),
-            ),
-          ] else if (_lastCommandOutput != null && _lastCommandOutput!.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            Container(
-              constraints: const BoxConstraints(maxHeight: 300),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.black87,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.shade700),
-              ),
-              child: SingleChildScrollView(
-                child: SelectableText(
-                  _lastCommandOutput!,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Colors.white,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-              ),
-            ),
-          ],
-          if (_lastCommandError != null && _lastCommandError!.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Container(
-              constraints: const BoxConstraints(maxHeight: 200),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.red.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.red.shade400, width: 2),
-              ),
-              child: SingleChildScrollView(
-                child: SelectableText(
-                  _lastCommandError!,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.red.shade900,
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ),
-          ],
-          if (!_isExecutingCommand && 
-              (_lastCommandOutput == null || _lastCommandOutput!.isEmpty) &&
-              (_lastCommandError == null || _lastCommandError!.isEmpty) &&
-              _lastCommand != null) ...[
-            const SizedBox(height: 16),
-            Center(
-              child: Text(
-                'Command executed successfully (no output)',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildActivityLog() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Theme.of(context).dividerColor.withOpacity(0.5),
-          width: 1,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.history,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-            Text(
-                    'Command History',
-              style: TextStyle(
-                      fontSize: 15,
-                fontWeight: FontWeight.w600,
-                      color: Theme.of(context).colorScheme.onSurface,
-                      letterSpacing: 0.2,
+                      ),
                     ),
-                  ),
-                ],
-              ),
-              TextButton.icon(
-                icon: Icon(
-                  Icons.delete_outline,
-                  size: 16,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                  ],
                 ),
-                label: Text(
-                  'Clear',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                  ),
+                Row(
+                  children: [
+                    if (_currentRunDirectory != null && 
+                        _selectedBlock != 'Select a block' && 
+                        _selectedExperiment != 'Select an experiment')
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.folder,
+                              size: 12,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                _currentRunDirectory!.length > 30 
+                                  ? '...${_currentRunDirectory!.substring(_currentRunDirectory!.length - 30)}'
+                                  : _currentRunDirectory!,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: Theme.of(context).colorScheme.primary,
+                                  fontFamily: 'monospace',
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (_chatMessages.isNotEmpty)
+                      TextButton.icon(
+                        icon: const Icon(Icons.delete_outline, size: 16),
+                        label: const Text('Clear'),
+                        onPressed: () {
+                          setState(() {
+                            _chatMessages.clear();
+                          });
+                        },
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ),
+                  ],
                 ),
-              onPressed: () {
-                setState(() {
-                  _activityLog.clear();
-                });
-              },
-                style: TextButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
+              ],
             ),
-          ],
-        ),
-          const SizedBox(height: 12),
-          // Log List Container with better styling
-        Container(
-            height: 300,
-          decoration: BoxDecoration(
-              color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.5),
-            borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: Theme.of(context).dividerColor.withOpacity(0.3),
-              ),
           ),
-          child: _activityLog.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
+          // Chat messages area
+          Expanded(
+            child: _chatMessages.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
                         Icon(
-                          Icons.terminal_outlined,
+                          Icons.chat_bubble_outline,
                           size: 48,
                           color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3),
                         ),
                         const SizedBox(height: 12),
-                      Text(
-                          'No commands executed',
+                        Text(
+                          'No commands executed yet',
                           style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w500,
                             color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
                           ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                          'Command output will appear in the terminal',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
                         ),
-                      ),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: _activityLog.length,
-                  itemBuilder: (context, index) {
-                    final log = _activityLog[index];
-                      final isSuccess = log['status'] == 'success';
-                      final isError = log['status'] == 'error';
+                        const SizedBox(height: 4),
+                        Text(
+                          'Enter a command below to get started',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.builder(
+                    controller: _chatScrollController,
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _chatMessages.length,
+                    itemBuilder: (context, index) {
+                      final message = _chatMessages[index];
+                      final isUser = message['type'] == 'user';
+                      final isExecuting = message['isExecuting'] == true;
                       
                       return Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: isSuccess
-                              ? Colors.green.withOpacity(0.1)
-                              : isError
-                                  ? Colors.red.withOpacity(0.1)
-                                  : Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: isSuccess
-                                ? Colors.green.withOpacity(0.3)
-                                : isError
-                                    ? Colors.red.withOpacity(0.3)
-                                    : Theme.of(context).colorScheme.primary.withOpacity(0.3),
-                            width: 1,
-                          ),
+                        margin: const EdgeInsets.only(bottom: 16),
+                        child: Column(
+                          crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                          children: [
+                            // User message (command)
+                            if (isUser)
+                              Container(
+                                constraints: BoxConstraints(
+                                  maxWidth: MediaQuery.of(context).size.width * 0.35,
+                                ),
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          Icons.person,
+                                          size: 14,
+                                          color: Colors.white,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'You',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.white.withOpacity(0.9),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 6),
+                                    SelectableText(
+                                      message['command'] ?? '',
+                                      style: const TextStyle(
+                                        fontSize: 13,
+                                        color: Colors.white,
+                                        fontFamily: 'monospace',
+                                      ),
+                                    ),
+                                    if (message['directory'] != null && message['directory'].toString().isNotEmpty) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        'in: ${message['directory']}',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.white.withOpacity(0.8),
+                                          fontFamily: 'monospace',
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            // Assistant message (output)
+                            if (!isUser)
+                              Container(
+                                constraints: BoxConstraints(
+                                  maxWidth: MediaQuery.of(context).size.width * 0.35,
+                                ),
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: isExecuting
+                                      ? Theme.of(context).scaffoldBackgroundColor
+                                      : message['hasError'] == true
+                                          ? Colors.red.shade50
+                                          : Colors.grey.shade900,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: message['hasError'] == true
+                                      ? Border.all(color: Colors.red.shade300, width: 1)
+                                      : null,
+                                ),
+                                child: isExecuting
+                                    ? Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          SizedBox(
+                                            width: 14,
+                                            height: 14,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: Theme.of(context).colorScheme.primary,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            'Executing...',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                                            ),
+                                          ),
+                                        ],
+                                      )
+                                    : Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Icon(
+                                                message['hasError'] == true
+                                                    ? Icons.error_outline
+                                                    : Icons.terminal,
+                                                size: 14,
+                                                color: message['hasError'] == true
+                                                    ? Colors.red.shade700
+                                                    : Colors.green.shade400,
+                                              ),
+                                              const SizedBox(width: 6),
+                                              Text(
+                                                message['hasError'] == true ? 'Error' : 'Output',
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: message['hasError'] == true
+                                                      ? Colors.red.shade700
+                                                      : Colors.green.shade400,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          if (message['output'] != null && message['output'].toString().isNotEmpty) ...[
+                                            const SizedBox(height: 8),
+                                            SelectableText(
+                                              message['output'],
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: message['hasError'] == true
+                                                    ? Colors.red.shade900
+                                                    : Colors.white,
+                                                fontFamily: 'monospace',
+                                              ),
+                                            ),
+                                          ],
+                                          if (message['error'] != null && message['error'].toString().isNotEmpty) ...[
+                                            const SizedBox(height: 8),
+                                            SelectableText(
+                                              message['error'],
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.red.shade900,
+                                                fontFamily: 'monospace',
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                            ),
+                                          ],
+                                          if ((message['output'] == null || message['output'].toString().isEmpty) &&
+                                              (message['error'] == null || message['error'].toString().isEmpty) &&
+                                              message['hasError'] != true) ...[
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              'Command executed successfully (no output)',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey.shade400,
+                                                fontStyle: FontStyle.italic,
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                              ),
+                          ],
                         ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                            Container(
-                              padding: const EdgeInsets.all(4),
-                              decoration: BoxDecoration(
-                                color: isSuccess
-                                    ? Colors.green.withOpacity(0.2)
-                                    : isError
-                                        ? Colors.red.withOpacity(0.2)
-                                        : Theme.of(context).colorScheme.primary.withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(4),
+                      );
+                    },
+                  ),
+          ),
+          // Input area (ChatGPT-like)
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              border: Border(
+                top: BorderSide(color: Theme.of(context).dividerColor),
+              ),
+            ),
+            child: Column(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.5),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Theme.of(context).dividerColor),
+                  ),
+                  child: TextField(
+                    controller: _commandController,
+                    maxLines: 4,
+                    maxLength: 500,
+                    style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+                    decoration: InputDecoration(
+                      hintText: 'Enter command...',
+                      hintStyle: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.all(12),
+                      counterText: '',
+                      suffixIcon: _isExecutingCommand
+                          ? Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Theme.of(context).colorScheme.primary,
+                                ),
                               ),
-                              child: Icon(
-                                isSuccess
-                                ? Icons.check_circle
-                                    : isError
-                                        ? Icons.error
-                                        : Icons.play_arrow,
-                            size: 16,
-                                color: isSuccess
-                                    ? Colors.green.shade700
-                                    : isError
-                                        ? Colors.red.shade700
-                                        : Theme.of(context).colorScheme.primary,
+                            )
+                          : IconButton(
+                              icon: Icon(
+                                Icons.send,
+                                color: _commandController.text.isNotEmpty
+                                    ? Theme.of(context).colorScheme.primary
+                                    : Theme.of(context).colorScheme.onSurface.withOpacity(0.3),
                               ),
+                              onPressed: _isExecutingCommand
+                                  ? null
+                                  : () {
+                                      if (_commandController.text.isNotEmpty) {
+                                        _executeCommand(_commandController.text);
+                                        _commandController.clear();
+                                        setState(() {});
+                                      }
+                                    },
                             ),
-                            const SizedBox(width: 12),
-                          Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    log['message'].toString(),
-                              style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w500,
-                                      color: isSuccess
-                                          ? Colors.green.shade700
-                                          : isError
-                                              ? Colors.red.shade700
-                                              : Theme.of(context).colorScheme.onSurface.withOpacity(0.9),
-                                      fontFamily: 'monospace',
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _formatTimestamp(log['timestamp'] as DateTime),
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-                                    ),
-                                  ),
-                                ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
+                    ),
+                    onChanged: (value) {
+                      setState(() {});
+                    },
+                    onSubmitted: (value) {
+                      if (value.isNotEmpty && !_isExecutingCommand) {
+                        _executeCommand(value);
+                        _commandController.clear();
+                        setState(() {});
+                      }
+                    },
+                  ),
                 ),
-        ),
-      ],
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '${_commandController.text.length}/500',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
+                      ),
+                    ),
+                    if (_currentRunDirectory != null && 
+                        _selectedBlock != 'Select a block' && 
+                        _selectedExperiment != 'Select an experiment')
+                      Text(
+                        'Working directory: ${_currentRunDirectory!.length > 50 ? '...${_currentRunDirectory!.substring(_currentRunDirectory!.length - 50)}' : _currentRunDirectory!}',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Theme.of(context).colorScheme.primary,
+                          fontFamily: 'monospace',
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  String _formatTimestamp(DateTime timestamp) {
-    final now = DateTime.now();
-    final difference = now.difference(timestamp);
-    
-    if (difference.inSeconds < 60) {
-      return '${difference.inSeconds}s ago';
-    } else if (difference.inMinutes < 60) {
-      return '${difference.inMinutes}m ago';
-    } else if (difference.inHours < 24) {
-      return '${difference.inHours}h ago';
-    } else {
-      return '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
-    }
-  }
+
 
   Widget _buildMainHeader() {
     return Container(
@@ -2034,22 +2101,36 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
 
   Future<void> _executeCommand(String command) async {
     // Store the command and clear previous output
+    final runDirectory = _currentRunDirectory;
+    
     setState(() {
-      _lastCommand = command;
-      _lastCommandOutput = null;
-      _lastCommandError = null;
       _isExecutingCommand = true;
       
-      // Show command with directory info if available
-      String logMessage = '→ $command';
-      if (_currentRunDirectory != null && _currentRunDirectory!.isNotEmpty) {
-        logMessage += ' (in: $_currentRunDirectory)';
-      }
-      _activityLog.add({
+      // Add user message (command) to chat
+      _chatMessages.add({
+        'type': 'user',
+        'command': command,
+        'directory': runDirectory,
         'timestamp': DateTime.now(),
-        'message': logMessage,
-        'status': 'info',
       });
+      
+          // Add assistant message (executing) to chat
+      _chatMessages.add({
+        'type': 'assistant',
+        'isExecuting': true,
+        'timestamp': DateTime.now(),
+      });
+    });
+    
+    // Scroll to bottom after adding message
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_chatScrollController.hasClients) {
+        _chatScrollController.animateTo(
+          _chatScrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
     });
 
     try {
@@ -2077,12 +2158,12 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         setState(() {
           _isExecutingCommand = false;
           
-          // Store output for display
-          _lastCommandOutput = result['stdout']?.toString();
-          _lastCommandError = result['stderr']?.toString();
+          // Get output for display
+          final stdout = result['stdout']?.toString();
+          final stderr = result['stderr']?.toString();
           
           // Check if error is about directory not existing
-          final errorText = _lastCommandError?.toLowerCase() ?? '';
+          final errorText = stderr?.toLowerCase() ?? '';
           if (errorText.contains('directory') && errorText.contains('does not exist')) {
             // Show specific error for missing directory
             ScaffoldMessenger.of(context).showSnackBar(
@@ -2094,28 +2175,31 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             );
           }
           
-          // Only log command completion status in activity log
+          // Update the last assistant message with output
           final exitCode = result['exitCode'];
-          if (exitCode != null && exitCode != 0) {
-            String errorMsg = '✗ Command failed (exit code: $exitCode)';
-            if (errorText.contains('directory') && errorText.contains('does not exist')) {
-              errorMsg = '✗ Directory not found';
-            }
-          _activityLog.add({
-            'timestamp': DateTime.now(),
-              'message': errorMsg,
-              'status': 'error',
-            });
-          } else {
-            // Update the last log entry to show success
-            if (_activityLog.isNotEmpty) {
-              final lastIndex = _activityLog.length - 1;
-              _activityLog[lastIndex] = {
-                'timestamp': _activityLog[lastIndex]['timestamp'],
-                'message': '✓ ${_activityLog[lastIndex]['message'].toString().replaceFirst('→ ', '')}',
-            'status': 'success',
-              };
-            }
+          final hasError = exitCode != null && exitCode != 0;
+          
+          if (_chatMessages.isNotEmpty && _chatMessages.last['isExecuting'] == true) {
+            _chatMessages[_chatMessages.length - 1] = {
+              'type': 'assistant',
+              'isExecuting': false,
+              'output': stdout,
+              'error': stderr,
+              'hasError': hasError,
+              'exitCode': exitCode,
+              'timestamp': DateTime.now(),
+            };
+          }
+        });
+        
+        // Scroll to bottom after updating message
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_chatScrollController.hasClients) {
+            _chatScrollController.animateTo(
+              _chatScrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
           }
         });
       }
@@ -2123,7 +2207,6 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       if (mounted) {
         setState(() {
           _isExecutingCommand = false;
-          _lastCommandError = e.toString();
           
           // Check if error mentions directory
           final errorText = e.toString().toLowerCase();
@@ -2137,14 +2220,27 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             );
           }
           
-          // Update the last log entry to show error
-          if (_activityLog.isNotEmpty) {
-            final lastIndex = _activityLog.length - 1;
-            _activityLog[lastIndex] = {
-              'timestamp': _activityLog[lastIndex]['timestamp'],
-              'message': '✗ ${_activityLog[lastIndex]['message'].toString().replaceFirst('→ ', '')}',
-              'status': 'error',
+          // Update the last assistant message with error
+          if (_chatMessages.isNotEmpty && _chatMessages.last['isExecuting'] == true) {
+            _chatMessages[_chatMessages.length - 1] = {
+              'type': 'assistant',
+              'isExecuting': false,
+              'output': null,
+              'error': e.toString(),
+              'hasError': true,
+              'timestamp': DateTime.now(),
             };
+          }
+        });
+        
+        // Scroll to bottom after updating message
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_chatScrollController.hasClients) {
+            _chatScrollController.animateTo(
+              _chatScrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
           }
         });
       }

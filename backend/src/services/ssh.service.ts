@@ -103,7 +103,7 @@ export async function getSSHConnection(userId: number, forceNew: boolean = false
   
   return new Promise((resolve, reject) => {
     client.on('ready', () => {
-      console.log(`SSH connection established for user ${userId} to ${ipaddress}:${port}`);
+      // SSH connection established
       
       const connection: SSHConnection = {
         client,
@@ -222,14 +222,18 @@ export async function executeSSHCommand(userId: number, command: string, retries
       // Check if command contains sudo - if so, we need to use shell with PTY
       const isSudoCommand = command.trim().toLowerCase().startsWith('sudo');
       
-      // If working directory is provided, try to change to it, but run command anyway if it doesn't exist
+      // If working directory is provided, change to it before running the command
       let finalCommand = command;
       if (workingDirectory && workingDirectory.trim().length > 0) {
-        // Check if directory exists and change to it
-        // If directory doesn't exist, run command normally (not in that directory)
         // Escape the directory path to handle spaces and special characters
         const escapedDir = workingDirectory.replace(/'/g, "'\\''");
-        finalCommand = `if [ -d '${escapedDir}' ]; then cd '${escapedDir}' && ${command}; else echo "Warning: Directory '${escapedDir}' not found, running command in current directory" >&2 && ${command}; fi`;
+        // Change to the directory and run the command
+        // Use && to ensure command only runs if cd succeeds
+        // If directory doesn't exist, cd will fail and command won't run (safer)
+        finalCommand = `cd '${escapedDir}' && ${command}`;
+        console.log(`📁 Executing command in working directory: ${workingDirectory}`);
+      } else {
+        console.log(`📁 Executing command in current directory (no working directory specified)`);
       }
 
       const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {

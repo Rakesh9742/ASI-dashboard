@@ -634,7 +634,7 @@ class ZohoService {
       if (cached) {
         const age = Date.now() - cached.timestamp;
         if (age < this.PORTALS_CACHE_TTL) {
-          console.log(`[Cache Hit] Returning cached portals for user ${userId} (age: ${Math.round(age / 1000)}s)`);
+          // Cache hit - returning cached portals
           return cached.portals;
         } else {
           // Cache expired, remove it
@@ -647,7 +647,7 @@ class ZohoService {
     }
 
     try {
-      console.log(`[API Call] Fetching portals from Zoho API for user ${userId}`);
+      // Fetching portals from Zoho API
       const client = await this.getAuthenticatedClient(userId);
       const response = await client.get('/restapi/portals/');
 
@@ -664,7 +664,6 @@ class ZohoService {
         portals,
         timestamp: Date.now()
       });
-      console.log(`[Cache Updated] Cached portals for user ${userId} (${portals.length} portals)`);
 
       return portals;
     } catch (error: any) {
@@ -746,7 +745,7 @@ class ZohoService {
         if (age < this.PROJECTS_CACHE_TTL) {
           // If portalId was requested but cache has different portal, still use cache if it's recent
           if (!portalId || !cached.portalId || cached.portalId === portalId) {
-            console.log(`[Cache Hit] Returning cached projects for user ${userId} (age: ${Math.round(age / 1000)}s)`);
+            // Cache hit - returning cached projects
             return cached.projects;
           }
         } else {
@@ -793,7 +792,6 @@ class ZohoService {
         portalId: portal,
         timestamp: Date.now()
       });
-      console.log(`[Cache Updated] Cached projects for user ${userId} (${projects.length} projects)`);
 
       return projects;
     } catch (error: any) {
