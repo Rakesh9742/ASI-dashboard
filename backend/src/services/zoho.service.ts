@@ -161,15 +161,7 @@ class ZohoService {
         grant_type: 'authorization_code',
       };
 
-      // Log request details (without exposing secrets)
-      console.log('Exchanging code for token:', {
-        auth_url: `${this.authUrl}/oauth/v2/token`,
-        client_id: this.clientId,
-        redirect_uri: this.redirectUri,
-        has_code: !!code,
-        code_length: code?.length,
-        grant_type: 'authorization_code'
-      });
+      // Exchanging code for token
 
       let response;
       try {
@@ -240,17 +232,7 @@ class ZohoService {
         throw new Error(detailedError);
       }
       
-      // Log the response structure for debugging
-      console.log('Zoho token exchange response:', {
-        has_access_token: !!tokenData.access_token,
-        has_refresh_token: !!tokenData.refresh_token,
-        expires_in: tokenData.expires_in,
-        token_type: tokenData.token_type,
-        error: tokenData.error,
-        error_description: tokenData.error_description,
-        keys: Object.keys(tokenData),
-        full_response: JSON.stringify(tokenData, null, 2)
-      });
+      // Token exchange successful
 
       // Validate required fields
       if (!tokenData.access_token) {
@@ -430,7 +412,6 @@ class ZohoService {
         }
       );
 
-      console.log('Zoho user info response:', JSON.stringify(response.data).substring(0, 300));
       return response.data;
     } catch (error: any) {
       console.error('Error fetching Zoho user info from oauth/user/info:', error.response?.data || error.message);
@@ -905,7 +886,7 @@ class ZohoService {
             const testResponse = await client.get(`/restapi/portal/${p.id}/projects/${projectId}/`);
             if (testResponse.status === 200) {
               portal = p.id;
-              console.log(`[ZohoService] Found project in portal: ${p.id} (${p.name || p.portal_name || p.id_string})`);
+              // Found project in portal - no need to log
               break;
             }
           } catch (e) {
@@ -917,11 +898,8 @@ class ZohoService {
         // If still no portal found, use first portal
         if (!portal) {
           portal = portals[0].id;
-          console.log(`[ZohoService] Using first available portal: ${portal}`);
         }
       }
-
-      console.log(`[ZohoService] Fetching project members for projectId: ${projectId}, portalId: ${portal}`);
 
       let response: any = null;
       let lastError: any = null;
@@ -954,25 +932,18 @@ class ZohoService {
           if (foundProject) {
             foundPortal = p.id;
             projectFromList = foundProject;
-            console.log(`[ZohoService] ✅ Found project "${foundProject.name}" in portal ${p.id}`);
-            
-            // Log all keys in project object for debugging
-            console.log(`[ZohoService] Project object keys: ${Object.keys(foundProject).join(', ')}`);
             
             // Check if project data already contains users/members
             if (foundProject.users && Array.isArray(foundProject.users)) {
-              console.log(`[ZohoService] ✅ Found ${foundProject.users.length} users in project list response`);
               return foundProject.users;
             }
             if (foundProject.project_users && Array.isArray(foundProject.project_users)) {
-              console.log(`[ZohoService] ✅ Found ${foundProject.project_users.length} project_users in project list response`);
               return foundProject.project_users;
             }
             if (foundProject.members && Array.isArray(foundProject.members)) {
-              console.log(`[ZohoService] ✅ Found ${foundProject.members.length} members in project list response`);
               return foundProject.members;
             }
-            // Log if users field exists but is not an array
+            // Log if users field exists but is not an array (this is an error condition)
             if (foundProject.users && !Array.isArray(foundProject.users)) {
               console.log(`[ZohoService] ⚠️  Project has 'users' field but it's not an array: ${typeof foundProject.users}`);
             }
@@ -992,8 +963,6 @@ class ZohoService {
       // The id_string format (e.g., "173458000001945089") works with /users endpoint
       // The numeric id (e.g., 173458000001945100) might not work with V3 API
       const projectIdString = projectFromList?.id_string || String(projectId);
-      
-      console.log(`[ZohoService] Using project ID: ${projectIdString} (original: ${projectId}, id_string: ${projectFromList?.id_string}, numeric id: ${projectFromList?.id})`);
       
       // Helper function to recursively search for users/members in response
       const findUsersInResponse = (obj: any, path: string = '', depth: number = 0, maxDepth: number = 10): any[] => {
@@ -1075,9 +1044,7 @@ class ZohoService {
       
       for (const endpoint of endpointVariations) {
         try {
-          console.log(`[ZohoService] Trying endpoint: ${endpoint}`);
           response = await client.get(endpoint);
-          console.log(`[ZohoService] ✅ Success with endpoint: ${endpoint} (status: ${response.status})`);
           
           // Extract users from response immediately - ONLY from direct project member arrays
           // Check multiple possible response structures
@@ -1085,9 +1052,8 @@ class ZohoService {
           const responseData = fullResponse?.response?.result || fullResponse;
           let members: ZohoProjectMember[] = [];
           
-          // Log full response structure for debugging when project_users/users not found
+          // Only log response structure when debugging errors (when project_users/users not found)
           if (responseData) {
-            console.log(`[ZohoService] Response keys: ${Object.keys(responseData).join(', ')}`);
             
             // Check for project_users in various locations - comprehensive search
             // For /users endpoints, the response might be directly an array or wrapped
@@ -1117,28 +1083,13 @@ class ZohoService {
               if (location.value && Array.isArray(location.value) && location.value.length > 0) {
                 foundLocation = location.path;
                 members = location.value;
-                console.log(`[ZohoService] ✅ Found project_users/users at: ${foundLocation} (${members.length} members)`);
-                if (members.length > 0) {
-                  console.log(`[ZohoService] First member sample:`, JSON.stringify(members[0], null, 2).substring(0, 300));
-                }
                 break;
-              } else if (location.value && Array.isArray(location.value)) {
-                console.log(`[ZohoService] Found ${location.path} but it's empty (0 members)`);
-              } else if (location.value) {
-                console.log(`[ZohoService] Found ${location.path} but it's not an array: ${typeof location.value}`);
               }
             }
             
             // If still not found, search for any arrays containing user-like objects
             if (members.length === 0) {
-              console.log(`[ZohoService] ⚠️  No project_users/users array found. Searching for user-like arrays in response...`);
-              
               // CRITICAL: The ?include=project_users parameter is NOT working - users are not in the response
-              // We need to dump the FULL response structure to see where the 10 users might be
-              console.log(`[ZohoService] 🔍 Dumping FULL response structure to find where users are stored...`);
-              const fullResponseDump = JSON.stringify(fullResponse, null, 2);
-              console.log(`[ZohoService] Full response (first 5000 chars): ${fullResponseDump.substring(0, 5000)}...`);
-              
               // Also check ALL arrays in the response, regardless of their path
               const findAllArrays = (obj: any, path: string = '', depth: number = 0): Array<{path: string, array: any[], size: number, sample: any}> => {
                 const found: Array<{path: string, array: any[], size: number, sample: any}> = [];
@@ -1165,22 +1116,6 @@ class ZohoService {
               };
               
               const allArrays = findAllArrays(fullResponse);
-              console.log(`[ZohoService] 🔍 Found ${allArrays.length} total arrays in response:`);
-              allArrays.forEach(({path, size, sample}) => {
-                const sampleStr = JSON.stringify(sample, null, 2).substring(0, 200);
-                console.log(`[ZohoService]   - ${path}: ${size} items`);
-                console.log(`[ZohoService]     Sample: ${sampleStr}...`);
-                
-                // Check if this array contains user-like objects
-                if (size >= 5 && sample && typeof sample === 'object') {
-                  const hasUserFields = sample.email || sample.Email || sample.zpuid || sample.zuid || sample.user_id || 
-                                       sample.name || sample.Name || sample.first_name || sample.last_name;
-                  if (hasUserFields) {
-                    console.log(`[ZohoService]     ⚠️  This array (${path}) has ${size} items and contains user-like objects!`);
-                    console.log(`[ZohoService]     Sample keys: ${Object.keys(sample).join(', ')}`);
-                  }
-                }
-              });
               
               // Helper to recursively find arrays with user-like objects
               // EXCLUDE: project_manager, stakeholders, owner, created_by, updated_by - these are NOT project members
@@ -1219,15 +1154,6 @@ class ZohoService {
               
               const userArrays = findUserArrays(fullResponse);
               if (userArrays.length > 0) {
-                console.log(`[ZohoService] ✅ Found ${userArrays.length} potential user arrays in response (excluding project_manager/stakeholders):`);
-                userArrays.forEach(({path, array}) => {
-                  console.log(`[ZohoService]   - ${path}: ${array.length} items`);
-                  if (array.length > 0) {
-                    console.log(`[ZohoService]     First item keys: ${Object.keys(array[0]).join(', ')}`);
-                    console.log(`[ZohoService]     First item sample:`, JSON.stringify(array[0], null, 2).substring(0, 300));
-                  }
-                });
-                
                 // Prioritize project_users, then users, then members
                 const projectUsersArray = userArrays.find(ua => 
                   ua.path.toLowerCase().includes('project_user') || 
@@ -1247,10 +1173,7 @@ class ZohoService {
                 const selectedArray = projectUsersArray || usersArray || membersArray;
                 if (selectedArray) {
                   members = selectedArray.array;
-                  console.log(`[ZohoService] ✅ Using user array from: ${selectedArray.path} (${members.length} members)`);
                 } else {
-                  console.log(`[ZohoService] ⚠️  Found user arrays but none match project_users/users/members pattern. Available: ${userArrays.map(ua => ua.path).join(', ')}`);
-                  
                   // If we found arrays but they're excluded (project_manager/stakeholders), 
                   // we need to look deeper - maybe users are nested in a different structure
                   // Try to find any array with 8+ users (we expect 10)
@@ -1260,36 +1183,8 @@ class ZohoService {
                     console.log(`[ZohoService] ⚠️  This suggests the project_users array might be nested elsewhere or the API isn't returning it.`);
                   }
                 }
-              } else {
-                console.log(`[ZohoService] ⚠️  No user-like arrays found in response. Full response structure:`);
-                console.log(`[ZohoService] response.data type: ${Array.isArray(response.data) ? 'array' : typeof response.data}`);
-                console.log(`[ZohoService] response.data keys: ${Object.keys(fullResponse || {}).join(', ')}`);
-                if (fullResponse?.response) {
-                  console.log(`[ZohoService] response.data.response keys: ${Object.keys(fullResponse.response).join(', ')}`);
-                }
-                if (fullResponse?.response?.result) {
-                  console.log(`[ZohoService] response.data.response.result keys: ${Object.keys(fullResponse.response.result).join(', ')}`);
-                  // Check if any of the keys contain user-related data
-                  const resultKeys = Object.keys(fullResponse.response.result);
-                  for (const key of resultKeys) {
-                    const value = fullResponse.response.result[key];
-                    if (Array.isArray(value) && value.length > 0) {
-                      console.log(`[ZohoService] Found array at result.${key} with ${value.length} items`);
-                      if (value[0] && typeof value[0] === 'object' && (value[0].email || value[0].Email || value[0].zpuid || value[0].zuid)) {
-                        console.log(`[ZohoService] ⚠️  Array at result.${key} appears to contain users! First item:`, JSON.stringify(value[0], null, 2).substring(0, 200));
-                      }
-                    }
-                  }
-                // Log first 2000 chars of the result to see structure
-                const resultStr = JSON.stringify(fullResponse.response.result, null, 2).substring(0, 2000);
-                console.log(`[ZohoService] response.data.response.result (first 2000 chars): ${resultStr}...`);
-                
-                // Also check the full response.data structure
-                const fullResponseStr = JSON.stringify(fullResponse, null, 2).substring(0, 2000);
-                console.log(`[ZohoService] Full response.data (first 2000 chars): ${fullResponseStr}...`);
               }
             }
-          }
           }
           
           // ONLY extract from direct project member arrays - NO recursive search, NO tasks/issues, NO owner/PM/stakeholders
@@ -1310,16 +1205,10 @@ class ZohoService {
               return matchIndex === index;
             });
             
-            console.log(`[ZohoService] After deduplication: ${uniqueMembers.length} unique members from ${members.length} total`);
             members = uniqueMembers;
             
             // Extract project_profile from each member
             members = members.map((member: any) => {
-              // Log all keys to see what fields are available
-              if (members.indexOf(member) === 0) {
-                console.log(`[ZohoService] First member keys: ${Object.keys(member).join(', ')}`);
-              }
-              
               // Extract project_profile/role from various possible fields
               const projectProfile = member.project_profile || 
                                     member.Project_Profile ||
@@ -1345,11 +1234,6 @@ class ZohoService {
                                      projectProfile.displayName;
               }
               
-              // Log the extracted project_profile for debugging
-              if (members.indexOf(member) < 3) {
-                console.log(`[ZohoService] Member ${member.email || member.Email || 'no email'}: project_profile = ${projectProfileValue || 'NOT FOUND'}`);
-              }
-              
               return {
                 ...member,
                 project_profile: projectProfileValue || null,
@@ -1357,10 +1241,7 @@ class ZohoService {
               };
             });
             
-            console.log(`[ZohoService] ✅ Found ${members.length} unique project members from API endpoint: ${endpoint}`);
             return members;
-          } else {
-            console.log(`[ZohoService] ⚠️  Endpoint ${endpoint} returned success but no members found in direct arrays`);
           }
           
           // If we got a response but no members, continue to next endpoint
@@ -1378,8 +1259,9 @@ class ZohoService {
               const errorDetails = JSON.stringify(error.response.data, null, 2).substring(0, 500);
               console.log(`[ZohoService] Error details: ${errorDetails}`);
             }
-          } else {
-            console.log(`[ZohoService] ❌ Endpoint ${endpoint} failed: ${status || 'N/A'} - ${errorMsg}`);
+          } else if (status && status !== 404) {
+            // Only log non-404 errors (404 is expected when trying multiple endpoints)
+            console.log(`[ZohoService] ❌ Endpoint ${endpoint} failed: ${status} - ${errorMsg}`);
           }
           
           if (error.response?.status === 404) {
@@ -1551,7 +1433,7 @@ class ZohoService {
     updatedAssignments: number;
     errors: Array<{ email: string; error: string }>;
   }> {
-    console.log(`[ZohoService] Starting sync for ASI project ${asiProjectId}, Zoho project ${zohoProjectId}`);
+    // Starting sync for ASI project
     
     const client = await pool.connect();
     
@@ -1559,14 +1441,14 @@ class ZohoService {
       await client.query('BEGIN');
 
       // Get project members from Zoho
-      console.log(`[ZohoService] Fetching members from Zoho project ${zohoProjectId}...`);
+      // Fetching members from Zoho project
       const zohoMembers = await this.getProjectMembers(
         syncedByUserId,
         zohoProjectId,
         portalId
       );
 
-      console.log(`[ZohoService] Found ${zohoMembers.length} members in Zoho project`);
+      // Found members in Zoho project
       
       if (zohoMembers.length === 0) {
         console.warn(`[ZohoService] ⚠️  No members found in Zoho project ${zohoProjectId}. This might indicate an API issue or the project has no members.`);
@@ -1659,7 +1541,7 @@ class ZohoService {
             // If still conflict after max attempts, use email as username (sanitized)
             if (usernameConflict) {
               username = email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-              console.log(`[ZohoService] Username conflict after ${maxAttempts} attempts, using email-based username: ${username}`);
+              // Username conflict after max attempts, using email-based username
             }
             
             try {
@@ -1679,7 +1561,7 @@ class ZohoService {
               );
               userId = insertResult.rows[0].id;
               createdUsers++;
-              console.log(`[ZohoService] ✅ Created new user: ${email} (username: ${username}, id: ${userId})`);
+              // Created new user
             } catch (insertError: any) {
               // Handle unique constraint violations
               if (insertError.code === '23505') { // Unique violation
@@ -1724,7 +1606,6 @@ class ZohoService {
               
               if (existingRole !== asiRole) {
                 // Role has changed - update it
-                console.log(`[ZohoService] Updating role for user ${email} in project ${asiProjectId}: ${existingRole} -> ${asiRole}`);
                 await client.query(
                   `UPDATE user_projects 
                    SET role = $1
@@ -1732,13 +1613,9 @@ class ZohoService {
                   [asiRole, userId, asiProjectId]
                 );
                 updatedAssignments++;
-              } else {
-                // Role unchanged - no update needed
-                console.log(`[ZohoService] User ${email} already assigned to project ${asiProjectId} with role ${asiRole} (no change)`);
               }
             } else {
               // New assignment - insert
-              console.log(`[ZohoService] Assigning user ${email} to project ${asiProjectId} with role ${asiRole}`);
               await client.query(
                 `INSERT INTO user_projects (user_id, project_id, role)
                  VALUES ($1, $2, $3)`,
@@ -2868,16 +2745,6 @@ class ZohoService {
    * Save or update tokens for a user
    */
   async saveTokens(userId: number, tokenData: ZohoTokenResponse): Promise<void> {
-    console.log(`[SAVE_TOKENS] Starting save for user ${userId}`);
-    console.log(`[SAVE_TOKENS] Token data:`, {
-      has_access_token: !!tokenData.access_token,
-      access_token_length: tokenData.access_token?.length || 0,
-      has_refresh_token: !!tokenData.refresh_token,
-      refresh_token_length: tokenData.refresh_token?.length || 0,
-      expires_in: tokenData.expires_in,
-      token_type: tokenData.token_type
-    });
-    
     // Verify user exists before saving tokens
     const userCheck = await pool.query(
       'SELECT id, username, email FROM public.users WHERE id = $1',
@@ -2888,8 +2755,6 @@ class ZohoService {
       console.error(`[SAVE_TOKENS] ERROR: User ${userId} does not exist in users table`);
       throw new Error(`Cannot save tokens: User with ID ${userId} does not exist. Please ensure the user is created first.`);
     }
-    
-    console.log(`[SAVE_TOKENS] Verified user exists: ${userCheck.rows[0].username} (${userCheck.rows[0].email})`);
     
     // Validate required fields
     if (!tokenData.access_token || tokenData.access_token.trim() === '') {
@@ -2915,8 +2780,6 @@ class ZohoService {
     if (isNaN(expiresAt.getTime())) {
       throw new Error(`Invalid expiration date calculated. expires_in: ${tokenData.expires_in}, calculated: ${expiresAt}`);
     }
-    
-    console.log(`Saving tokens for user ${userId}, expires_in: ${expiresIn}, expires_at: ${expiresAt.toISOString()}`);
 
     const result = await pool.query(
       `INSERT INTO public.zoho_tokens 
@@ -2948,13 +2811,6 @@ class ZohoService {
       throw new Error('Failed to save tokens: No rows returned from database');
     }
     
-    console.log(`[SAVE_TOKENS] ✅ Successfully saved tokens for user ${userId}:`, {
-      token_id: result.rows[0].id,
-      user_id: result.rows[0].user_id,
-      created_at: result.rows[0].created_at,
-      expires_at: result.rows[0].expires_at
-    });
-    
     // Verify the token was actually saved
     const verifyResult = await pool.query(
       'SELECT id, user_id, expires_at FROM public.zoho_tokens WHERE user_id = $1',
@@ -2965,8 +2821,6 @@ class ZohoService {
       console.error(`[SAVE_TOKENS] ERROR: Verification failed - token not found after save for user ${userId}`);
       throw new Error('Failed to verify token save: Token not found after insert');
     }
-    
-    console.log(`[SAVE_TOKENS] ✅ Verified token saved for user ${userId}`);
   }
 
   /**

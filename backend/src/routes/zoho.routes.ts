@@ -14,8 +14,6 @@ function mapZohoRoleToAppRole(designation: string | undefined): string {
   }
 
   const designationLower = designation.toLowerCase().trim();
-  
-  console.log(`Mapping Zoho designation: "${designation}" (normalized: "${designationLower}")`);
 
   // Admin/Management roles - These roles should have full admin access matching DB admin role
   // Note: Check AFTER project_manager to avoid conflicts (project manager is more specific)
@@ -168,16 +166,6 @@ router.get('/callback', async (req, res) => {
     // Exchange code for tokens first
     const tokenData = await zohoService.exchangeCodeForToken(code as string);
     
-    // Log token data for debugging (without sensitive info)
-    console.log('Token data received:', {
-      has_access_token: !!tokenData.access_token,
-      has_refresh_token: !!tokenData.refresh_token,
-      expires_in: tokenData.expires_in,
-      expires_in_type: typeof tokenData.expires_in,
-      token_type: tokenData.token_type,
-      scope: tokenData.scope
-    });
-
     // Check if this is a login flow (state starts with "login_")
     const isLoginFlow = state && (state as string).startsWith('login_');
     
@@ -205,26 +193,15 @@ router.get('/callback', async (req, res) => {
                         email?.split('@')[0] || 'Zoho User';
 
         // Fetch Zoho People record to determine role/designation
-        console.log('\n========================================');
-        console.log('=== FETCHING ZOHO PEOPLE RECORD ===');
-        console.log('Email:', email);
-        console.log('========================================\n');
-        
         let peopleRecord: any = {};
         let designation = '';
         
         try {
           peopleRecord = await zohoService.getZohoPeopleRecord(tokenData.access_token!, email);
           
-          console.log('\n=== ZOHO PEOPLE RECORD RECEIVED ===');
-          console.log('Full record:', JSON.stringify(peopleRecord, null, 2));
-          console.log('Record keys:', peopleRecord ? Object.keys(peopleRecord) : 'No record');
-          console.log('Record type:', Array.isArray(peopleRecord) ? 'Array' : typeof peopleRecord);
-          
           // Handle array response (sometimes Zoho returns array)
           if (Array.isArray(peopleRecord) && peopleRecord.length > 0) {
             peopleRecord = peopleRecord[0];
-            console.log('Extracted first record from array');
           }
           
           // Try multiple possible field names for designation/role
@@ -243,23 +220,12 @@ router.get('/callback', async (req, res) => {
                        peopleRecord?.Job_Role ||
                        peopleRecord?.job_role ||
                        '';
-          
-          console.log('\n=== EXTRACTED DESIGNATION ===');
-          console.log('Designation value:', designation || '(NOT FOUND)');
-          console.log('Designation type:', typeof designation);
-          console.log('Is empty?', !designation || designation.trim() === '');
         } catch (peopleError: any) {
-          console.error('\n❌ ERROR FETCHING ZOHO PEOPLE RECORD:', peopleError.message);
-          console.error('This is OK - will use default role mapping');
+          console.error('❌ Error fetching Zoho People record:', peopleError.message);
           designation = ''; // Will default to engineer
         }
         
         const mappedRole = mapZohoRoleToAppRole(designation);
-        
-        console.log('\n=== ROLE MAPPING RESULT ===');
-        console.log('Original designation from Zoho People:', designation || '(empty - not found)');
-        console.log('Mapped role:', mappedRole);
-        console.log('========================================\n');
 
         if (!email) {
           throw new Error('Could not retrieve email from Zoho account. Please ensure your Zoho account has an email address.');
@@ -285,26 +251,12 @@ router.get('/callback', async (req, res) => {
           );
           user = insertResult.rows[0];
           userId = user.id;
-          console.log('\n=== CREATED NEW USER ===');
-          console.log('User ID:', userId);
-          console.log('Email:', email);
-          console.log('Username:', username);
-          console.log('Assigned role:', mappedRole);
-          console.log('Designation from Zoho:', designation || '(not found)');
-          console.log('=====================================\n');
         } else {
           // User exists, use existing user
           user = userResult.rows[0];
           userId = user.id;
           
           // Update last login, full name, and role
-          console.log('\n=== UPDATING EXISTING USER ===');
-          console.log('User ID:', userId);
-          console.log('Email:', email);
-          console.log('Current role in DB:', user.role);
-          console.log('New mapped role:', mappedRole);
-          console.log('Designation from Zoho:', designation || '(not found)');
-          
           // ALWAYS update the role from Zoho People, overwriting any previous role
           await pool.query(
             'UPDATE users SET last_login = NOW(), full_name = COALESCE($1, full_name), role = $2 WHERE id = $3',
@@ -317,10 +269,6 @@ router.get('/callback', async (req, res) => {
             [userId]
           );
           user = updatedUserResult.rows[0];
-          
-          console.log('Role after update:', user.role);
-          console.log('Logged in existing user:', { userId, email, oldRole: userResult.rows[0].role, newRole: mappedRole, actualRoleInDB: user.role });
-          console.log('=====================================\n');
         }
 
         // Save Zoho tokens for this user
@@ -344,7 +292,7 @@ router.get('/callback', async (req, res) => {
         // Establish SSH connection in background (non-blocking) to avoid login delay
         const { getSSHConnection } = await import('../services/ssh.service');
         getSSHConnection(user.id).then(() => {
-          console.log(`SSH connection established for user ${user.id} (background, Zoho login)`);
+          // SSH connection established in background
         }).catch((err: any) => {
           console.error(`Failed to establish SSH connection for user ${user.id} (background, Zoho login):`, err);
           // Connection will be retried when user actually needs SSH functionality
@@ -395,13 +343,7 @@ router.get('/callback', async (req, res) => {
                   const token = '${jwtToken}';
                   const user = ${JSON.stringify(user)};
                   
-                  console.log('Zoho login callback - Token received:', token ? 'Yes' : 'No');
-                  console.log('Zoho login callback - User data:', user);
-                  console.log('Zoho login callback - User role:', user?.role);
-                  console.log('Zoho login callback - Has window.opener:', !!window.opener);
-                  
                   if (window.opener) {
-                    console.log('Sending postMessage to parent window...');
                     try {
                       window.opener.postMessage({
                         type: 'ZOHO_LOGIN_SUCCESS',
@@ -473,23 +415,14 @@ router.get('/callback', async (req, res) => {
       }
 
       // Require refresh token for regular connect flow
-      console.log(`[ZOHO CALLBACK] Processing regular OAuth flow for user ${userId}`);
-      console.log(`[ZOHO CALLBACK] Token data check:`, {
-        has_access_token: !!tokenData.access_token,
-        has_refresh_token: !!tokenData.refresh_token,
-        refresh_token_length: tokenData.refresh_token?.length || 0
-      });
-      
       if (!tokenData.refresh_token || tokenData.refresh_token.trim() === '') {
         console.error(`[ZOHO CALLBACK] ERROR: No refresh_token received for user ${userId}`);
         throw new Error('Zoho did not return a refresh_token. Please re-authorize with consent. (Scopes: AaaServer.profile.read, profile, email, ZohoProjects.projects.READ, ZohoProjects.portals.READ, ZohoPeople.people.ALL)');
       }
 
       // Save tokens to database
-      console.log(`[ZOHO CALLBACK] Attempting to save tokens for user ${userId}`);
       try {
         await zohoService.saveTokens(userId, tokenData);
-        console.log(`[ZOHO CALLBACK] ✅ Successfully saved tokens for user ${userId}`);
       } catch (saveError: any) {
         console.error(`[ZOHO CALLBACK] ❌ Failed to save tokens for user ${userId}:`, saveError.message);
         throw saveError;
@@ -1123,16 +1056,12 @@ router.get('/projects/:zohoProjectId/members', authenticate, async (req, res) =>
       portalId as string | undefined
     );
 
-    console.log(`[API] Found ${members.length} members in Zoho project ${zohoProjectId}`);
-
     // Map roles for preview
     const mappedMembers = members.map(member => {
       const email = member.email || member.Email || member.mail || 'N/A';
       const name = member.name || member.Name || member.full_name || email?.split('@')[0] || 'Unknown';
       const zohoRole = member.role || member.Role || member.project_role || 'Employee';
       const asiRole = zohoService.mapZohoProjectRoleToAppRole(zohoRole);
-      
-      console.log(`[API] Member: ${email} (${name}) - Zoho role: ${zohoRole} -> ASI role: ${asiRole}`);
       
       return {
         email,

@@ -60,11 +60,11 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         throw Exception('No authentication token');
       }
 
-      // Use getProjectsWithZoho - backend checks Zoho connection and handles gracefully
-      // Backend will only fetch Zoho projects if user has valid token, avoiding unnecessary calls
+      // Use getProjectsWithZoho which handles Zoho connection check in backend
+      // This avoids unnecessary frontend API calls and lets backend optimize
       Map<String, dynamic> projectsData;
       try {
-        // Backend handles Zoho connection check efficiently
+        // Try with Zoho first - backend will gracefully handle if not connected
         projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
       } catch (e) {
         // If that fails, fallback to regular projects
@@ -213,6 +213,8 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
               Row(
                 children: [
                   Expanded(child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981))),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildStatCard('Failed', stats['failed']!.toString(), const Color(0xFFEF4444))),
                 ],
               ),
             ],
@@ -231,6 +233,10 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
             const SizedBox(width: 16),
             Expanded(
               child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981)),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildStatCard('Failed', stats['failed']!.toString(), const Color(0xFFEF4444)),
             ),
           ],
         );
@@ -1449,13 +1455,14 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
       // Project name: replace spaces with underscores (e.g., "mohan r4" -> "mohan_r4")
       // Project group: derived from project name (sanitized)
       final projectNameSanitized = widget.projectName.replaceAll(' ', '_');
-      final command = 'sudo python3 /CX_CAD/REL/env_scripts/infra/latest/createDir.py --base-path /CX_PROJ --proj $projectNameSanitized --dom $domainCodesStr --project-group $projectNameSanitized --scratch-base-path /CX_RUN_NEW';
+      final command = 'sudo python3 /CX_CAD/REL/env_scripts/infra/latest/createDir.py --base-path /CX_PROJ --proj $projectNameSanitized --dom $domainCodesStr --project-group $projectNameSanitized --scratch-base-path /CX_PROJ';
 
-      // Print command to console
+      // Print command to console with final substituted values
       print('═══════════════════════════════════════════════════════════');
       print('🚀 EXECUTING SSH COMMAND:');
-      print('   Command: $command');
-      print('   Project: ${widget.projectName}');
+      print('   Final Command: $command');
+      print('   Project Name: ${widget.projectName}');
+      print('   Sanitized Project: $projectNameSanitized');
       print('   Zoho Domains: ${_selectedDomainCodes.join(', ')}');
       print('   Mapped Domains: $domainCodesStr');
       print('═══════════════════════════════════════════════════════════');
@@ -1505,6 +1512,95 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                       (result['stderr']?.toString() ?? '');
         _showPasswordRequiredDialog(context, command, output);
       } else if (mounted && result['success'] == true) {
+        // Try to fetch and display the run directory path after successful execution
+        try {
+          print('═══════════════════════════════════════════════════════════');
+          print('🔍 FETCHING RUN DIRECTORY PATH AFTER createDir.py:');
+          print('   Project: ${widget.projectName}');
+          print('   Sanitized Project: $projectNameSanitized');
+          print('═══════════════════════════════════════════════════════════');
+          
+          // Get the actual username from the remote server
+          final whoamiResult = await widget.apiService.executeSSHCommand(
+            command: 'whoami',
+            token: token,
+          );
+          
+          String? actualUsername;
+          if (whoamiResult['success'] == true && whoamiResult['stdout'] != null) {
+            actualUsername = whoamiResult['stdout'].toString().trim();
+            print('   ✅ Actual username on server: $actualUsername');
+          }
+          
+          if (actualUsername != null && actualUsername.isNotEmpty) {
+            // Check if the project directory was created under /CX_PROJ
+            // The createDir.py script typically creates: /CX_PROJ/{project}/...
+            // Run directories are typically under: /CX_RUN_NEW/{project}/pd/users/{username}/...
+            // But we should check what was actually created
+            
+            // First, check if project directory exists under /CX_PROJ
+            final checkProjDirCommand = 'if [ -d "/CX_PROJ/$projectNameSanitized" ]; then echo "/CX_PROJ/$projectNameSanitized"; else echo ""; fi';
+            final projDirResult = await widget.apiService.executeSSHCommand(
+              command: checkProjDirCommand,
+              token: token,
+            );
+            
+            String? projectDir;
+            if (projDirResult['success'] == true && projDirResult['stdout'] != null) {
+              final stdout = projDirResult['stdout'].toString().trim();
+              if (stdout.isNotEmpty && stdout.startsWith('/')) {
+                projectDir = stdout;
+                print('   ✅ Found project directory: $projectDir');
+              }
+            }
+            
+            // Check for run directory under /CX_RUN_NEW (common pattern)
+            // Look for: /CX_RUN_NEW/{project}/pd/users/{username}/*
+            final escapedProject = projectNameSanitized.replaceAll("'", "'\\''");
+            final escapedUsername = actualUsername.replaceAll("'", "'\\''");
+            final findRunDirCommand = "find /CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername -maxdepth 3 -type d 2>/dev/null | head -1 || echo ''";
+            
+            final runDirResult = await widget.apiService.executeSSHCommand(
+              command: findRunDirCommand,
+              token: token,
+            );
+            
+            String? runDirectory;
+            if (runDirResult['success'] == true && runDirResult['stdout'] != null) {
+              final stdout = runDirResult['stdout'].toString().trim();
+              if (stdout.isNotEmpty && stdout.startsWith('/')) {
+                runDirectory = stdout.split('\n').first.trim();
+                print('   ✅ Found run directory: $runDirectory');
+              }
+            }
+            
+            // If not found, construct expected path based on common pattern
+            if (runDirectory == null || runDirectory.isEmpty) {
+              // Common pattern: /CX_RUN_NEW/{project}/pd/users/{username}
+              runDirectory = '/CX_RUN_NEW/$projectNameSanitized/pd/users/$actualUsername';
+              print('   ⚠️ Run directory not found via search, using expected path: $runDirectory');
+            }
+            
+            print('═══════════════════════════════════════════════════════════');
+            print('📁 DIRECTORY PATHS:');
+            if (projectDir != null) {
+              print('   Project Directory: $projectDir');
+            }
+            print('   Run Directory: $runDirectory');
+            print('═══════════════════════════════════════════════════════════');
+            
+            // Update the output to include the run directory path
+            if (mounted) {
+              setState(() {
+                _output = '${_output ?? 'Command executed successfully'}\n\n📁 Project Directory: ${projectDir ?? 'Not found'}\n📁 Run Directory: $runDirectory';
+              });
+            }
+          }
+        } catch (e) {
+          print('⚠️ Warning: Failed to fetch run directory path: $e');
+          // Don't fail the entire operation if fetching path fails
+        }
+        
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Command executed successfully'),
@@ -1740,7 +1836,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                       color: Colors.grey.shade50,
                       border: Border(
                         top: BorderSide(color: Colors.grey.shade300),
-                      ),
+                      )
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.end,
@@ -2725,11 +2821,8 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
             backgroundColor: Colors.green,
           ),
         );
-        // Close dialog after a short delay to show success message
-        await Future.delayed(const Duration(milliseconds: 500));
-        if (mounted) {
-          Navigator.of(context).pop();
-        }
+        // Don't close dialog automatically - let user close it manually
+        // User can review the output and run directory path before closing
       }
     } catch (e) {
       setState(() {
