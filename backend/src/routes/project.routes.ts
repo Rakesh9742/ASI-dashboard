@@ -1206,8 +1206,10 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
               if (zohoRole) {
                 // Convert to string if it's still not a string
                 const roleString = typeof zohoRole === 'string' ? zohoRole : String(zohoRole);
-                // Map Zoho role to app role
+                console.log(`[User Role API] Extracted role from project profile: "${roleString}" for user ${userEmail} in project ${zohoProjectId}`);
+                // Map Zoho role to app role (handles both "Admin" and "admin" case-insensitively)
                 projectRole = zohoService.mapZohoProjectRoleToAppRole(roleString);
+                console.log(`[User Role API] Mapped to app role: "${projectRole}" for user ${userEmail}`);
               }
             }
           } catch (memberError: any) {
@@ -1275,6 +1277,7 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
     const effectiveRole = projectRole || globalRole;
     
     // Determine available view types based on role
+    // IMPORTANT: Users with 'admin' role from project profile (Zoho) should have same access as global admins
     const availableViewTypes: string[] = [];
     if (effectiveRole === 'management') {
       // Management role only sees management view
@@ -1287,13 +1290,25 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
     } else if (effectiveRole === 'lead') {
       availableViewTypes.push('engineer', 'lead');
     } else if (effectiveRole === 'project_manager' || effectiveRole === 'admin') {
-      // Admins and PMs can see all engineering, CAD, and management views
+      // Admins (both global and project-specific from Zoho) and PMs can see all views
+      // This includes: engineer, lead, manager, management, and CAD views
       availableViewTypes.push('engineer', 'lead', 'manager', 'management', 'cad');
     }
     
     // If customer, also add customer view
     if (effectiveRole === 'customer') {
       availableViewTypes.push('customer');
+    }
+    
+    // Special case: If user has admin role from project profile (even if global role is not admin),
+    // ensure they have access to all views like a global admin
+    if (projectRole === 'admin' && globalRole !== 'admin') {
+      // User is admin in this project but not globally - give them all views
+      if (!availableViewTypes.includes('engineer')) availableViewTypes.push('engineer');
+      if (!availableViewTypes.includes('lead')) availableViewTypes.push('lead');
+      if (!availableViewTypes.includes('manager')) availableViewTypes.push('manager');
+      if (!availableViewTypes.includes('management')) availableViewTypes.push('management');
+      if (!availableViewTypes.includes('cad')) availableViewTypes.push('cad');
     }
     
     return res.json({

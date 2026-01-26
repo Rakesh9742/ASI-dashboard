@@ -1348,6 +1348,7 @@ class ZohoService {
     
     // Admin roles in Zoho Project - These roles should have full admin access matching DB admin role
     // Note: Check AFTER project_manager to avoid conflicts (project manager is more specific)
+    // Handles both "Admin" and "admin" (case-insensitive via toLowerCase)
     const adminKeywords = [
       'admin', 'administrator', 'owner', 'project owner',
       'director', 'head', 'ceo', 'cto', 'cfo', 'vp', 'vice president',
@@ -1387,7 +1388,9 @@ class ZohoService {
     }
     
     // Check for admin roles (after project_manager to avoid conflicts)
+    // This handles "Admin", "admin", "Administrator", etc. (case-insensitive)
     if (adminKeywords.some(keyword => roleLower.includes(keyword))) {
+      console.log(`[mapZohoProjectRoleToAppRole] Mapped "${zohoProjectRole}" (normalized: "${roleLower}") to role: admin`);
       return 'admin';
     }
     

@@ -187,6 +187,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       }
       
       // Set default view type based on user role
+      // Note: Project-specific role will be fetched later and may override this
       String defaultViewType = 'engineer';
       if (userRole == 'management') {
         defaultViewType = 'management';
@@ -650,18 +651,29 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     }
 
     // Update view type if it doesn't match the user's role (important for refresh)
+    // Check both global role and project role to handle project admins
     if (widget.initialViewType == null && userRole != null) {
       String correctViewType = 'engineer';
+      // Check if user is admin (either globally or in project)
+      final isAdmin = userRole == 'admin' || _projectRole == 'admin';
       if (userRole == 'customer') {
         correctViewType = 'customer';
-      } else if (userRole == 'admin' || userRole == 'project_manager') {
-        correctViewType = 'manager';
-      } else if (userRole == 'lead') {
+      } else if (isAdmin || userRole == 'project_manager' || _projectRole == 'project_manager') {
+        // Admins (global or project) and PMs default to manager view
+        // But check available views first to see if management is available
+        if (_availableViewTypes.contains('management')) {
+          correctViewType = 'management';
+        } else if (_availableViewTypes.contains('manager')) {
+          correctViewType = 'manager';
+        } else {
+          correctViewType = 'manager';
+        }
+      } else if (userRole == 'lead' || _projectRole == 'lead') {
         correctViewType = 'lead';
       }
       
-      // Only update if current view type is wrong
-      if (_viewType != correctViewType) {
+      // Only update if current view type is wrong and the correct one is available
+      if (_viewType != correctViewType && _availableViewTypes.contains(correctViewType)) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             setState(() {
@@ -1295,10 +1307,24 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         final projectRole = roleResponse['projectRole'];
         
         // Set default view type to the highest available view
+        // For admins (global or project-specific), default to manager view
         String defaultViewType = 'engineer';
-      if (availableViewTypes.contains('cad')) {
-        defaultViewType = 'cad';
-      } else if (availableViewTypes.contains('manager')) {
+        if (projectRole == 'admin' || effectiveRole == 'admin') {
+          // Project admins should default to manager view (or management if available)
+          if (availableViewTypes.contains('management')) {
+            defaultViewType = 'management';
+          } else if (availableViewTypes.contains('manager')) {
+            defaultViewType = 'manager';
+          } else if (availableViewTypes.contains('cad')) {
+            defaultViewType = 'cad';
+          } else if (availableViewTypes.contains('lead')) {
+            defaultViewType = 'lead';
+          } else if (availableViewTypes.contains('engineer')) {
+            defaultViewType = 'engineer';
+          }
+        } else if (availableViewTypes.contains('cad')) {
+          defaultViewType = 'cad';
+        } else if (availableViewTypes.contains('manager')) {
           defaultViewType = 'manager';
         } else if (availableViewTypes.contains('lead')) {
           defaultViewType = 'lead';
