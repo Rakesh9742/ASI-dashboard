@@ -134,7 +134,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
         try {
           // Get username from database - check zoho_project_run_directories table for THIS user
           const zohoRunResult = await pool.query(
-            `SELECT DISTINCT user_name 
+            `SELECT user_name 
              FROM zoho_project_run_directories 
              WHERE user_id = $1 AND user_name IS NOT NULL
              ORDER BY updated_at DESC, created_at DESC
@@ -158,7 +158,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
               if (possibleUsername) {
                 // Try to find run directory with this username
                 const userRunResult = await pool.query(
-                  `SELECT DISTINCT user_name 
+                  `SELECT user_name 
                    FROM runs 
                    WHERE user_name = $1 OR user_name LIKE $1 || '%'
                    ORDER BY last_updated DESC NULLS LAST, created_at DESC
@@ -2296,8 +2296,9 @@ router.get(
             }
           } catch (e) {
             // Try database lookup
+            // Get the most recent user_name for this user
             const zohoRunResult = await client.query(
-              `SELECT DISTINCT user_name 
+              `SELECT user_name 
                FROM zoho_project_run_directories 
                WHERE user_id = $1 AND user_name IS NOT NULL
                ORDER BY updated_at DESC, created_at DESC
