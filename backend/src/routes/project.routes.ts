@@ -1150,7 +1150,12 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
         let zohoProjectId: string | null = null;
         
         // If it's a long numeric string (Zoho project IDs are typically 15+ digits)
-        if (/^\d{15,}$/.test(projectIdentifier)) {
+        // PostgreSQL integer max is 2,147,483,647, so anything larger must be a Zoho ID
+        const isLongNumeric = /^\d+$/.test(projectIdentifier);
+        const numericValue = isLongNumeric ? parseInt(projectIdentifier, 10) : 0;
+        const isZohoProjectId = isLongNumeric && (projectIdentifier.length >= 15 || numericValue > 2147483647);
+        
+        if (isZohoProjectId) {
           zohoProjectId = projectIdentifier;
         } else {
           // Try to find Zoho project by name
@@ -1227,14 +1232,20 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
       // Try to find ASI project ID from various identifiers
       
       // Check if projectIdentifier is a number (ASI project ID)
-      const numericId = parseInt(projectIdentifier, 10);
-      if (!isNaN(numericId)) {
-        const projectCheck = await pool.query(
-          'SELECT id FROM projects WHERE id = $1',
-          [numericId]
-        );
-        if (projectCheck.rows.length > 0) {
-          asiProjectId = numericId;
+      // PostgreSQL integer max is 2,147,483,647, so only try to parse if it's within that range
+      // Zoho project IDs are typically 15+ digits and exceed PostgreSQL integer limit
+      const isNumeric = /^\d+$/.test(projectIdentifier);
+      if (isNumeric) {
+        const numericId = parseInt(projectIdentifier, 10);
+        // Only try to use as ASI project ID if it's a valid integer (not too large for PostgreSQL)
+        if (!isNaN(numericId) && numericId <= 2147483647) {
+          const projectCheck = await pool.query(
+            'SELECT id FROM projects WHERE id = $1',
+            [numericId]
+          );
+          if (projectCheck.rows.length > 0) {
+            asiProjectId = numericId;
+          }
         }
       }
       
