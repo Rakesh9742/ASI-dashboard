@@ -48,7 +48,6 @@ services:
       - /app/node_modules
     networks:
       - asi_network
-    command: npm run dev
 
   frontend:
     build:
