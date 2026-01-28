@@ -43,15 +43,22 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
         if (projectName != null) {
           // Import ViewScreen at top if not already imported
           currentScreen = ViewScreen(
+            key: ValueKey('view-$projectName'),
             initialProject: projectName,
             initialViewType: 'customer',
           );
         } else {
-          currentScreen = SemiconDashboardScreen(project: activeTab.project);
+          currentScreen = SemiconDashboardScreen(
+            key: ValueKey('project-${activeTab.id}'),
+            project: activeTab.project,
+          );
         }
       } else {
         // Show active project tab (SemiconDashboardScreen) for non-customers
-        currentScreen = SemiconDashboardScreen(project: activeTab.project);
+        currentScreen = SemiconDashboardScreen(
+          key: ValueKey('project-${activeTab.id}'),
+          project: activeTab.project,
+        );
       }
     } else if (currentNav == 'Project Management' && !isCustomer) {
       currentScreen = const ProjectManagementScreen();
@@ -69,18 +76,13 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
           children: [
             // Unified Navigation Header (top)
             _buildNavigationHeader(isAdmin, isEngineer, isCustomer),
-            // Content area with optional left-side project tabs
+            // Project tabs (top-left)
+            _buildProjectTabsBar(),
+            // Current Screen Content
             Expanded(
-              child: Row(
-                children: [
-                  _buildProjectTabsSidebar(),
-                  Expanded(
-                    child: Material(
-                      color: Theme.of(context).scaffoldBackgroundColor,
-                      child: currentScreen,
-                    ),
-                  ),
-                ],
+              child: Material(
+                color: Theme.of(context).scaffoldBackgroundColor,
+                child: currentScreen,
               ),
             ),
           ],
@@ -376,88 +378,100 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     );
   }
 
-  Widget _buildProjectTabsSidebar() {
+  Widget _buildProjectTabsBar() {
     final tabState = ref.watch(tabProvider);
     final currentNav = ref.watch(currentNavTabProvider);
 
-    if (tabState.tabs.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
     return Container(
-      width: 280,
+      padding: const EdgeInsets.symmetric(vertical: 6),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.35),
+        color: Theme.of(context).colorScheme.surface,
         border: Border(
-          right: BorderSide(color: Theme.of(context).dividerColor.withOpacity(0.7), width: 1),
+          bottom: BorderSide(color: Theme.of(context).dividerColor.withOpacity(0.8), width: 1),
         ),
       ),
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              border: Border(
-                bottom: BorderSide(color: Theme.of(context).dividerColor.withOpacity(0.7), width: 1),
-              ),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      'Open Projects',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.3,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.75),
-                      ),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      tooltip: 'Close all',
-                      onPressed: () {
-                        ref.read(tabProvider.notifier).closeAllTabs();
-                        if (currentNav == 'project_tab') {
-                          ref.read(currentNavTabProvider.notifier).state = 'Projects';
-                        }
-                      },
-                      icon: Icon(
-                        Icons.clear_all,
-                        size: 18,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.75),
-                      ),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                SizedBox(
-                  height: 50,
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        ...tabState.tabs.map((tab) {
-                          final isSelected = currentNav == 'project_tab' && tab.id == tabState.activeTabId;
-                          return Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: _buildProjectTabTile(tab, isSelected),
-                          );
-                        }),
-                      ],
-                    ),
+      child: tabState.tabs.isEmpty
+          ? const SizedBox.shrink()
+          : Align(
+              alignment: Alignment.centerLeft,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 16),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ...tabState.tabs.map((tab) {
+                        final isSelected = currentNav == 'project_tab' && tab.id == tabState.activeTabId;
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 10),
+                          child: _buildProjectTabPill(tab, isSelected),
+                        );
+                      }),
+                    ],
                   ),
                 ),
-              ],
+              ),
+            ),
+    );
+  }
+
+  Widget _buildProjectTabPill(ProjectTab tab, bool isSelected) {
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+    final accent = const Color(0xFF1E96B1);
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () {
+          ref.read(tabProvider.notifier).switchTab(tab.id);
+          ref.read(currentNavTabProvider.notifier).state = 'project_tab';
+        },
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: isSelected ? accent : Colors.transparent,
+                width: 2,
+              ),
             ),
           ),
-        ],
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                tab.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: isSelected ? accent : onSurface.withOpacity(0.75),
+                ),
+              ),
+              const SizedBox(width: 8),
+              InkWell(
+                onTap: () {
+                  ref.read(tabProvider.notifier).closeTab(tab.id);
+                  if (isSelected) {
+                    ref.read(currentNavTabProvider.notifier).state = 'Projects';
+                  }
+                },
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    Icons.close_rounded,
+                    size: 16,
+                    color: onSurface.withOpacity(0.65),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -543,73 +557,4 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     );
   }
 
-  Widget _buildProjectTabTile(ProjectTab tab, bool isSelected) {
-    final onSurface = Theme.of(context).colorScheme.onSurface;
-    final primary = Theme.of(context).colorScheme.primary;
-
-    return Material(
-      color: isSelected ? Theme.of(context).colorScheme.surface : Colors.transparent,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        onTap: () {
-          ref.read(tabProvider.notifier).switchTab(tab.id);
-          ref.read(currentNavTabProvider.notifier).state = 'project_tab';
-        },
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isSelected
-                  ? Theme.of(context).dividerColor.withOpacity(0.8)
-                  : Theme.of(context).dividerColor.withOpacity(0.35),
-              width: 1,
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.folder_outlined,
-                size: 16,
-                color: isSelected ? primary : onSurface.withOpacity(0.7),
-              ),
-              const SizedBox(width: 8),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 120),
-                child: Text(
-                  tab.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600,
-                    color: isSelected ? onSurface : onSurface.withOpacity(0.8),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 4),
-              GestureDetector(
-                onTap: () {
-                  ref.read(tabProvider.notifier).closeTab(tab.id);
-                  if (isSelected) {
-                    ref.read(currentNavTabProvider.notifier).state = 'Projects';
-                  }
-                },
-                child: Container(
-                  padding: const EdgeInsets.all(4),
-                  child: Icon(
-                    Icons.close_rounded,
-                    size: 14,
-                    color: onSurface.withOpacity(0.65),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }

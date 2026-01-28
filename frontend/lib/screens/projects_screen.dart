@@ -1496,15 +1496,52 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
       }
       print('═══════════════════════════════════════════════════════════');
 
+      // Build full output message combining stdout and stderr
+      String fullOutput = '';
+      if (result['stdout'] != null && result['stdout'].toString().trim().isNotEmpty) {
+        fullOutput = result['stdout'].toString().trim();
+      }
+      if (result['stderr'] != null && result['stderr'].toString().trim().isNotEmpty) {
+        final stderr = result['stderr'].toString().trim();
+        // Filter out "DISPLAY: Undefined variable" warnings but keep real errors
+        final stderrLines = stderr.split('\n').where((line) => 
+          !line.contains('DISPLAY: Undefined variable')
+        ).toList();
+        if (stderrLines.isNotEmpty) {
+          final filteredStderr = stderrLines.join('\n');
+          if (fullOutput.isNotEmpty) {
+            fullOutput += '\n\n--- Stderr ---\n$filteredStderr';
+          } else {
+            fullOutput = filteredStderr;
+          }
+        }
+      }
+      
+      final exitCode = result['exitCode'] as int?;
+      final isSuccess = result['success'] == true && (exitCode == 0 || exitCode == null);
+      
       setState(() {
         _isRunning = false;
-        if (result['success'] == true) {
-          _output = result['stdout']?.toString() ?? 'Command executed successfully';
-          if (result['stderr'] != null && result['stderr'].toString().isNotEmpty) {
-            _output = '${_output}\n\nStderr: ${result['stderr']}';
-          }
+        if (isSuccess) {
+          // Success: show full output
+          _output = fullOutput.isNotEmpty 
+              ? fullOutput 
+              : 'Command executed successfully';
         } else {
-          _error = result['error']?.toString() ?? 'Command execution failed';
+          // Error: show full output (stdout + stderr) so user sees the real error
+          final errorMsg = result['error']?.toString();
+          if (fullOutput.isNotEmpty) {
+            _error = fullOutput;
+            if (errorMsg != null && errorMsg.isNotEmpty) {
+              _error = '$errorMsg\n\n--- Command Output ---\n$fullOutput';
+            }
+          } else {
+            _error = errorMsg ?? 'Command execution failed';
+          }
+          // Add exit code info if available
+          if (exitCode != null && exitCode != 0) {
+            _error = 'Exit Code: $exitCode\n\n$_error';
+          }
         }
       });
 
@@ -1518,7 +1555,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
         final output = (result['stdout']?.toString() ?? '') + 
                       (result['stderr']?.toString() ?? '');
         _showPasswordRequiredDialog(context, command, output);
-      } else if (mounted && result['success'] == true) {
+      } else if (mounted && isSuccess) {
         // Try to fetch and display the run directory path after successful execution
         try {
           print('═══════════════════════════════════════════════════════════');
@@ -2703,7 +2740,10 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
       }
       print('═══════════════════════════════════════════════════════════');
 
-      final isSuccess = result['success'] == true && (result['exitCode'] == 0 || result['exitCode'] == null);
+      // Determine success: exit code must be 0 (or null if command completed without explicit exit code)
+      // If exit code is 1 or any non-zero value, it's an error
+      final exitCode = result['exitCode'] as int?;
+      final isSuccess = result['success'] == true && (exitCode == 0 || (exitCode == null && result['stdout']?.toString().toLowerCase().contains('done.') == true));
       
       // If setup command succeeded, fetch the actual run directory path from remote server and save it
       if (isSuccess) {
@@ -2808,29 +2848,71 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
         }
       }
       
+      // Build full output message combining stdout and stderr
+      String fullOutput = '';
+      if (result['stdout'] != null && result['stdout'].toString().trim().isNotEmpty) {
+        fullOutput = result['stdout'].toString().trim();
+      }
+      if (result['stderr'] != null && result['stderr'].toString().trim().isNotEmpty) {
+        final stderr = result['stderr'].toString().trim();
+        // Filter out "DISPLAY: Undefined variable" warnings but keep real errors
+        final stderrLines = stderr.split('\n').where((line) => 
+          !line.contains('DISPLAY: Undefined variable')
+        ).toList();
+        if (stderrLines.isNotEmpty) {
+          final filteredStderr = stderrLines.join('\n');
+          if (fullOutput.isNotEmpty) {
+            fullOutput += '\n\n--- Stderr ---\n$filteredStderr';
+          } else {
+            fullOutput = filteredStderr;
+          }
+        }
+      }
+      
       setState(() {
         _isRunning = false;
         _isSuccess = isSuccess;
         if (isSuccess) {
-          _output = result['stdout']?.toString() ?? 'Setup command executed successfully';
-          if (result['stderr'] != null && result['stderr'].toString().isNotEmpty) {
-            _output = '${_output}\n\nStderr: ${result['stderr']}';
-          }
+          // Success: show full output
+          _output = fullOutput.isNotEmpty 
+              ? fullOutput 
+              : 'Setup command executed successfully';
         } else {
-          _error = result['error']?.toString() ?? 
-                  (result['stderr']?.toString() ?? 'Setup command execution failed');
+          // Error: show full output (stdout + stderr) so user sees the real error
+          final errorMsg = result['error']?.toString();
+          if (fullOutput.isNotEmpty) {
+            _error = fullOutput;
+            if (errorMsg != null && errorMsg.isNotEmpty) {
+              _error = '$errorMsg\n\n--- Command Output ---\n$fullOutput';
+            }
+          } else {
+            _error = errorMsg ?? 'Setup command execution failed';
+          }
+          // Add exit code info if available
+          if (exitCode != null && exitCode != 0) {
+            _error = 'Exit Code: $exitCode\n\n$_error';
+          }
         }
       });
 
-      if (mounted && isSuccess) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Setup command executed successfully'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        // Don't close dialog automatically - let user close it manually
-        // User can review the output and run directory path before closing
+      if (mounted) {
+        if (isSuccess) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('✅ Setup completed successfully'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('❌ Setup failed${exitCode != null ? ' (Exit Code: $exitCode)' : ''}'),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
       }
     } catch (e) {
       setState(() {
@@ -3004,30 +3086,43 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(
-                  onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
-                ),
-                const SizedBox(width: 12),
-                ElevatedButton.icon(
-                  onPressed: _isRunning ? null : _runSetup,
-                  icon: _isRunning
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                          ),
-                        )
-                      : const Icon(Icons.settings),
-                  label: Text(_isRunning ? 'Running...' : 'Setup'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    backgroundColor: _isSuccess ? Colors.green : null,
-                    foregroundColor: _isSuccess ? Colors.white : null,
+                if (!_isSuccess) ...[
+                  // Show Cancel and Setup buttons when not successful
+                  TextButton(
+                    onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
                   ),
-                ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: _isRunning ? null : _runSetup,
+                    icon: _isRunning
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          )
+                        : const Icon(Icons.settings),
+                    label: Text(_isRunning ? 'Running...' : 'Setup'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
+                  ),
+                ] else ...[
+                  // Show OK button when setup is successful
+                  ElevatedButton.icon(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.check_circle),
+                    label: const Text('OK'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+                      backgroundColor: Colors.green,
+                      foregroundColor: Colors.white,
+                    ),
+                  ),
+                ],
               ],
             ),
           ],
