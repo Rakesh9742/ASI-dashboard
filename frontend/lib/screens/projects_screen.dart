@@ -3086,43 +3086,30 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                if (!_isSuccess) ...[
-                  // Show Cancel and Setup buttons when not successful
-                  TextButton(
-                    onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
-                    child: const Text('Cancel'),
+                TextButton(
+                  onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: 12),
+                ElevatedButton.icon(
+                  onPressed: _isRunning ? null : _runSetup,
+                  icon: _isRunning
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : const Icon(Icons.settings),
+                  label: Text(_isRunning ? 'Running...' : 'Setup'),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    backgroundColor: _isSuccess ? Colors.green : null,
+                    foregroundColor: _isSuccess ? Colors.white : null,
                   ),
-                  const SizedBox(width: 12),
-                  ElevatedButton.icon(
-                    onPressed: _isRunning ? null : _runSetup,
-                    icon: _isRunning
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                            ),
-                          )
-                        : const Icon(Icons.settings),
-                    label: Text(_isRunning ? 'Running...' : 'Setup'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    ),
-                  ),
-                ] else ...[
-                  // Show OK button when setup is successful
-                  ElevatedButton.icon(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.check_circle),
-                    label: const Text('OK'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
-                      backgroundColor: Colors.green,
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
-                ],
+                ),
               ],
             ),
           ],
