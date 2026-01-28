@@ -115,7 +115,6 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
   Map<String, int> get _projectStats {
     int running = 0;
     int completed = 0;
-    int failed = 0;
 
     for (var project in _projects) {
       final status = _getProjectStatus(project);
@@ -123,8 +122,6 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         running++;
       } else if (status == 'COMPLETED') {
         completed++;
-      } else if (status == 'FAILED') {
-        failed++;
       }
     }
 
@@ -132,7 +129,6 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       'total': _projects.length,
       'running': running,
       'completed': completed,
-      'failed': failed,
     };
   }
 
@@ -213,8 +209,6 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
               Row(
                 children: [
                   Expanded(child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981))),
-                  const SizedBox(width: 16),
-                  Expanded(child: _buildStatCard('Failed', stats['failed']!.toString(), const Color(0xFFEF4444))),
                 ],
               ),
             ],
@@ -233,10 +227,6 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
             const SizedBox(width: 16),
             Expanded(
               child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981)),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: _buildStatCard('Failed', stats['failed']!.toString(), const Color(0xFFEF4444)),
             ),
           ],
         );
@@ -2396,51 +2386,6 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
       commandComplete();
       
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error sending password: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _sendPassword(
-    BuildContext context, 
-    String password, 
-    StateSetter setDialogState,
-    VoidCallback setSending,
-    VoidCallback setNotSending,
-  ) async {
-    try {
-      final token = ref.read(authProvider).token;
-      if (token == null) {
-        throw Exception('No authentication token');
-      }
-
-      await widget.apiService.sendSSHPassword(
-        password: password,
-        token: token,
-      );
-
-      if (mounted) {
-        Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Password sent. Waiting for command to complete...'),
-            backgroundColor: Colors.blue,
-          ),
-        );
-        
-        // Wait a bit and check command status again
-        await Future.delayed(const Duration(seconds: 2));
-        // Re-run the command check or wait for completion
-      }
-    } catch (e) {
-      setNotSending();
-      
-      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error sending password: $e'),
