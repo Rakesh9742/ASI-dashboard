@@ -66,20 +66,25 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: SafeArea(
         child: Column(
-        children: [
-            // Unified Navigation Header
+          children: [
+            // Unified Navigation Header (top)
             _buildNavigationHeader(isAdmin, isEngineer, isCustomer),
-            // Project Tabs Bar (below navigation)
-            _buildProjectTabsBar(),
-            // Current Screen Content
+            // Content area with optional left-side project tabs
             Expanded(
-              child: Material(
-                color: Theme.of(context).scaffoldBackgroundColor,
-                child: currentScreen,
-              ),
-                        ),
-                      ],
+              child: Row(
+                children: [
+                  _buildProjectTabsSidebar(),
+                  Expanded(
+                    child: Material(
+                      color: Theme.of(context).scaffoldBackgroundColor,
+                      child: currentScreen,
                     ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -371,7 +376,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     );
   }
 
-  Widget _buildProjectTabsBar() {
+  Widget _buildProjectTabsSidebar() {
     final tabState = ref.watch(tabProvider);
     final currentNav = ref.watch(currentNavTabProvider);
 
@@ -380,26 +385,79 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     }
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+      width: 280,
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.35),
         border: Border(
-          bottom: BorderSide(color: Theme.of(context).dividerColor, width: 1),
+          right: BorderSide(color: Theme.of(context).dividerColor.withOpacity(0.7), width: 1),
         ),
       ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            ...tabState.tabs.map((tab) {
-              final isSelected = currentNav == 'project_tab' && tab.id == tabState.activeTabId;
-              return Padding(
-                padding: const EdgeInsets.only(right: 4),
-                child: _buildProjectTab(tab, isSelected),
-              );
-            }),
-          ],
-        ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              border: Border(
+                bottom: BorderSide(color: Theme.of(context).dividerColor.withOpacity(0.7), width: 1),
+              ),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'Open Projects',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.3,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.75),
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: 'Close all',
+                      onPressed: () {
+                        ref.read(tabProvider.notifier).closeAllTabs();
+                        if (currentNav == 'project_tab') {
+                          ref.read(currentNavTabProvider.notifier).state = 'Projects';
+                        }
+                      },
+                      icon: Icon(
+                        Icons.clear_all,
+                        size: 18,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.75),
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 50,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        ...tabState.tabs.map((tab) {
+                          final isSelected = currentNav == 'project_tab' && tab.id == tabState.activeTabId;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: _buildProjectTabTile(tab, isSelected),
+                          );
+                        }),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -485,72 +543,71 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     );
   }
 
-  Widget _buildProjectTab(ProjectTab tab, bool isSelected) {
-    return InkWell(
-      onTap: () {
-        ref.read(tabProvider.notifier).switchTab(tab.id);
-        ref.read(currentNavTabProvider.notifier).state = 'project_tab';
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  decoration: BoxDecoration(
-          color: isSelected ? Theme.of(context).colorScheme.surface : Colors.transparent,
-          borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(8),
-            topRight: Radius.circular(8),
+  Widget _buildProjectTabTile(ProjectTab tab, bool isSelected) {
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+    final primary = Theme.of(context).colorScheme.primary;
+
+    return Material(
+      color: isSelected ? Theme.of(context).colorScheme.surface : Colors.transparent,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: () {
+          ref.read(tabProvider.notifier).switchTab(tab.id);
+          ref.read(currentNavTabProvider.notifier).state = 'project_tab';
+        },
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isSelected
+                  ? Theme.of(context).dividerColor.withOpacity(0.8)
+                  : Theme.of(context).dividerColor.withOpacity(0.35),
+              width: 1,
+            ),
           ),
-          border: isSelected
-              ? Border.all(
-                  color: Theme.of(context).dividerColor,
-                  width: 1,
-                )
-              : null,
-          boxShadow: isSelected
-              ? [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.05),
-                    blurRadius: 4,
-                    offset: const Offset(0, -1),
-                  ),
-                ]
-              : null,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.folder,
-              size: 14,
-              color: isSelected ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-            ),
-            const SizedBox(width: 6),
-            Text(
-              tab.name,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
-                color: isSelected ? Theme.of(context).colorScheme.onSurface : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.folder_outlined,
+                size: 16,
+                color: isSelected ? primary : onSurface.withOpacity(0.7),
               ),
-            ),
-            const SizedBox(width: 6),
-            GestureDetector(
-              onTap: () {
-                ref.read(tabProvider.notifier).closeTab(tab.id);
-                // If closing the active tab, switch back to Projects
-                if (isSelected) {
-                  ref.read(currentNavTabProvider.notifier).state = 'Projects';
-                }
-              },
-              child: Container(
-                padding: const EdgeInsets.all(2),
-                child: Icon(
-                  Icons.close,
-                  size: 12,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+              const SizedBox(width: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 120),
+                child: Text(
+                  tab.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600,
+                    color: isSelected ? onSurface : onSurface.withOpacity(0.8),
+                  ),
                 ),
               ),
-            ),
-              ],
+              const SizedBox(width: 4),
+              GestureDetector(
+                onTap: () {
+                  ref.read(tabProvider.notifier).closeTab(tab.id);
+                  if (isSelected) {
+                    ref.read(currentNavTabProvider.notifier).state = 'Projects';
+                  }
+                },
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    Icons.close_rounded,
+                    size: 14,
+                    color: onSurface.withOpacity(0.65),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
