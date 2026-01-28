@@ -425,7 +425,14 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     final rawDescription = project['description'] ?? project['client'] ?? 'Hardware design project';
     final description = _stripHtmlTags(rawDescription.toString());
     final gateCount = project['gate_count'] ?? project['gateCount'] ?? 'N/A';
-    final technology = project['technology'] ?? project['technology_node'] ?? 'Sky130 PDK';
+    // Get technology node from project details - check multiple possible locations
+    final projectDetails = project['project_details'] as Map<String, dynamic>?;
+    final zohoData = project['zoho_data'] as Map<String, dynamic>?;
+    final technology = project['technology_node'] ?? 
+                       project['technology'] ?? 
+                       projectDetails?['technology_node'] ?? 
+                       zohoData?['technology_node'] ?? 
+                       'N/A';
     final lastRun = _formatTimeAgo(project['last_run']?.toString() ?? project['updated_at']?.toString());
     // Get run directories - check for array first, then fallback to single
     final runDirectoriesList = project['run_directories'];

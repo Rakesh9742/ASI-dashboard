@@ -262,6 +262,12 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
         };
       })
     );
+    
+    // Filter local projects to only include those with technology_node
+    const filteredLocalProjects = localProjects.filter((p: any) => {
+      const techNode = p.technology_node;
+      return techNode && techNode !== null && techNode !== '' && techNode !== 'N/A';
+    });
 
     // If includeZoho is requested, fetch from Zoho Projects
     if (includeZoho === 'true' || includeZoho === '1') {
@@ -536,11 +542,84 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
                 projectStatus = 'RUNNING';
               }
               
+              // Extract technology_node from Zoho project data
+              // Check multiple possible field names and locations
+              let technologyNode: string | null = null;
+              
+              // Check direct fields first (various naming conventions)
+              if (zp.technology_node) {
+                technologyNode = String(zp.technology_node);
+              } else if (zp.technology) {
+                technologyNode = String(zp.technology);
+              } else if (zp.technologyNode) {
+                technologyNode = String(zp.technologyNode);
+              } else if (zp['Technology Node']) {
+                technologyNode = String(zp['Technology Node']);
+              } else if (zp['technology node']) {
+                technologyNode = String(zp['technology node']);
+              }
+              
+              // Check custom_fields array if technology_node not found in direct fields
+              // Zoho custom fields can be structured in different ways
+              if (!technologyNode && zp.custom_fields) {
+                if (Array.isArray(zp.custom_fields)) {
+                  // Custom fields as array of objects
+                  for (const field of zp.custom_fields) {
+                    if (field && typeof field === 'object') {
+                      // Check field value directly
+                      if (field.technology_node || field.technologyNode || field.technology) {
+                        technologyNode = String(field.technology_node || field.technologyNode || field.technology);
+                        break;
+                      }
+                      // Check field label/name for "Technology Node" or "Technology"
+                      const fieldLabel = (field.label || field.name || field.field_name || '').toLowerCase();
+                      if ((fieldLabel.includes('technology') || fieldLabel.includes('node')) && field.value) {
+                        technologyNode = String(field.value);
+                        break;
+                      }
+                      // Check if field has a key matching technology node
+                      const fieldKeys = Object.keys(field);
+                      for (const key of fieldKeys) {
+                        if (key.toLowerCase().includes('technology') && field[key]) {
+                          technologyNode = String(field[key]);
+                          break;
+                        }
+                      }
+                      if (technologyNode) break;
+                    }
+                  }
+                } else if (typeof zp.custom_fields === 'object') {
+                  // Custom fields as object with field names as keys
+                  const customFieldKeys = Object.keys(zp.custom_fields);
+                  for (const key of customFieldKeys) {
+                    const keyLower = key.toLowerCase();
+                    if ((keyLower.includes('technology') || keyLower.includes('node')) && zp.custom_fields[key]) {
+                      technologyNode = String(zp.custom_fields[key]);
+                      break;
+                    }
+                  }
+                }
+              }
+              
+              // Check other possible field locations (case-insensitive search in object keys)
+              // This handles cases where technology node might be a direct property with different casing
+              if (!technologyNode) {
+                const zpKeys = Object.keys(zp);
+                for (const key of zpKeys) {
+                  const keyLower = key.toLowerCase();
+                  // Look for keys containing "technology" and optionally "node"
+                  if ((keyLower.includes('technology') || (keyLower.includes('tech') && keyLower.includes('node'))) && zp[key]) {
+                    technologyNode = String(zp[key]);
+                    break;
+                  }
+                }
+              }
+              
               return {
                 id: `zoho_${zp.id}`,
                 name: zp.name,
                 client: zp.owner_name || null,
-                technology_node: null,
+                technology_node: technologyNode,
                 start_date: zp.start_date || null,
                 target_date: zp.end_date || null,
                 plan: zp.description || null,
@@ -566,63 +645,69 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
 
           console.log(`Showing ${formattedZohoProjects.length} Zoho projects for ${userRole} (mapping status included)`);
 
+          // Filter Zoho projects to only include those with technology_node
+          const zohoProjectsWithTechNode = formattedZohoProjects.filter((zp: any) => {
+            const techNode = zp.technology_node;
+            return techNode && techNode !== null && techNode !== '' && techNode !== 'N/A';
+          });
+
           // Filter out local projects that are already mapped to Zoho projects
           // Only include unmapped local projects in the 'all' array to avoid duplicates
           // When a Zoho project is mapped, show only the Zoho version (not the local one)
-          const unmappedLocalProjects = localProjects.filter((lp: any) => !lp.is_mapped);
+          const unmappedLocalProjects = filteredLocalProjects.filter((lp: any) => !lp.is_mapped);
 
-          // Combine unmapped local projects with all Zoho projects (mapped and unmapped)
+          // Combine unmapped local projects with filtered Zoho projects (only those with technology_node)
           // This shows Zoho projects when mapped, and local projects when not mapped
           const allProjects = [
             ...unmappedLocalProjects,
-            ...formattedZohoProjects
+            ...zohoProjectsWithTechNode
           ];
 
-          console.log(`Total projects: ${allProjects.length} (${unmappedLocalProjects.length} unmapped local, ${localProjects.length - unmappedLocalProjects.length} mapped local excluded, ${formattedZohoProjects.length} Zoho projects)`);
+          console.log(`Total projects: ${allProjects.length} (${unmappedLocalProjects.length} unmapped local with tech node, ${filteredLocalProjects.length - unmappedLocalProjects.length} mapped local excluded, ${zohoProjectsWithTechNode.length} Zoho projects with tech node)`);
 
           return res.json({
-            local: localProjects, // Keep all local projects in separate array for reference
-            zoho: formattedZohoProjects, // Keep all Zoho projects in separate array for reference
-            all: allProjects, // Show unmapped local + all Zoho projects (mapped Zoho projects will show as green)
+            local: filteredLocalProjects, // Only local projects with technology_node
+            zoho: zohoProjectsWithTechNode, // Only Zoho projects with technology_node
+            all: allProjects, // Show unmapped local + filtered Zoho projects (only those with technology_node)
             counts: {
-              local: localProjects.length,
-              zoho: formattedZohoProjects.length,
+              local: filteredLocalProjects.length,
+              zoho: zohoProjectsWithTechNode.length,
               total: allProjects.length
             }
           });
         } else {
-          // Zoho not connected, return only local projects
+          // Zoho not connected, return only local projects with technology_node
           return res.json({
-            local: localProjects,
+            local: filteredLocalProjects,
             zoho: [],
-            all: localProjects,
+            all: filteredLocalProjects,
             counts: {
-              local: localProjects.length,
+              local: filteredLocalProjects.length,
               zoho: 0,
-              total: localProjects.length
+              total: filteredLocalProjects.length
             },
             message: 'Zoho Projects not connected. Use /api/zoho/auth to connect.'
           });
         }
       } catch (zohoError: any) {
-        // If Zoho fetch fails, still return local projects
+        // If Zoho fetch fails, still return local projects with technology_node
         console.error('Error fetching Zoho projects:', zohoError);
         return res.json({
-          local: localProjects,
+          local: filteredLocalProjects,
           zoho: [],
-          all: localProjects,
+          all: filteredLocalProjects,
           counts: {
-            local: localProjects.length,
+            local: filteredLocalProjects.length,
             zoho: 0,
-            total: localProjects.length
+            total: filteredLocalProjects.length
           },
           error: `Failed to fetch Zoho projects: ${zohoError.message}`
         });
       }
     }
 
-    // Default: return only local projects
-    res.json(localProjects);
+    // Default: return only local projects with technology_node
+    res.json(filteredLocalProjects);
   } catch (error: any) {
     console.error('Error fetching projects:', error);
     res.status(500).json({ error: error.message });
