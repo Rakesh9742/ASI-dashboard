@@ -942,7 +942,7 @@ class FileProcessorService {
           // Block does not exist in Zoho project setup
           throw new Error(
             `Block "${blockName}" does not exist for Zoho project "${projectName}". ` +
-            `Please run the setup command first with: setup -proj ${projectName} -domain <domain> -block ${blockName} -exp <experiment>`
+            `Please run the setup command first with: echo "setup -proj ${projectName} -domain <domain> -block ${blockName} -exp <experiment>" | newgrp ${projectName}`
           );
         }
         // For Zoho projects, we don't have a block_id, but we can continue with validation
@@ -960,7 +960,7 @@ class FileProcessorService {
           // Block does not exist - this means setup was not run first
           throw new Error(
             `Block "${blockName}" does not exist for project "${projectName}". ` +
-            `Please run the setup command first with: setup -proj ${projectName} -domain <domain> -block ${blockName} -exp <experiment>`
+            `Please run the setup command first with: echo "setup -proj ${projectName} -domain <domain> -block ${blockName} -exp <experiment>" | newgrp ${projectName}`
           );
         }
       } else {
@@ -1021,7 +1021,7 @@ class FileProcessorService {
           // Experiment does not exist in Zoho project setup
           throw new Error(
             `Experiment "${experiment}" does not exist for block "${blockName}" in Zoho project "${projectName}". ` +
-            `Please run the setup command first with: setup -proj ${projectName} -domain <domain> -block ${blockName} -exp ${experiment}`
+            `Please run the setup command first with: echo "setup -proj ${projectName} -domain <domain> -block ${blockName} -exp ${experiment}" | newgrp ${projectName}`
           );
         }
         
@@ -1115,7 +1115,7 @@ class FileProcessorService {
           // Run (experiment) does not exist - this means setup was not run first
           throw new Error(
             `Experiment "${experiment}" does not exist for block "${blockName}" in project "${projectName}". ` +
-            `Please run the setup command first with: setup -proj ${projectName} -domain <domain> -block ${blockName} -exp ${experiment}`
+            `Please run the setup command first with: echo "setup -proj ${projectName} -domain <domain> -block ${blockName} -exp ${experiment}" | newgrp ${projectName}`
           );
         }
       } else {
