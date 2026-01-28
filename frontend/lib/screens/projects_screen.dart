@@ -2644,7 +2644,7 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
         throw Exception('No authentication token');
       }
 
-      // Build the command: setup -proj {project} -domain {domain} -block {block} -exp {experiment}
+      // Build the command: newgrp {project} ; setup -proj {project} -domain {domain} -block {block} -exp {experiment}
       // Replace spaces with underscores in project name and block name (e.g., "mohan r4" -> "mohan_r4")
       final projectName = widget.projectName;
       final sanitizedProjectName = projectName.replaceAll(' ', '_');
@@ -2653,8 +2653,8 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
       final sanitizedBlockName = blockName.replaceAll(' ', '_');
       final experimentName = _experimentController.text.trim();
 
-      // Build command with sanitized names (spaces replaced with underscores)
-      final command = 'setup -proj $sanitizedProjectName -domain $domainCode -block $sanitizedBlockName -exp $experimentName';
+      // Build command: newgrp then setup (sanitized names, spaces -> underscores)
+      final command = 'newgrp $sanitizedProjectName ; setup -proj $sanitizedProjectName -domain $domainCode -block $sanitizedBlockName -exp $experimentName';
 
       print('═══════════════════════════════════════════════════════════');
       print('🚀 EXECUTING SETUP COMMAND:');
