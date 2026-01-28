@@ -1462,7 +1462,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
       // Project name: replace spaces with underscores (e.g., "mohan r4" -> "mohan_r4")
       // Project group: derived from project name (sanitized)
       final projectNameSanitized = widget.projectName.replaceAll(' ', '_');
-      final command = 'sudo python3 /CX_CAD/REL/env_scripts/infra/latest/createDir.py --base-path /CX_PROJ --proj $projectNameSanitized --dom $domainCodesStr --project-group $projectNameSanitized --scratch-base-path /CX_PROJ';
+      final command = 'sudo python3 /CX_CAD/REL/env_scripts/infra/latest/createDir.py --base-path /CX_PROJ --proj $projectNameSanitized --dom $domainCodesStr --project-group $projectNameSanitized --scratch-base-path /CX_RUN_NEW';
 
       // Print command to console with final substituted values
       print('═══════════════════════════════════════════════════════════');
