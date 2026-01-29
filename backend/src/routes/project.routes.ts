@@ -34,32 +34,6 @@ const fetchProjectWithDomains = async (projectId: number, client: any) => {
   return projectResult.rows[0];
 };
 
-/**
- * Check if a project has matching EDA output (is "mapped")
- * A project is mapped if there's EDA output data for it
- */
-async function checkProjectMapping(projectName: string): Promise<boolean> {
-  try {
-    const result = await pool.query(
-      `
-        SELECT COUNT(DISTINCT p.id) as count
-        FROM projects p
-        INNER JOIN blocks b ON b.project_id = p.id
-        INNER JOIN runs r ON r.block_id = b.id
-        INNER JOIN stages s ON s.run_id = r.id
-        WHERE LOWER(p.name) = LOWER($1)
-        LIMIT 1
-      `,
-      [projectName]
-    );
-    
-    return (result.rows[0]?.count || 0) > 0;
-  } catch (error: any) {
-    console.error('Error checking project mapping:', error);
-    return false;
-  }
-}
-
 // List projects with their domains (optionally include Zoho projects)
 router.get('/', authenticate, async (req: Request, res: Response) => {
   try {
@@ -67,12 +41,16 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     const userId = (req as any).user?.id;
     const userRole = (req as any).user?.role;
     
+    // Admin sees ONLY Zoho projects (no local projects). Non-admin: never use Zoho for projects (DB only).
+    const adminZohoOnly = userRole === 'admin';
+    const effectiveIncludeZoho = userRole === 'admin' && (includeZoho === 'true' || includeZoho === '1' || adminZohoOnly);
+    
     // Log logged-in user info
     console.log(`\n🔵 ========== GET /api/projects ==========`);
     console.log(`🔵 Logged-in user: user_id=${userId}, role=${userRole}`);
-    console.log(`🔵 includeZoho=${includeZoho}`);
+    console.log(`🔵 includeZoho=${includeZoho}, adminZohoOnly=${adminZohoOnly}, effectiveIncludeZoho=${effectiveIncludeZoho}`);
 
-    // Build query based on user role
+    // Build query based on user role (skip local projects entirely for admin)
     // Engineers see projects they created
     // Customers see projects assigned via user_projects table
     // Admin, project_manager, and lead see all projects
@@ -116,71 +94,16 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     }
     // Admin, project_manager, and lead see all projects (no filter)
 
-    // Get SSH username from the current SSH session (whoami command)
-    // This is the actual username on the server, not from database
-    // Fallback to database username if SSH is not available
-    let userUsername: string | null = null;
-    if (userId) {
-      try {
-        const { executeSSHCommand } = await import('../services/ssh.service');
-        const whoamiResult = await executeSSHCommand(userId, 'whoami', 1);
-        if (whoamiResult.stdout && whoamiResult.stdout.trim()) {
-          userUsername = whoamiResult.stdout.trim();
-          console.log(`✅ Got SSH username for user ${userId}: ${userUsername}`);
-        }
-      } catch (e) {
-        // If SSH command fails (connection not established, etc.), try to get from database
-        console.log(`⚠️ SSH whoami failed for user ${userId}, trying database lookup:`, e);
-        try {
-          // Get username from database - check zoho_project_run_directories table for THIS user
-          const zohoRunResult = await pool.query(
-            `SELECT user_name 
-             FROM zoho_project_run_directories 
-             WHERE user_id = $1 AND user_name IS NOT NULL
-             ORDER BY updated_at DESC, created_at DESC
-             LIMIT 1`,
-            [userId]
-          );
-          if (zohoRunResult.rows.length > 0 && zohoRunResult.rows[0].user_name) {
-            userUsername = zohoRunResult.rows[0].user_name;
-            console.log(`✅ Got username from zoho_project_run_directories table for user ${userId}: ${userUsername}`);
-          } else {
-            // Try runs table - but runs table doesn't have user_id, so we need to check by user's email/username
-            // Get user's email first
-            const userResult = await pool.query(
-              'SELECT email, username FROM users WHERE id = $1',
-              [userId]
-            );
-            if (userResult.rows.length > 0) {
-              const user = userResult.rows[0];
-              const possibleUsername = user.username || extractUsernameFromEmail(user.email);
-              
-              if (possibleUsername) {
-                // Try to find run directory with this username
-                const userRunResult = await pool.query(
-                  `SELECT user_name 
-                   FROM runs 
-                   WHERE user_name = $1 OR user_name LIKE $1 || '%'
-                   ORDER BY last_updated DESC NULLS LAST, created_at DESC
-                   LIMIT 1`,
-                  [possibleUsername]
-                );
-                if (userRunResult.rows.length > 0 && userRunResult.rows[0].user_name) {
-                  userUsername = userRunResult.rows[0].user_name;
-                  console.log(`✅ Got username from runs table for user ${userId}: ${userUsername}`);
-                }
-              }
-            }
-          }
-        } catch (dbError) {
-          console.log(`⚠️ Database lookup also failed:`, dbError);
-        }
-      }
-    }
+    // SSH username not used for GET /api/projects - skip to avoid slow SSH timeouts for all roles
+    const userUsername: string | null = null;
 
-    // Get local projects with run directory info and latest run status for the current user
-    const result = await pool.query(
-      `
+    // Get local projects (skip for admin - admin sees only Zoho projects)
+    let result: { rows: any[] };
+    if (adminZohoOnly) {
+      result = { rows: [] };
+    } else {
+      result = await pool.query(
+        `
         SELECT 
           p.*,
           COALESCE(
@@ -232,36 +155,31 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
         GROUP BY p.id
         ORDER BY p.created_at DESC
       `,
-      userUsername ? [...queryParams, userUsername] : queryParams
-    );
+        userUsername ? [...queryParams, userUsername] : queryParams
+      );
+    }
 
-    // Check mapping status for local projects and derive status from latest run
-    const localProjects = await Promise.all(
-      result.rows.map(async (p: any) => {
-        const isMapped = await checkProjectMapping(p.name);
-        
-        // Derive status from latest run status
-        let projectStatus = 'RUNNING'; // Default to RUNNING
-        if (p.latest_run_status) {
-          const statusLower = p.latest_run_status.toLowerCase();
-          if (statusLower === 'pass' || statusLower === 'completed' || statusLower === 'done') {
-            projectStatus = 'COMPLETED';
-          } else if (statusLower === 'fail' || statusLower === 'failed' || statusLower === 'error') {
-            projectStatus = 'FAILED';
-          } else if (statusLower === 'running' || statusLower === 'in progress' || statusLower === 'active') {
-            projectStatus = 'RUNNING';
-          }
-        }
-        
-        return {
-          ...p,
-          source: 'local',
-          status: projectStatus, // Add normalized status
-          is_mapped: isMapped,
-          run_directory: p.user_run_directory || null // Include run directory for the user
-        };
-      })
-    );
+    // Build local projects — exported_to_linux from projects table only (no other tables)
+    const localProjects = result.rows.map((p: any) => {
+      let projectStatus = 'RUNNING';
+      if (p.latest_run_status) {
+        const statusLower = p.latest_run_status.toLowerCase();
+        if (statusLower === 'pass' || statusLower === 'completed' || statusLower === 'done') projectStatus = 'COMPLETED';
+        else if (statusLower === 'fail' || statusLower === 'failed' || statusLower === 'error') projectStatus = 'FAILED';
+        else if (statusLower === 'running' || statusLower === 'in progress' || statusLower === 'active') projectStatus = 'RUNNING';
+      }
+      // Exported to Linux: from projects table only (p.exported_to_linux or p.setup_completed)
+      const exportedToLinux = p.exported_to_linux === true || p.setup_completed === true;
+      return {
+        ...p,
+        source: 'local',
+        status: projectStatus,
+        is_mapped: false,
+        run_directory: p.user_run_directory || null,
+        exported_to_linux: exportedToLinux,
+        setup_completed: p.setup_completed === true
+      };
+    });
     
     // Filter local projects to only include those with technology_node
     const filteredLocalProjects = localProjects.filter((p: any) => {
@@ -269,8 +187,8 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       return techNode && techNode !== null && techNode !== '' && techNode !== 'N/A';
     });
 
-    // If includeZoho is requested, fetch from Zoho Projects
-    if (includeZoho === 'true' || includeZoho === '1') {
+    // If includeZoho is requested (or admin - admin sees only Zoho), fetch from Zoho Projects
+    if (effectiveIncludeZoho) {
       console.log(`\n🔵 ========== FETCHING ZOHO PROJECTS ==========`);
       console.log(`🔵 Logged-in user_id: ${userId}, username: ${userUsername}`);
       console.log(`🔵 includeZoho=${includeZoho}`);
@@ -651,24 +569,18 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
             return techNode && techNode !== null && techNode !== '' && techNode !== 'N/A';
           });
 
-          // Filter out local projects that are already mapped to Zoho projects
-          // Only include unmapped local projects in the 'all' array to avoid duplicates
-          // When a Zoho project is mapped, show only the Zoho version (not the local one)
-          const unmappedLocalProjects = filteredLocalProjects.filter((lp: any) => !lp.is_mapped);
-
-          // Combine unmapped local projects with filtered Zoho projects (only those with technology_node)
-          // This shows Zoho projects when mapped, and local projects when not mapped
+          // Combine local DB projects with Zoho projects (no mapped/unmapped logic)
           const allProjects = [
-            ...unmappedLocalProjects,
+            ...filteredLocalProjects,
             ...zohoProjectsWithTechNode
           ];
 
-          console.log(`Total projects: ${allProjects.length} (${unmappedLocalProjects.length} unmapped local with tech node, ${filteredLocalProjects.length - unmappedLocalProjects.length} mapped local excluded, ${zohoProjectsWithTechNode.length} Zoho projects with tech node)`);
+          console.log(`Total projects: ${allProjects.length} (${filteredLocalProjects.length} local from DB, ${zohoProjectsWithTechNode.length} Zoho)`);
 
           return res.json({
-            local: filteredLocalProjects, // Only local projects with technology_node
-            zoho: zohoProjectsWithTechNode, // Only Zoho projects with technology_node
-            all: allProjects, // Show unmapped local + filtered Zoho projects (only those with technology_node)
+            local: filteredLocalProjects,
+            zoho: zohoProjectsWithTechNode,
+            all: allProjects,
             counts: {
               local: filteredLocalProjects.length,
               zoho: zohoProjectsWithTechNode.length,
@@ -676,7 +588,16 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
             }
           });
         } else {
-          // Zoho not connected, return only local projects with technology_node
+          // Zoho not connected
+          if (adminZohoOnly) {
+            return res.json({
+              local: [],
+              zoho: [],
+              all: [],
+              counts: { local: 0, zoho: 0, total: 0 },
+              message: 'Connect Zoho to see projects. Admin sees only Zoho projects.'
+            });
+          }
           return res.json({
             local: filteredLocalProjects,
             zoho: [],
@@ -690,8 +611,16 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
           });
         }
       } catch (zohoError: any) {
-        // If Zoho fetch fails, still return local projects with technology_node
         console.error('Error fetching Zoho projects:', zohoError);
+        if (adminZohoOnly) {
+          return res.json({
+            local: [],
+            zoho: [],
+            all: [],
+            counts: { local: 0, zoho: 0, total: 0 },
+            error: `Failed to fetch Zoho projects: ${zohoError.message}`
+          });
+        }
         return res.json({
           local: filteredLocalProjects,
           zoho: [],
@@ -706,7 +635,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       }
     }
 
-    // Default: return only local projects with technology_node
+    // Default: return only local projects with technology_node (never reached for admin)
     res.json(filteredLocalProjects);
   } catch (error: any) {
     console.error('Error fetching projects:', error);
@@ -886,30 +815,45 @@ router.post(
 );
 
 /**
- * GET /api/projects/:projectId/blocks
- * Get all blocks for a specific project
+ * GET /api/projects/:projectIdOrName/blocks
+ * Get all blocks for a project from DB only. projectIdOrName can be numeric id or project name.
+ * For non-admin, optionally filter to blocks assigned to current user (block_users) if table exists.
  */
 router.get(
-  '/:projectId/blocks',
+  '/:projectIdOrName/blocks',
   authenticate,
   async (req: Request, res: Response) => {
     try {
-      const projectId = parseInt(req.params.projectId, 10);
+      const projectIdOrName = String(req.params.projectIdOrName || '').trim();
       const userId = (req as any).user?.id;
       const userRole = (req as any).user?.role;
-      
-      if (isNaN(projectId)) {
-        return res.status(400).json({ error: 'Invalid project ID' });
+      const filterByAssigned = req.query.filterByAssigned === 'true' || req.query.filterByAssigned === '1';
+
+      if (!projectIdOrName) {
+        return res.status(400).json({ error: 'Invalid project ID or name' });
+      }
+
+      let projectId: number | null = null;
+      const numericId = parseInt(projectIdOrName, 10);
+      if (!Number.isNaN(numericId) && String(numericId) === projectIdOrName) {
+        projectId = numericId;
+      } else {
+        const byName = await pool.query(
+          'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
+          [projectIdOrName]
+        );
+        if (byName.rows.length > 0) projectId = byName.rows[0].id;
+      }
+
+      if (projectId == null) {
+        return res.status(404).json({ error: 'Project not found' });
       }
 
       // Check if user has access to this project
       let hasAccess = false;
-      
       if (userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead') {
-        // Admins, project managers, and leads have access to all projects
         hasAccess = true;
       } else {
-        // Check if engineer/customer has access via created_by or user_projects
         const accessCheck = await pool.query(
           `
             SELECT COUNT(*) as count
@@ -927,21 +871,53 @@ router.get(
       }
 
       if (!hasAccess) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           error: 'Access denied',
-          message: 'You do not have access to this project'
+          message: 'You do not have access to this project',
         });
       }
 
-      const result = await pool.query(
-        `
-          SELECT id, block_name, project_id, created_at
-          FROM blocks
-          WHERE project_id = $1
-          ORDER BY block_name
-        `,
-        [projectId]
+      // Global role = JWT (from users table only). Project-based role = user_projects only.
+      const projectRoleRow = await pool.query(
+        'SELECT role FROM user_projects WHERE user_id = $1 AND project_id = $2 LIMIT 1',
+        [userId, projectId]
       );
+      const projectRole = projectRoleRow.rows[0]?.role?.toString().trim() || null;
+      const effectiveRole = projectRole || userRole || '';
+      const roleLowerBlocks = effectiveRole.toLowerCase();
+      const isAdminOrManagerBlocks = roleLowerBlocks === 'admin' || roleLowerBlocks === 'project_manager' || roleLowerBlocks === 'lead';
+      const blockUsersExists = await pool.query(
+        `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'block_users')`
+      );
+      const hasBlockUsersTable = blockUsersExists.rows[0]?.exists === true;
+      const useFilteredBlocks = hasBlockUsersTable && filterByAssigned && !isAdminOrManagerBlocks;
+      console.log('🔵 [GET /blocks] globalRole:', userRole, '| projectRole:', projectRole, '| effectiveRole:', effectiveRole, '| filterByAssigned:', filterByAssigned, '| useFilteredBlocks (assigned only):', useFilteredBlocks);
+
+      let result: { rows: any[] };
+      if (useFilteredBlocks) {
+        result = await pool.query(
+          `
+            SELECT b.id, b.block_name, b.project_id, b.created_at
+            FROM blocks b
+            INNER JOIN block_users bu ON bu.block_id = b.id AND bu.user_id = $2
+            WHERE b.project_id = $1
+            ORDER BY b.block_name
+          `,
+          [projectId, userId]
+        );
+        console.log('🔵 [GET /blocks] Returning ASSIGNED blocks only. Count:', result.rows.length, '| names:', result.rows.map((r: any) => r.block_name));
+      } else {
+        result = await pool.query(
+          `
+            SELECT id, block_name, project_id, created_at
+            FROM blocks
+            WHERE project_id = $1
+            ORDER BY block_name
+          `,
+          [projectId]
+        );
+        console.log('🔵 [GET /blocks] Returning ALL blocks. Count:', result.rows.length);
+      }
 
       res.json({
         success: true,
@@ -1011,8 +987,8 @@ router.get(
         params.push(experiment);
       }
 
-      // Filter by user role: engineers and customers only see their own runs
-      if (userRole === 'engineer' || userRole === 'customer') {
+      // Filter by user role: engineers, cad_engineers, and customers only see their own runs
+      if (userRole === 'engineer' || userRole === 'cad_engineer' || userRole === 'customer') {
         if (username) {
           paramCount++;
           query += ` AND r.user_name = $${paramCount}`;
@@ -1191,7 +1167,7 @@ router.post(
 
 /**
  * GET /api/projects/:projectIdentifier/user-role
- * Get user's role for a specific project (project-specific role from user_projects, or global role)
+ * Global role = users table only. Project-based role = user_projects only.
  * projectIdentifier can be: project ID (number), project name, or Zoho project ID
  */
 router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, res: Response) => {
@@ -1203,7 +1179,7 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    // Get user's global role first
+    // Global role: from users table only
     const userResult = await pool.query(
       'SELECT role FROM users WHERE id = $1',
       [userId]
@@ -1215,103 +1191,56 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
     
     const globalRole = userResult.rows[0].role;
     
-    // PRIORITY 1: Check Zoho projects FIRST (before ASI projects)
-    // This ensures Zoho projects are shown and roles are determined from Zoho
+    // For non-admin: role only from DB (user_projects). Do not use Zoho for role.
     let projectRole: string | null = null;
     let asiProjectId: number | null = null;
     
-    try {
-      // Get user email to match with Zoho members
-      const userEmailResult = await pool.query(
-        'SELECT email FROM users WHERE id = $1',
-        [userId]
-      );
-      
-      if (userEmailResult.rows.length > 0) {
-        const userEmail = userEmailResult.rows[0].email;
-        
-        // Check if projectIdentifier looks like a Zoho project ID (long numeric string)
-        // Or try to get Zoho project by name
-        let zohoProjectId: string | null = null;
-        
-        // If it's a long numeric string (Zoho project IDs are typically 15+ digits)
-        // PostgreSQL integer max is 2,147,483,647, so anything larger must be a Zoho ID
-        const isLongNumeric = /^\d+$/.test(projectIdentifier);
-        const numericValue = isLongNumeric ? parseInt(projectIdentifier, 10) : 0;
-        const isZohoProjectId = isLongNumeric && (projectIdentifier.length >= 15 || numericValue > 2147483647);
-        
-        if (isZohoProjectId) {
-          zohoProjectId = projectIdentifier;
-        } else {
-          // Try to find Zoho project by name
-          try {
-            const zohoProjects = await zohoService.getProjects(userId);
-            const matchingProject = zohoProjects.find(
-              (p: any) => p.name?.toLowerCase() === projectIdentifier.toLowerCase()
-            );
-            if (matchingProject) {
-              zohoProjectId = matchingProject.id?.toString();
-            }
-          } catch (zohoError) {
-            // Zoho API call failed, continue with fallback
+    if (globalRole === 'admin') {
+      // Admin only: optionally resolve role from Zoho for Zoho projects
+      try {
+        const userEmailResult = await pool.query(
+          'SELECT email FROM users WHERE id = $1',
+          [userId]
+        );
+        if (userEmailResult.rows.length > 0) {
+          const userEmail = userEmailResult.rows[0].email;
+          let zohoProjectId: string | null = null;
+          const isLongNumeric = /^\d+$/.test(projectIdentifier);
+          const numericValue = isLongNumeric ? parseInt(projectIdentifier, 10) : 0;
+          const isZohoProjectId = isLongNumeric && (projectIdentifier.length >= 15 || numericValue > 2147483647);
+          if (isZohoProjectId) {
+            zohoProjectId = projectIdentifier;
+          } else {
+            try {
+              const zohoProjects = await zohoService.getProjects(userId);
+              const matchingProject = zohoProjects.find(
+                (p: any) => p.name?.toLowerCase() === projectIdentifier.toLowerCase()
+              );
+              if (matchingProject) zohoProjectId = matchingProject.id?.toString();
+            } catch (_) {}
+          }
+          if (zohoProjectId) {
+            try {
+              const zohoMembers = await zohoService.getProjectMembers(userId, zohoProjectId);
+              const userMember = zohoMembers.find(
+                (m: any) => (m.email || m.Email || m.mail || '').toLowerCase() === userEmail.toLowerCase()
+              );
+              if (userMember) {
+                let zohoRole: any = userMember.project_profile || userMember.project_role || userMember.role_in_project || userMember.role || userMember.Role || userMember.project_role_name || userMember.designation;
+                if (zohoRole && typeof zohoRole === 'object') {
+                  zohoRole = zohoRole.name || zohoRole.role || zohoRole.designation || zohoRole.value || zohoRole.label || zohoRole.title || zohoRole.id;
+                }
+                if (zohoRole) {
+                  projectRole = zohoService.mapZohoProjectRoleToAppRole(typeof zohoRole === 'string' ? zohoRole : String(zohoRole));
+                }
+              }
+            } catch (_) {}
           }
         }
-        
-        // If we have a Zoho project ID, get members and find user's role
-        if (zohoProjectId) {
-          try {
-            const zohoMembers = await zohoService.getProjectMembers(userId, zohoProjectId);
-            const userMember = zohoMembers.find(
-              (m: any) => {
-                const memberEmail = (m.email || m.Email || m.mail || '').toLowerCase();
-                return memberEmail === userEmail.toLowerCase();
-              }
-            );
-            
-            if (userMember) {
-              // Extract role - PRIORITIZE project-specific role over general role
-              // project_profile contains the project-specific role (e.g., "CAD Engineer")
-              // role contains the general/default role (e.g., "Employee")
-              let zohoRole: any = userMember.project_profile || 
-                                 userMember.project_role || 
-                                 userMember.role_in_project ||
-                                 userMember.role || 
-                                 userMember.Role || 
-                                 userMember.project_role_name ||
-                                 userMember.designation;
-              
-              // Log the raw role to see its structure
-              if (zohoRole && typeof zohoRole === 'object') {
-                console.log(`[User Role API] Role is object for user ${userEmail} in project ${zohoProjectId}:`, JSON.stringify(zohoRole));
-                // Extract the string value from object
-                zohoRole = zohoRole.name || 
-                           zohoRole.role || 
-                           zohoRole.designation || 
-                           zohoRole.value ||
-                           zohoRole.label ||
-                           zohoRole.title ||
-                           zohoRole.id;
-              }
-              
-              if (zohoRole) {
-                // Convert to string if it's still not a string
-                const roleString = typeof zohoRole === 'string' ? zohoRole : String(zohoRole);
-                console.log(`[User Role API] Extracted role from project profile: "${roleString}" for user ${userEmail} in project ${zohoProjectId}`);
-                // Map Zoho role to app role (handles both "Admin" and "admin" case-insensitively)
-                projectRole = zohoService.mapZohoProjectRoleToAppRole(roleString);
-                console.log(`[User Role API] Mapped to app role: "${projectRole}" for user ${userEmail}`);
-              }
-            }
-          } catch (memberError: any) {
-            console.error(`[User Role API] Failed to get Zoho members for project ${zohoProjectId}:`, memberError.message);
-          }
-        }
-      }
-    } catch (zohoCheckError) {
-      // Zoho check failed, continue with fallback to ASI projects
+      } catch (_) {}
     }
     
-    // PRIORITY 2: Only check ASI projects if Zoho check didn't find a role
+    // Project-based role: from user_projects only (or Zoho for admin on Zoho projects)
     // This happens after EDA output files are uploaded and projects are mapped
     if (!projectRole) {
       // Try to find ASI project ID from various identifiers
@@ -1492,23 +1421,21 @@ router.post(
         }
       }
 
-      // Insert or update mapping
+      // Insert or update mapping (zoho_projects_mapping has no portal_id column)
       const result = await pool.query(
         `INSERT INTO zoho_projects_mapping 
-         (zoho_project_id, local_project_id, zoho_project_name, portal_id)
-         VALUES ($1, $2, $3, $4)
+         (zoho_project_id, local_project_id, zoho_project_name)
+         VALUES ($1, $2, $3)
          ON CONFLICT (zoho_project_id)
          DO UPDATE SET 
            local_project_id = EXCLUDED.local_project_id,
            zoho_project_name = COALESCE(EXCLUDED.zoho_project_name, zoho_projects_mapping.zoho_project_name),
-           portal_id = COALESCE(EXCLUDED.portal_id, zoho_projects_mapping.portal_id),
            updated_at = CURRENT_TIMESTAMP
          RETURNING *`,
         [
           zohoProjectId.toString(),
           finalAsiProjectId,
-          zohoProjectName || null,
-          portalId || null
+          zohoProjectName || null
         ]
       );
 
@@ -2003,6 +1930,77 @@ function extractUsernameFromEmail(email: string | null | undefined): string | nu
 }
 
 /**
+ * POST /api/projects/mark-setup-completed
+ * Mark project setup as completed (e.g. when CAD engineer finishes Export to Linux / createDir.py successfully).
+ * Updates projects.setup_completed and setup_completed_at only.
+ * Body: { projectId?: string | number, projectName?: string } — resolve by id, zoho mapping, or name.
+ */
+router.post(
+  '/mark-setup-completed',
+  authenticate,
+  async (req: Request, res: Response) => {
+    try {
+      const { projectId: rawProjectId, projectName } = req.body;
+      const userId = (req as any).user?.id;
+      if (!userId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      let localProjectId: number | null = null;
+      const projectIdStr = rawProjectId != null ? String(rawProjectId).trim() : '';
+
+      // Resolve to local project: by numeric id, by zoho mapping, or by name
+      if (projectIdStr && /^\d+$/.test(projectIdStr)) {
+        localProjectId = parseInt(projectIdStr, 10);
+      } else if (projectIdStr && (projectIdStr.startsWith('zoho_') || !projectIdStr.startsWith('zoho_'))) {
+        const zohoId = projectIdStr.replace(/^zoho_/, '');
+        const mappingResult = await pool.query(
+          'SELECT local_project_id FROM zoho_projects_mapping WHERE zoho_project_id = $1 OR zoho_project_id::text = $1',
+          [zohoId]
+        );
+        if (mappingResult.rows.length > 0 && mappingResult.rows[0].local_project_id) {
+          localProjectId = mappingResult.rows[0].local_project_id;
+        }
+      }
+      if (!localProjectId && projectName) {
+        const byName = await pool.query(
+          'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
+          [String(projectName).trim()]
+        );
+        if (byName.rows.length > 0) {
+          localProjectId = byName.rows[0].id;
+        }
+      }
+
+      if (!localProjectId) {
+        return res.status(404).json({
+          error: 'Project not found',
+          message: 'Could not resolve project by id or name.',
+        });
+      }
+
+      await pool.query(
+        `UPDATE projects SET setup_completed = true, setup_completed_at = CURRENT_TIMESTAMP, exported_to_linux = true, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        [localProjectId]
+      );
+      console.log(`✅ Marked setup completed and exported_to_linux for project id ${localProjectId}`);
+
+      return res.json({
+        success: true,
+        message: 'Project setup marked as completed',
+        data: { projectId: localProjectId },
+      });
+    } catch (error: any) {
+      console.error('Error marking setup completed:', error);
+      return res.status(500).json({
+        error: 'Internal server error',
+        message: error.message,
+      });
+    }
+  }
+);
+
+/**
  * POST /api/projects/save-run-directory
  * Save run directory path after setup command execution
  * Body: { projectName, blockName, experimentName, runDirectory, zohoProjectId? }
@@ -2067,177 +2065,33 @@ router.post(
 
       await client.query('BEGIN');
 
-      // Simplified logic: Setup happens before EDA files, so no need to check mappings
-      // If zohoProjectId is provided, save directly to zoho_project_run_directories
-      // If no zohoProjectId, try to find it as Zoho project by name, then check local projects
+      // Resolve to local project only: update projects table and runs table only (never zoho_project_run_directories)
       let projectId: number | null = null;
-      let isZohoProject = false;
-      let zohoProjectId: string | null = providedZohoProjectId || null;
-      
-      if (zohoProjectId) {
-        // Zoho project - save directly to zoho_project_run_directories (no mapping check needed)
-        isZohoProject = true;
-        console.log('Saving as Zoho project with ID:', zohoProjectId);
-      } else {
-        // No zohoProjectId provided - try to find Zoho project by name first
-        try {
-          const zohoProjectResult = await client.query(
-            'SELECT zoho_project_id FROM zoho_projects_mapping WHERE LOWER(zoho_project_name) = LOWER($1)',
-            [projectName]
-          );
-          
-          if (zohoProjectResult.rows.length > 0) {
-            // Found as Zoho project - use it
-            zohoProjectId = zohoProjectResult.rows[0].zoho_project_id;
-            isZohoProject = true;
-            console.log('Found Zoho project by name in mapping table, ID:', zohoProjectId);
-          } else {
-            // Not found in mapping table - try to find it via Zoho API
-            try {
-              const zohoProjects = await zohoService.getProjects(userId);
-              const matchingProject = zohoProjects.find(
-                (p: any) => p.name?.toLowerCase() === projectName.toLowerCase()
-              );
-              if (matchingProject && matchingProject.id) {
-                zohoProjectId = matchingProject.id.toString();
-                isZohoProject = true;
-                console.log('Found Zoho project by name via API, ID:', zohoProjectId);
-              } else {
-                // Not found as Zoho project - check if it's a local project
-                const projectResult = await client.query(
-                  'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
-                  [projectName]
-                );
-
-                if (projectResult.rows.length > 0) {
-                  // Found local project
-                  projectId = projectResult.rows[0].id;
-                  console.log('Found local project, ID:', projectId);
-                } else {
-                  // Not found anywhere - return error
-                  await client.query('ROLLBACK');
-                  return res.status(404).json({ 
-                    error: 'Project not found',
-                    message: `Project "${projectName}" does not exist. Please ensure the project exists or provide the zohoProjectId if it's a Zoho project.` 
-                  });
-                }
-              }
-            } catch (zohoApiError) {
-              // Zoho API call failed - check local projects
-              console.log('Zoho API lookup failed, checking local projects:', zohoApiError);
-              const projectResult = await client.query(
-                'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
-                [projectName]
-              );
-
-              if (projectResult.rows.length > 0) {
-                projectId = projectResult.rows[0].id;
-                console.log('Found local project, ID:', projectId);
-              } else {
-                await client.query('ROLLBACK');
-                return res.status(404).json({ 
-                  error: 'Project not found',
-                  message: `Project "${projectName}" does not exist.` 
-                });
-              }
-            }
-          }
-        } catch (e) {
-          // If query fails, try local project lookup
-          const projectResult = await client.query(
-            'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
-            [projectName]
-          );
-
-          if (projectResult.rows.length > 0) {
-            projectId = projectResult.rows[0].id;
-          } else {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ 
-              error: 'Project not found',
-              message: `Project "${projectName}" does not exist.` 
-            });
-          }
+      if (providedZohoProjectId) {
+        const mappingResult = await client.query(
+          'SELECT local_project_id FROM zoho_projects_mapping WHERE zoho_project_id = $1 OR zoho_project_id::text = $1',
+          [providedZohoProjectId.toString()]
+        );
+        if (mappingResult.rows.length > 0 && mappingResult.rows[0].local_project_id) {
+          projectId = mappingResult.rows[0].local_project_id;
+          console.log('Resolved Zoho project to local project ID:', projectId);
         }
       }
-
-      // Handle Zoho project - save directly to zoho_project_run_directories table
-      // No mapping check needed since setup happens before EDA files
-      if (isZohoProject) {
-        if (!zohoProjectId) {
-          await client.query('ROLLBACK');
-          return res.status(400).json({ 
-            error: 'Zoho project ID required',
-            message: `Zoho project ID is required for Zoho projects. Please ensure the frontend passes the zohoProjectId.` 
-          });
-        }
-        try {
-          // Check if record already exists
-          const existingResult = await client.query(
-            `SELECT id FROM zoho_project_run_directories 
-             WHERE zoho_project_id = $1 AND user_name = $2 AND block_name = $3 AND experiment_name = $4`,
-            [zohoProjectId.toString(), finalUsername, blockName, sanitizedExperimentName]
-          );
-
-          if (existingResult.rows.length > 0) {
-            // Update existing record
-            await client.query(
-              `UPDATE zoho_project_run_directories 
-               SET run_directory = $1, updated_at = CURRENT_TIMESTAMP 
-               WHERE id = $2`,
-              [actualRunDirectory, existingResult.rows[0].id]
-            );
-          } else {
-            // Insert new record
-            await client.query(
-              `INSERT INTO zoho_project_run_directories 
-               (zoho_project_id, zoho_project_name, user_name, user_id, block_name, experiment_name, run_directory) 
-               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-              [zohoProjectId.toString(), projectName, finalUsername, userId, blockName, sanitizedExperimentName, actualRunDirectory]
-            );
-            console.log(`✅ Inserted run directory for Zoho project:`, {
-              zoho_project_id: zohoProjectId.toString(),
-              zoho_project_name: projectName,
-              user_name: finalUsername,
-              run_directory: actualRunDirectory
-            });
-          }
-
-          await client.query('COMMIT');
-
-          return res.json({
-            success: true,
-            message: 'Run directory saved successfully for Zoho project',
-            data: {
-              zohoProjectId: zohoProjectId.toString(),
-              projectName,
-              blockName,
-              experimentName: sanitizedExperimentName,
-              runDirectory: actualRunDirectory,
-              username: finalUsername,
-              isUnmappedZohoProject: true
-            }
-          });
-        } catch (e: any) {
-          await client.query('ROLLBACK');
-          // If table doesn't exist, fall through to local project handling
-          if (e.message && e.message.includes('does not exist')) {
-            // Table doesn't exist yet - need to run migration
-            return res.status(500).json({ 
-              error: 'Database table not found',
-              message: 'zoho_project_run_directories table does not exist. Please run migration 025_create_zoho_project_run_directories.sql'
-            });
-          }
-          throw e;
+      if (!projectId) {
+        const projectResult = await client.query(
+          'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
+          [projectName]
+        );
+        if (projectResult.rows.length > 0) {
+          projectId = projectResult.rows[0].id;
+          console.log('Resolved project by name, ID:', projectId);
         }
       }
-
-      // Handle mapped or local project - save to runs table (existing logic)
       if (!projectId) {
         await client.query('ROLLBACK');
         return res.status(404).json({ 
           error: 'Project not found',
-          message: `Project "${projectName}" does not exist` 
+          message: `Project "${projectName}" does not exist.` 
         });
       }
 
@@ -2312,6 +2166,26 @@ router.post(
         runId = insertRunResult.rows[0].id;
       }
 
+      // Store run_directory in block_users (per block per user; used when engineer completes setup)
+      try {
+        await client.query(
+          `INSERT INTO block_users (block_id, user_id, run_directory)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (block_id, user_id) DO UPDATE SET run_directory = EXCLUDED.run_directory`,
+          [blockId, userId, actualRunDirectory]
+        );
+        console.log(`✅ Saved run_directory to block_users for block_id=${blockId}, user_id=${userId}`);
+      } catch (blockUsersErr: any) {
+        // Log but don't fail if block_users table or column doesn't exist yet (migration not run)
+        console.warn('Could not save run_directory to block_users:', blockUsersErr?.message);
+      }
+
+      // Mark project setup and exported_to_linux in projects table only
+      await client.query(
+        `UPDATE projects SET setup_completed = true, setup_completed_at = CURRENT_TIMESTAMP, exported_to_linux = true, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        [projectId]
+      );
+
       await client.query('COMMIT');
 
       res.json({
@@ -2343,9 +2217,9 @@ router.post(
 
 /**
  * GET /api/projects/:projectIdOrName/blocks-experiments
- * Get all blocks and their experiments for a specific project
- * Supports both local projects (numeric ID) and Zoho projects (project name or zoho_<id> format)
- * Returns blocks and experiments from both setup data and EDA files
+ * Get blocks and experiments for a project from DB only (no Zoho).
+ * If projectIdOrName is zoho_<id>, resolve to local project via mapping; if no mapping, return [].
+ * For non-admin/manager/lead: only blocks assigned to the user (block_users) and only experiments (runs) they created.
  */
 router.get(
   '/:projectIdOrName/blocks-experiments',
@@ -2353,171 +2227,90 @@ router.get(
   async (req: Request, res: Response) => {
     const client = await pool.connect();
     try {
-      const projectIdOrName = req.params.projectIdOrName;
+      const projectIdOrName = String(req.params.projectIdOrName || '').trim();
       const userId = (req as any).user?.id;
       const userRole = (req as any).user?.role;
-      
-      console.log('🔵 [BACKEND] GET /api/projects/:projectIdOrName/blocks-experiments');
+
+      console.log('🔵 [BACKEND] GET /api/projects/:projectIdOrName/blocks-experiments (DB only)');
       console.log('   Project ID/Name: ', projectIdOrName);
       console.log('   User ID: ', userId);
       console.log('   User Role: ', userRole);
-      
-      // Check if this is a Zoho project (format: zoho_<zoho_project_id> or just project name)
-      const isZohoProject = projectIdOrName.startsWith('zoho_');
-      const zohoProjectId = isZohoProject ? projectIdOrName.replace('zoho_', '') : null;
-      
-      if (isZohoProject || zohoProjectId) {
-        // Handle Zoho project - get from zoho_project_run_directories
-        const actualZohoProjectId = zohoProjectId || projectIdOrName;
-        
-        // Get username from SSH session or database
-        let userUsername: string | null = null;
-        if (userId) {
-          try {
-            const { executeSSHCommand } = await import('../services/ssh.service');
-            const whoamiResult = await executeSSHCommand(userId, 'whoami', 1);
-            if (whoamiResult.stdout && whoamiResult.stdout.trim()) {
-              userUsername = whoamiResult.stdout.trim();
-            }
-          } catch (e) {
-            // Try database lookup
-            // Get the most recent user_name for this user
-            const zohoRunResult = await client.query(
-              `SELECT user_name 
-               FROM zoho_project_run_directories 
-               WHERE user_id = $1 AND user_name IS NOT NULL
-               ORDER BY updated_at DESC, created_at DESC
-               LIMIT 1`,
-              [userId]
-            );
-            if (zohoRunResult.rows.length > 0 && zohoRunResult.rows[0].user_name) {
-              userUsername = zohoRunResult.rows[0].user_name;
-            }
-          }
+
+      // Resolve to local project ID only (no Zoho fetch)
+      let projectId: number | null = null;
+      if (projectIdOrName.startsWith('zoho_')) {
+        const zohoId = projectIdOrName.replace('zoho_', '');
+        const mappingResult = await client.query(
+          'SELECT local_project_id FROM zoho_projects_mapping WHERE zoho_project_id = $1 OR zoho_project_id::text = $1',
+          [zohoId]
+        );
+        if (mappingResult.rows.length > 0 && mappingResult.rows[0].local_project_id) {
+          projectId = mappingResult.rows[0].local_project_id;
         }
-        
-        // Query zoho_project_run_directories table
-        let query = `
-          SELECT 
-            block_name,
-            experiment_name as experiment,
-            run_directory,
-            user_name,
-            created_at,
-            updated_at as last_updated
-          FROM zoho_project_run_directories
-          WHERE zoho_project_id = $1
-        `;
-        
-        const params: any[] = [actualZohoProjectId];
-        
-        // Filter by user if not admin/manager/lead
-        if (userRole === 'engineer' || userRole === 'customer') {
-          if (userUsername) {
-            query += ` AND user_name = $2`;
-            params.push(userUsername);
-          } else {
-            // If no username, return empty (user-specific data)
-            client.release();
-            return res.json({
-              success: true,
-              data: [],
-            });
-          }
+        if (!projectId) {
+          client.release();
+          return res.json({ success: true, data: [] });
         }
-        
-        query += ` ORDER BY block_name, experiment_name`;
-        
-        const result = await client.query(query, params);
-        
-        // Group by block_name and format as blocks with experiments
-        const blocksMap = new Map<string, any>();
-        
-        for (const row of result.rows) {
-          const blockName = row.block_name;
-          if (!blocksMap.has(blockName)) {
-            blocksMap.set(blockName, {
-              block_id: null, // Zoho projects don't have block IDs
-              block_name: blockName,
-              project_id: null,
-              block_created_at: row.created_at,
-              experiments: [],
-            });
-          }
-          
-          const block = blocksMap.get(blockName)!;
-          block.experiments.push({
-            id: null, // Zoho projects don't have run IDs
-            experiment: row.experiment,
-            rtl_tag: null,
-            user_name: row.user_name,
-            run_directory: row.run_directory,
-            last_updated: row.last_updated,
-            created_at: row.created_at,
-          });
-        }
-        
-        const blocksData = Array.from(blocksMap.values());
-        
-        client.release();
-        return res.json({
-          success: true,
-          data: blocksData,
-        });
       } else {
-        // Handle local project - try to parse as ID first, then try as name
-        let projectId: number | null = null;
-        
-        // Try parsing as numeric ID
         const parsedId = parseInt(projectIdOrName, 10);
-        if (!isNaN(parsedId)) {
+        if (!Number.isNaN(parsedId) && String(parsedId) === projectIdOrName) {
           projectId = parsedId;
         } else {
-          // Try finding by name
           const projectResult = await client.query(
             'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
             [projectIdOrName]
           );
-          if (projectResult.rows.length > 0) {
-            projectId = projectResult.rows[0].id;
-          }
+          if (projectResult.rows.length > 0) projectId = projectResult.rows[0].id;
         }
-        
-        if (!projectId) {
-          client.release();
-          return res.status(404).json({ error: 'Project not found' });
-        }
-        
-        // Check access
-        let hasAccess = false;
-        if (userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead') {
-          hasAccess = true;
-        } else {
-          const accessCheck = await client.query(
-            `
-              SELECT COUNT(*) as count
-              FROM projects p
-              LEFT JOIN user_projects up ON p.id = up.project_id
-              WHERE p.id = $1
-                AND (
-                  (p.created_by = $2 AND p.created_by IS NOT NULL)
-                  OR up.user_id = $2
-                )
-            `,
-            [projectId, userId]
-          );
-          hasAccess = (parseInt(accessCheck.rows[0]?.count || '0', 10) > 0);
-        }
-        
-        if (!hasAccess) {
-          client.release();
-          return res.status(403).json({ 
-            error: 'Access denied',
-            message: 'You do not have access to this project'
-          });
-        }
-        
-        // Get blocks with their experiments (runs) from setup data
+      }
+
+      if (!projectId) {
+        client.release();
+        return res.status(404).json({ error: 'Project not found' });
+      }
+
+      // Check access
+      let hasAccess = false;
+      if (userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead') {
+        hasAccess = true;
+      } else {
+        const accessCheck = await client.query(
+          `
+            SELECT COUNT(*) as count
+            FROM projects p
+            LEFT JOIN user_projects up ON p.id = up.project_id
+            WHERE p.id = $1
+              AND (
+                (p.created_by = $2 AND p.created_by IS NOT NULL)
+                OR up.user_id = $2
+              )
+          `,
+          [projectId, userId]
+        );
+        hasAccess = (parseInt(accessCheck.rows[0]?.count || '0', 10) > 0);
+      }
+
+      if (!hasAccess) {
+        client.release();
+        return res.status(403).json({
+          error: 'Access denied',
+          message: 'You do not have access to this project',
+        });
+      }
+
+      // Global role = JWT (from users table only). Project-based role = user_projects only.
+      const projectRoleRow = await client.query(
+        'SELECT role FROM user_projects WHERE user_id = $1 AND project_id = $2 LIMIT 1',
+        [userId, projectId]
+      );
+      const projectRole = projectRoleRow.rows[0]?.role?.toString().trim() || null;
+      const effectiveRole = projectRole || userRole || '';
+      const roleLower = effectiveRole.toLowerCase();
+      const showAll = roleLower === 'admin' || roleLower === 'project_manager' || roleLower === 'lead';
+      console.log('🔵 [blocks-experiments] globalRole:', userRole, '| projectRole:', projectRole, '| effectiveRole:', effectiveRole, '| showAll (see all blocks):', showAll);
+
+      if (showAll) {
+        // All blocks and all runs from DB; include block_users.run_directory for current user when present
         const result = await client.query(
           `
             SELECT 
@@ -2525,6 +2318,7 @@ router.get(
               b.block_name,
               b.project_id,
               b.created_at as block_created_at,
+              MAX(bu.run_directory) as block_user_run_directory,
               COALESCE(
                 json_agg(
                   json_build_object(
@@ -2540,20 +2334,122 @@ router.get(
                 '[]'
               ) as experiments
             FROM blocks b
+            LEFT JOIN block_users bu ON bu.block_id = b.id AND bu.user_id = $2
             LEFT JOIN runs r ON r.block_id = b.id
             WHERE b.project_id = $1
             GROUP BY b.id, b.block_name, b.project_id, b.created_at
             ORDER BY b.block_name
           `,
-          [projectId]
+          [projectId, userId]
         );
-        
+        console.log('🔵 [blocks-experiments] Returning ALL blocks for admin/manager/lead. Count:', result.rows.length, '| block_names:', result.rows.map((r: any) => r.block_name));
         client.release();
-        return res.json({
-          success: true,
-          data: result.rows,
-        });
+        return res.json({ success: true, data: result.rows });
       }
+
+      // Non-admin: only blocks assigned to user and only experiments (runs) they created. DB only.
+      const blockUsersExists = await client.query(
+        `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'block_users')`
+      );
+      const hasBlockUsersTable = blockUsersExists.rows[0]?.exists === true;
+      console.log('🔵 [blocks-experiments] hasBlockUsersTable:', hasBlockUsersTable);
+
+      // Current user's run user_name (runs.user_name): prefer ssh_user, else username
+      const userRow = await client.query(
+        'SELECT COALESCE(ssh_user, username) AS run_user_name FROM users WHERE id = $1',
+        [userId]
+      );
+      const runUserName: string | null = userRow.rows[0]?.run_user_name?.trim() || null;
+      console.log('🔵 [blocks-experiments] runUserName (for filtering runs):', runUserName);
+
+      if (hasBlockUsersTable) {
+        // Blocks: only those in block_users for this user. Experiments: only runs where user_name matches.
+        if (!runUserName) {
+          client.release();
+          return res.json({ success: true, data: [] });
+        }
+        const result = await client.query(
+          `
+            SELECT 
+              b.id as block_id,
+              b.block_name,
+              b.project_id,
+              b.created_at as block_created_at,
+              MAX(bu.run_directory) as block_user_run_directory,
+              COALESCE(
+                json_agg(
+                  json_build_object(
+                    'id', r.id,
+                    'experiment', r.experiment,
+                    'rtl_tag', r.rtl_tag,
+                    'user_name', r.user_name,
+                    'run_directory', r.run_directory,
+                    'last_updated', r.last_updated,
+                    'created_at', r.created_at
+                  )
+                ) FILTER (WHERE r.id IS NOT NULL AND r.user_name = $3),
+                '[]'
+              ) as experiments
+            FROM blocks b
+            INNER JOIN block_users bu ON bu.block_id = b.id AND bu.user_id = $2
+            LEFT JOIN runs r ON r.block_id = b.id AND r.user_name = $3
+            WHERE b.project_id = $1
+            GROUP BY b.id, b.block_name, b.project_id, b.created_at
+            ORDER BY b.block_name
+          `,
+          [projectId, userId, runUserName]
+        );
+        // Filter out blocks that have no experiments (agg may still return one row with [])
+        const rows = (result.rows as any[]).map((row) => ({
+          ...row,
+          experiments: Array.isArray(row.experiments) ? row.experiments.filter((e: any) => e && e.id != null) : [],
+        }));
+        console.log('🔵 [blocks-experiments] Returning ASSIGNED blocks only (block_users). Count:', rows.length, '| block_names:', rows.map((r: any) => r.block_name));
+        client.release();
+        return res.json({ success: true, data: rows });
+      }
+
+      // No block_users table: only blocks that have at least one run by this user (DB only)
+      if (!runUserName) {
+        client.release();
+        return res.json({ success: true, data: [] });
+      }
+      const result = await client.query(
+        `
+          SELECT 
+            b.id as block_id,
+            b.block_name,
+            b.project_id,
+            b.created_at as block_created_at,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'id', r.id,
+                  'experiment', r.experiment,
+                  'rtl_tag', r.rtl_tag,
+                  'user_name', r.user_name,
+                  'run_directory', r.run_directory,
+                  'last_updated', r.last_updated,
+                  'created_at', r.created_at
+                )
+              ) FILTER (WHERE r.id IS NOT NULL AND r.user_name = $2),
+              '[]'
+            ) as experiments
+          FROM blocks b
+          INNER JOIN runs r ON r.block_id = b.id AND r.user_name = $2
+          WHERE b.project_id = $1
+          GROUP BY b.id, b.block_name, b.project_id, b.created_at
+          ORDER BY b.block_name
+        `,
+        [projectId, runUserName]
+      );
+      const rows = (result.rows as any[]).map((row) => ({
+        ...row,
+        experiments: Array.isArray(row.experiments) ? row.experiments.filter((e: any) => e && e.id != null) : [],
+      }));
+      console.log('🔵 [blocks-experiments] No block_users table: returning blocks with user runs only. Count:', rows.length, '| block_names:', rows.map((r: any) => r.block_name));
+      client.release();
+      return res.json({ success: true, data: rows });
     } catch (error: any) {
       if (client) client.release();
       console.error('Error fetching blocks and experiments:', error);

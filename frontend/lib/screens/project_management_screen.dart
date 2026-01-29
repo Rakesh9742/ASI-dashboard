@@ -146,9 +146,12 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
 
       final domains = await _apiService.getDomains(token: token);
       
-      // Load projects with Zoho option
+      // Admin sees only Zoho projects - always request with includeZoho
+      final userRole = ref.read(authProvider).user?['role'];
+      final isAdmin = userRole == 'admin';
+      
       Map<String, dynamic> projectsData;
-      if (_includeZoho && _isZohoConnected) {
+      if (isAdmin || (_includeZoho && _isZohoConnected)) {
         projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
       } else {
         final projects = await _apiService.getProjects(token: token);
@@ -889,29 +892,32 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                                     ],
                                   ),
                           ),
-                          if (authState.user?['role'] == 'admin' && !isZohoProject)
+                          if (authState.user?['role'] == 'admin')
                             DataCell(
-                              Container(
-                                padding: const EdgeInsets.all(4),
-                                decoration: BoxDecoration(
-                                  color: Colors.red.shade50,
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: IconButton(
-                                  icon: Icon(Icons.delete_outline, color: Colors.red.shade700, size: 22),
-                                  onPressed: () => _confirmDeleteProject(project),
-                                  tooltip: 'Delete project',
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                ),
-                              ),
-                            )
-                          else if (authState.user?['role'] == 'admin')
-                            DataCell(
-                              Text(
-                                '-',
-                                style: TextStyle(fontSize: 14, color: Colors.grey.shade400),
-                              ),
+                              isZohoProject
+                                  ? SizedBox(
+                                      width: 160,
+                                      child: _SyncZohoMembersButton(
+                                        project: project,
+                                        apiService: _apiService,
+                                        authProvider: authState,
+                                        onSyncComplete: () {},
+                                      ),
+                                    )
+                                  : Container(
+                                      padding: const EdgeInsets.all(4),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red.shade50,
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: IconButton(
+                                        icon: Icon(Icons.delete_outline, color: Colors.red.shade700, size: 22),
+                                        onPressed: () => _confirmDeleteProject(project),
+                                        tooltip: 'Delete project',
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                      ),
+                                    ),
                             ),
                         ],
                       );
@@ -1051,27 +1057,29 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
   }
 
   void _showProjectDetails(dynamic project) {
-    final isMapped = project['is_mapped'] == true;
+    final isZohoProject = project['source'] == 'zoho';
     
-    // If project is mapped, show dialog with two buttons
-    if (isMapped) {
+    // For all Zoho projects (mapped or unmapped), show dialog with Sync button
+    if (isZohoProject) {
       _showMappedProjectOptions(project);
     } else {
-      // Project not mapped - show regular details dialog
-      final isZohoProject = project['source'] == 'zoho';
-      
-      showDialog(
-        context: context,
-        builder: (context) {
-          // Create a StatefulWidget to properly manage state
-          return _ZohoProjectDetailsDialog(
-            project: project,
-            isZohoProject: isZohoProject,
-            apiService: _apiService,
-            authProvider: ref.read(authProvider),
-          );
-        },
-      );
+      // Local project: if mapped show same dialog (no Sync); if unmapped show details dialog
+      final isMapped = project['is_mapped'] == true;
+      if (isMapped) {
+        _showMappedProjectOptions(project);
+      } else {
+        showDialog(
+          context: context,
+          builder: (context) {
+            return _ZohoProjectDetailsDialog(
+              project: project,
+              isZohoProject: false,
+              apiService: _apiService,
+              authProvider: ref.read(authProvider),
+            );
+          },
+        );
+      }
     }
   }
 
@@ -1230,83 +1238,20 @@ class _ProjectManagementScreenState extends ConsumerState<ProjectManagementScree
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Choose an option to proceed:',
-                      style: TextStyle(
-                        color: Colors.grey,
-                        fontSize: 14,
-                      ),
-                    ),
                     const SizedBox(height: 24),
-                    // Project Plan Button
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                          _showProjectPlan(project);
-                        },
-                        icon: const Icon(Icons.list_alt, size: 20),
-                        label: const Text(
-                          'Project Plan',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue.shade700,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    // View Button
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                          // Open View screen in new window
-                          _openViewScreenInNewWindow(project);
-                        },
-                        icon: const Icon(Icons.visibility, size: 20),
-                        label: const Text(
-                          'View',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.purple.shade700,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                      ),
-                    ),
                     // Sync Members Button (only for Zoho projects)
                     if (project['source'] == 'zoho')
                       Builder(
                         builder: (context) {
                           try {
-                            return Column(
-                              children: [
-                                const SizedBox(height: 12),
-                                SizedBox(
-                                  width: double.infinity,
-                                  child: _SyncZohoMembersButton(
-                                    project: project,
-                                    apiService: _apiService,
-                                    authProvider: ref.read(authProvider),
-                                    onSyncComplete: () {
-                                      // Optionally refresh or show success message
-                                    },
-                      ),
-                    ),
-                  ],
+                            return SizedBox(
+                              width: double.infinity,
+                              child: _SyncZohoMembersButton(
+                                project: project,
+                                apiService: _apiService,
+                                authProvider: ref.read(authProvider),
+                                onSyncComplete: () {},
+                              ),
                             );
                           } catch (e) {
                             print('[MappedDialog] Error rendering sync button: $e');
@@ -4277,39 +4222,6 @@ class _SyncZohoMembersButton extends StatefulWidget {
 class _SyncZohoMembersButtonState extends State<_SyncZohoMembersButton> {
   bool _isSyncing = false;
 
-  // Get ASI project ID
-  int? _getAsiProjectId() {
-    // First, check if there's an explicit asi_project_id field (for mapped projects)
-    final asiProjectId = widget.project['asi_project_id'];
-    if (asiProjectId != null) {
-      if (asiProjectId is int) return asiProjectId;
-      if (asiProjectId is String) {
-        final parsed = int.tryParse(asiProjectId);
-        if (parsed != null) return parsed;
-      }
-    }
-    
-    // Fallback: check the regular id field
-    final projectId = widget.project['id'];
-    if (projectId == null) return null;
-    
-    // If it's a string starting with 'zoho_', it's not linked yet
-    if (projectId is String && projectId.startsWith('zoho_')) {
-      return null;
-    }
-    
-    // If it's a number, return it
-    if (projectId is int) return projectId;
-    
-    // If it's a numeric string, parse it
-    if (projectId is String) {
-      final parsed = int.tryParse(projectId);
-      if (parsed != null) return parsed;
-    }
-    
-    return null;
-  }
-
   // Get Zoho project ID
   String? _getZohoProjectId() {
     // Try different possible fields
@@ -4353,19 +4265,7 @@ class _SyncZohoMembersButtonState extends State<_SyncZohoMembersButton> {
   }
 
   Future<void> _syncMembers() async {
-    final asiProjectId = _getAsiProjectId();
     final zohoProjectId = _getZohoProjectId();
-    
-    if (asiProjectId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('This Zoho project is not linked to an ASI project. Please link it first.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 4),
-        ),
-      );
-      return;
-    }
 
     if (zohoProjectId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -4388,23 +4288,100 @@ class _SyncZohoMembersButtonState extends State<_SyncZohoMembersButton> {
       return;
     }
 
+    final token = widget.authProvider.token;
+    if (token == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Not authenticated'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    final portalId = _getPortalId();
+    final zohoProjectName = widget.project['name']?.toString();
+
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const Center(child: CircularProgressIndicator()),
+    );
+    Map<String, dynamic>? preview;
+    try {
+      preview = await widget.apiService.syncZohoProjectMembersPreview(
+        zohoProjectId: zohoProjectId,
+        portalId: portalId,
+        zohoProjectName: zohoProjectName,
+        token: token,
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not load preview: $e'), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    Navigator.of(context).pop();
+    final projectName = preview['projectName']?.toString() ?? 'Unknown';
+    final existingProject = preview['existingProject'] == true;
+    final domainsList = preview['domains'];
+    final domains = domainsList is List ? domainsList : <dynamic>[];
+    final domainNames = domains
+        .map((d) => d is Map ? '${d['name'] ?? d['code'] ?? '?'} (${d['code'] ?? ''})'.trim().replaceAll(' ()', '') : '$d')
+        .where((s) => s.isNotEmpty)
+        .toList();
+    final domainSummary = domainNames.isEmpty ? 'No domains from Zoho tasklists' : domainNames.join(', ');
+    final technologyNode = preview['technology_node']?.toString();
+    final startDate = preview['start_date']?.toString();
+    final targetDate = preview['target_date']?.toString();
+    final techLine = technologyNode != null && technologyNode.isNotEmpty ? 'Technology node: $technologyNode' : null;
+    final startLine = startDate != null && startDate.isNotEmpty ? 'Start date: $startDate' : null;
+    final targetLine = targetDate != null && targetDate.isNotEmpty ? 'Target date: $targetDate' : null;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Confirm Sync Projects'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'The following will be added or updated in the database:',
+                style: Theme.of(ctx).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 12),
+              Text('Project: $projectName', style: const TextStyle(fontWeight: FontWeight.w600)),
+              if (existingProject) Text('(existing project will be updated)', style: Theme.of(ctx).textTheme.bodySmall),
+              if (techLine != null) ...[const SizedBox(height: 6), Text(techLine, style: const TextStyle(fontWeight: FontWeight.w500))],
+              if (startLine != null) ...[const SizedBox(height: 4), Text(startLine, style: const TextStyle(fontWeight: FontWeight.w500))],
+              if (targetLine != null) ...[const SizedBox(height: 4), Text(targetLine, style: const TextStyle(fontWeight: FontWeight.w500))],
+              const SizedBox(height: 8),
+              Text('Domains: $domainSummary', style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 16),
+              const Text('Members from Zoho will be synced to this project. Continue?'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Confirm')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
     setState(() {
       _isSyncing = true;
     });
-
     try {
-      final token = widget.authProvider.token;
-
-      if (token == null) {
-        throw Exception('Not authenticated');
-      }
-
-      final portalId = _getPortalId();
-
-      final result = await widget.apiService.syncZohoProjectMembers(
-        asiProjectId: asiProjectId,
+      final result = await widget.apiService.syncZohoProjectMembersByZohoId(
         zohoProjectId: zohoProjectId,
         portalId: portalId,
+        zohoProjectName: zohoProjectName,
         token: token,
       );
 
@@ -4456,28 +4433,20 @@ class _SyncZohoMembersButtonState extends State<_SyncZohoMembersButton> {
   @override
   Widget build(BuildContext context) {
     if (!_canSync()) {
-      print('[SyncButton] User does not have permission to sync');
       return const SizedBox.shrink();
     }
 
-    final asiProjectId = _getAsiProjectId();
     final zohoProjectId = _getZohoProjectId();
-    final hasAsiProject = asiProjectId != null;
     final hasZohoProjectId = zohoProjectId != null;
 
-    print('[SyncButton] Project data: id=${widget.project['id']}, zoho_project_id=${widget.project['zoho_project_id']}, source=${widget.project['source']}, asiProjectId=$asiProjectId, zohoProjectId=$zohoProjectId, hasAsiProject=$hasAsiProject, hasZohoProjectId=$hasZohoProjectId');
-
-    // Show button even if not linked, but disable it with a tooltip
     return Tooltip(
       message: !hasZohoProjectId
           ? 'Zoho Project ID not found'
-          : !hasAsiProject
-              ? 'This Zoho project needs to be linked to an ASI project first. Please link the project to sync members.'
-              : 'Sync members from Zoho project to ASI project',
+          : 'Sync members from Zoho project',
       child: SizedBox(
         width: double.infinity,
         child: ElevatedButton.icon(
-          onPressed: (_isSyncing || !hasAsiProject || !hasZohoProjectId) ? null : _syncMembers,
+          onPressed: (_isSyncing || !hasZohoProjectId) ? null : _syncMembers,
           icon: _isSyncing
               ? const SizedBox(
                   width: 16,
@@ -4490,7 +4459,7 @@ class _SyncZohoMembersButtonState extends State<_SyncZohoMembersButton> {
               : const Icon(Icons.sync, size: 18),
           label: Text(_isSyncing ? 'Syncing...' : 'Sync Members from Zoho'),
           style: ElevatedButton.styleFrom(
-            backgroundColor: hasAsiProject && hasZohoProjectId
+            backgroundColor: hasZohoProjectId
                 ? const Color(0xFF14B8A6)
                 : Colors.grey.shade600,
             foregroundColor: Colors.white,

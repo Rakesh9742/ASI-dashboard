@@ -857,6 +857,115 @@ class ZohoService {
   }
 
   /**
+   * Get Zoho project with fallback (same logic as getTasks): try project endpoints, then projects list.
+   * Returns project object or null. Use for reading start_date, end_date, technology, etc.
+   */
+  async getProjectWithFallback(userId: number, projectId: string, portalId?: string): Promise<ZohoProject | null> {
+    try {
+      const client = await this.getAuthenticatedClient(userId);
+      let portal = portalId;
+      let portalName: string | undefined;
+      if (!portal) {
+        const portals = await this.getPortals(userId);
+        if (portals.length === 0) return null;
+        portal = portals[0].id;
+        portalName = portals[0].name || portals[0].portal_name || portals[0].id_string;
+      } else {
+        try {
+          const portals = await this.getPortals(userId);
+          const match = portals.find((p: any) => p.id === portal || p.id_string === portal);
+          if (match) portalName = match.name || match.portal_name || match.id_string;
+        } catch (_) {}
+      }
+      const projectEndpointVariations: { name: string; url: string }[] = [];
+      if (portalName) projectEndpointVariations.push({ name: 'portal name', url: `/restapi/portal/${portalName}/projects/${projectId}/` });
+      projectEndpointVariations.push({ name: 'portal ID', url: `/restapi/portal/${portal}/projects/${projectId}/` });
+      if (portalName) projectEndpointVariations.push({ name: 'portal name no restapi', url: `/portal/${portalName}/projects/${projectId}/` });
+      projectEndpointVariations.push({ name: 'portal ID no restapi', url: `/portal/${portal}/projects/${projectId}/` });
+      for (const v of projectEndpointVariations) {
+        try {
+          const res = await client.get(v.url);
+          const project = res.data?.response?.result || res.data;
+          if (project) return project;
+        } catch (_) {}
+      }
+      try {
+        const projectsResponse = await client.get(`/restapi/portal/${portal}/projects/`);
+        let projects: any[] = [];
+        if (projectsResponse.data?.response?.result?.projects) projects = projectsResponse.data.response.result.projects;
+        else if (projectsResponse.data?.projects) projects = projectsResponse.data.projects;
+        else if (Array.isArray(projectsResponse.data)) projects = projectsResponse.data;
+        const project = projects.find((p: any) =>
+          p.id === projectId || p.id_string === projectId || p.id?.toString() === projectId.toString()
+        );
+        return project || null;
+      } catch (_) {
+        return null;
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * Get tasklists for a Zoho project (tasklists = "domains" in Zoho).
+   * Returns array of { id, name } for each tasklist.
+   */
+  async getTasklists(userId: number, projectId: string, portalId?: string): Promise<{ id: string; name: string }[]> {
+    try {
+      const client = await this.getAuthenticatedClient(userId);
+      let portal = portalId;
+      let portalName: string | undefined;
+      if (!portal) {
+        const portals = await this.getPortals(userId);
+        if (portals.length === 0) throw new Error('No portals found.');
+        portal = portals[0].id;
+        portalName = portals[0].name || portals[0].portal_name || portals[0].id_string;
+      } else {
+        try {
+          const portals = await this.getPortals(userId);
+          const match = portals.find((p: any) => p.id === portal || p.id_string === portal);
+          if (match) portalName = match.name || match.portal_name || match.id_string;
+        } catch (_) {}
+      }
+      let project: any;
+      try {
+        project = await this.getProject(userId, projectId, portal);
+      } catch (e) {
+        throw new Error(`Failed to fetch project for tasklists: ${(e as Error).message}`);
+      }
+      const correctProjectId = (project?.id_string || project?.id || projectId).toString();
+      const endpointVariations: { name: string; url: string }[] = [];
+      if (project?.link?.tasklist?.url) {
+        const path = (project.link.tasklist.url as string).replace(/https?:\/\/[^/]+/, '');
+        endpointVariations.push({ name: 'project.link.tasklist', url: path });
+      }
+      if (portalName) endpointVariations.push({ name: 'portal name', url: `/restapi/portal/${portalName}/projects/${correctProjectId}/tasklists/` });
+      endpointVariations.push({ name: 'portal ID', url: `/restapi/portal/${portal}/projects/${correctProjectId}/tasklists/` });
+      endpointVariations.push({ name: 'portal ID no restapi', url: `/portal/${portal}/projects/${correctProjectId}/tasklists/` });
+      endpointVariations.push({ name: 'original projectId', url: `/restapi/portal/${portal}/projects/${projectId}/tasklists/` });
+      let tasklists: any[] = [];
+      for (const v of endpointVariations) {
+        try {
+          const res = await client.get(v.url);
+          if (res.data?.response?.result?.tasklists) tasklists = res.data.response.result.tasklists;
+          else if (res.data?.tasklists) tasklists = res.data.tasklists;
+          else if (Array.isArray(res.data)) tasklists = res.data;
+          else if (Array.isArray(res.data?.response?.result)) tasklists = res.data.response.result;
+          if (tasklists.length > 0) break;
+        } catch (_) {}
+      }
+      return tasklists.map((t: any) => ({
+        id: (t.id_string || t.id || '').toString(),
+        name: (t.name || t.tasklist_name || '').trim() || 'Unnamed Tasklist'
+      })).filter((t: { id: string; name: string }) => t.id);
+    } catch (error: any) {
+      console.error('[ZohoService] getTasklists error:', error.response?.data || error.message);
+      throw new Error(`Failed to fetch tasklists: ${error.response?.data?.error?.message || error.message}`);
+    }
+  }
+
+  /**
    * Get all members/users for a Zoho project
    * @param userId - ASI user ID (for token retrieval)
    * @param projectId - Zoho project ID

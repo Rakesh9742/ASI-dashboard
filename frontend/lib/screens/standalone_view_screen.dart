@@ -179,12 +179,13 @@ class _StandaloneViewScreenState extends ConsumerState<StandaloneViewScreen> {
               ],
             ),
           ),
-          // ViewScreen content
+          // ViewScreen content (popout: one project only, DB only)
           Expanded(
             child: ViewScreen(
               initialProject: _projectName,
               initialDomain: _domainName,
               initialViewType: _viewType ?? 'engineer',
+              isStandalone: true,
             ),
           ),
         ],

@@ -205,7 +205,7 @@ router.post('/login', async (req, res) => {
       [user.id]
     );
 
-    // Generate JWT token
+    // Generate JWT token (role = global role from users table only; project role from user_projects per request)
     const jwtSecret = process.env.JWT_SECRET || 'your-secret-key';
     const jwtExpiresIn = process.env.JWT_EXPIRES_IN || '7d';
 

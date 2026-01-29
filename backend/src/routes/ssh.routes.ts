@@ -48,13 +48,12 @@ router.post('/execute', authenticate, async (req, res) => {
     const commandPromise = executeSSHCommand(userId, command.trim(), 1, workingDirectory);
     
     // Set up mechanism to handle password prompts
-    // If password prompt is detected, wait up to 20 seconds to see if password is sent and command completes
-    // This avoids early return and allows the command to complete naturally
+    // If password prompt is detected, return requiresPassword quickly so UI can show password dialog
     const passwordCheckPromise = new Promise<{ stdout: string; stderr: string; code: number | null; requiresPassword: boolean } | null>((resolve) => {
       let checkInterval: NodeJS.Timeout;
       let passwordDetectedTime: number | null = null;
-      const MAX_WAIT_AFTER_PASSWORD_DETECTION = 20000; // Wait up to 20 seconds after password detection
-      const MAX_WAIT_FOR_PASSWORD_SEND = 12000; // Wait up to 12 seconds for password to be sent
+      const MAX_WAIT_AFTER_PASSWORD_DETECTION = 15000; // Wait up to 15 seconds after password sent for command to complete
+      const MAX_WAIT_FOR_PASSWORD_SEND = 4000; // Return requiresPassword after 4 seconds so UI updates fast
       
       checkInterval = setInterval(() => {
         if (passwordPromptDetected.get(userId) === true && passwordDetectedTime === null) {
@@ -84,7 +83,7 @@ router.post('/execute', authenticate, async (req, res) => {
             resolve(null); // Let commandPromise resolve normally
           }
         }
-      }, 500); // Check every 500ms
+      }, 200); // Check every 200ms for faster password detection
       
       // Clean up interval if command completes first
       commandPromise.finally(() => {

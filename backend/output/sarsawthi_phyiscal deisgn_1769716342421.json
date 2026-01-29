@@ -1,0 +1,100 @@
+{
+  "project": "semicon",
+  "block_name": "aes_cipher_top1",
+  "experiment": "newtesting",
+  "rtl_tag": "v1",
+  "run_directory": "/CX_RUN_NEW/semicon/pd/users/bhavya/aes_cipher_top1/newtesting",
+  "stages": {
+    "syn": {
+      "stage": "syn",
+      "timestamp": "2026-01-29 11:57:34",
+      "project": "semicon",
+      "block_name": "aes_cipher_top1",
+      "experiment": "newtesting",
+      "rtl_tag": "v1",
+      "user_name": "bhavya",
+      "run_directory": "/CX_RUN_NEW/semicon/pd/users/bhavya/aes_cipher_top1/newtesting",
+      "stage_directory": "/CX_PROJ/semicon/pd/users/bhavya/aes_cipher_top1/newtesting/syn",
+      "internal_timing_r2r_wns": 8526.5,
+      "internal_timing_r2r_tns": 0.0,
+      "internal_timing_r2r_nvp": 0,
+      "interface_timing_i2r_wns": 7462.8,
+      "interface_timing_i2r_tns": 0.0,
+      "interface_timing_i2r_nvp": 0,
+      "interface_timing_r2o_wns": 7420.8,
+      "interface_timing_r2o_tns": 0.0,
+      "interface_timing_r2o_nvp": 0,
+      "interface_timing_i2o_wns": "N/A",
+      "interface_timing_i2o_tns": "N/A",
+      "interface_timing_i2o_nvp": "N/A",
+      "hold_wns": "N/A",
+      "hold_tns": "N/A",
+      "hold_nvp": "N/A",
+      "max_tran_wns": 0.0,
+      "max_tran_nvp": 0,
+      "max_cap_wns": 0.0,
+      "max_cap_nvp": 0,
+      "noise_violations": "N/A",
+      "min_pulse_width": "N/A",
+      "double_switching": "N/A",
+      "drc_violations": "N/A",
+      "metal_density_avg": "N/A",
+      "metal_density_max": "N/A",
+      "congestion_hotspot": "N/A",
+      "area": 6303.15,
+      "inst_count": 9846,
+      "utilization": "N/A",
+      "log_errors": 0,
+      "log_warnings": 0,
+      "log_critical": 0,
+      "run_status": "pass",
+      "runtime": "00:05:19",
+      "memory_usage": "1,037M",
+      "ai_summary": "",
+      "ir_static": "N/A",
+      "ir_dynamic": "N/A",
+      "em_power": "N/A",
+      "em_signal": "N/A",
+      "pv_drc_base": "N/A",
+      "pv_drc": "N/A",
+      "pv_drc_metal": "N/A",
+      "pv_drc_antenna": "N/A",
+      "lvs": "N/A",
+      "erc": "N/A",
+      "r2g_lec": "N/A",
+      "g2g_lec": "N/A",
+      "pv_antenna": "N/A",
+      "pv_erc": "N/A",
+      "pv_lvs": "N/A",
+      "setup_path_groups": {
+        "all": {
+          "wns": 7420.8,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "cg_enable_group_clk": {
+          "wns": 8704.8,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "in2reg": {
+          "wns": 7462.8,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "reg2out": {
+          "wns": 7420.8,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "reg2reg": {
+          "wns": 8526.5,
+          "tns": 0.0,
+          "nvp": 0
+        }
+      },
+      "setup_path_scen": {}
+    }
+  },
+  "last_updated": "2026-01-29 11:57:35"
+}

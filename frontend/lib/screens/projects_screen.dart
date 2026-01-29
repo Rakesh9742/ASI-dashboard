@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 import '../providers/tab_provider.dart';
@@ -19,6 +20,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
   List<Map<String, dynamic>> _projects = [];
   bool _isLoading = true;
   String _searchQuery = '';
+  bool _isZohoConnectLoading = false;
 
   @override
   void initState() {
@@ -60,12 +62,11 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         throw Exception('No authentication token');
       }
 
-      // Use getProjectsWithZoho which handles Zoho connection check in backend
-      // This avoids unnecessary frontend API calls and lets backend optimize
+      // Non-admin (including CAD engineer): use DB only. Request Zoho projects only for admin.
+      final isAdmin = ref.read(authProvider).user?['role'] == 'admin';
       Map<String, dynamic> projectsData;
       try {
-        // Try with Zoho first - backend will gracefully handle if not connected
-        projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
+        projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: isAdmin);
       } catch (e) {
         // If that fails, fallback to regular projects
         final projects = await _apiService.getProjects(token: token);
@@ -132,10 +133,58 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     };
   }
 
+  Future<void> _connectZoho() async {
+    final token = ref.read(authProvider).token;
+    if (token == null) return;
+    setState(() => _isZohoConnectLoading = true);
+    try {
+      final response = await _apiService.getZohoAuthUrl(token: token);
+      final authUrl = response['authUrl'] as String?;
+      if (authUrl == null || authUrl.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not get Zoho authorization URL'), backgroundColor: Colors.red),
+          );
+        }
+        return;
+      }
+      final uri = Uri.parse(authUrl);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Complete authorization in the browser, then return here. Projects will refresh automatically.'),
+              duration: Duration(seconds: 5),
+            ),
+          );
+          Future.delayed(const Duration(seconds: 4), () {
+            if (mounted) _loadProjects();
+          });
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not open browser'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Zoho connect failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isZohoConnectLoading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final stats = _projectStats;
     final filteredProjects = _filteredProjects;
+    final isAdmin = ref.watch(authProvider).user?['role'] == 'admin';
 
     // Show Projects content (header is now in MainNavigationScreen)
     return Material(
@@ -147,26 +196,47 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Header
-                          Column(
+                          // Header with Zoho Connect (admin only)
+                          Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                'RTL2GDS Projects',
-                                style: TextStyle(
-                                  fontSize: 30,
-                                  fontWeight: FontWeight.bold,
-                                  color: Theme.of(context).colorScheme.onSurface,
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'RTL2GDS Projects',
+                                      style: TextStyle(
+                                        fontSize: 30,
+                                        fontWeight: FontWeight.bold,
+                                        color: Theme.of(context).colorScheme.onSurface,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Manage and monitor your chip design projects',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Manage and monitor your chip design projects',
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                              if (isAdmin) ...[
+                                const SizedBox(width: 16),
+                                FilledButton.icon(
+                                  onPressed: _isZohoConnectLoading ? null : _connectZoho,
+                                  icon: _isZohoConnectLoading
+                                      ? SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                        )
+                                      : const Icon(Icons.link, size: 20),
+                                  label: Text(_isZohoConnectLoading ? 'Connecting...' : 'Zoho Connect'),
                                 ),
-                              ),
+                              ],
                             ],
                           ),
                           const SizedBox(height: 32),
@@ -494,9 +564,10 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                                         userRole == 'cad_engineer';
         
         // Check if user is NOT a CAD engineer
-        // Setup button is for all roles except CAD engineer (admin, manager, engineer, etc.)
+        // Setup button is for non-CAD roles except admin (admin only sees Sync Projects on cards)
         final isEngineerForProject = effectiveRole != 'cad_engineer' && 
-                                     userRole != 'cad_engineer';
+                                     userRole != 'cad_engineer' &&
+                                     userRole != 'admin';
         
         // Check export status from project data (from API) - handle both boolean and string values
         final exportedValue = project['exported_to_linux'];
@@ -504,7 +575,22 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                            exportedValue == 'true' || 
                            exportedValue == 1 ||
                            exportedValue == '1';
+        // Setup completed (from projects table) - when true, show "Exported" instead of Setup/Project Setup
+        final setupCompletedValue = project['setup_completed'];
+        final isSetupCompleted = setupCompletedValue == true ||
+                                 setupCompletedValue == 'true' ||
+                                 setupCompletedValue == 1 ||
+                                 setupCompletedValue == '1';
         
+        final isZohoProject = project['source'] == 'zoho';
+        final showSyncProjects = userRole == 'admin' && isZohoProject;
+        final startDate = project['start_date']?.toString() ??
+            projectDetails?['start_date']?.toString() ??
+            zohoData?['start_date']?.toString();
+        final targetDate = project['target_date']?.toString() ??
+            projectDetails?['target_date']?.toString() ??
+            zohoData?['target_date']?.toString();
+
         return _ProjectCardWidget(
           project: project,
           status: status,
@@ -513,6 +599,8 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
           description: description.isEmpty ? 'Hardware design project' : description,
           gateCount: gateCount.toString(),
           technology: technology,
+          startDate: startDate?.isNotEmpty == true ? startDate : null,
+          targetDate: targetDate?.isNotEmpty == true ? targetDate : null,
           lastRun: lastRun,
           progress: progress,
           isRunning: isRunning,
@@ -521,6 +609,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
           onTap: handleProjectClick,
           canExportToLinux: isCadEngineerForProject,
           isExported: isExported,
+          isSetupCompleted: isSetupCompleted,
           onExportToLinux: isCadEngineerForProject
               ? () {
                   _showExportToLinuxDialog(context, project);
@@ -532,6 +621,8 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                   _showSetupDialog(context, project);
                 }
               : null,
+          canSyncProjects: showSyncProjects,
+          onSyncProjects: showSyncProjects ? () => _syncProjectMembers(context, project) : null,
         );
       },
     );
@@ -573,6 +664,162 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     }
   }
 
+  /// Get Zoho project ID from project map.
+  String? _getZohoProjectId(Map<String, dynamic> project) {
+    var id = project['zoho_project_id']?.toString() ??
+        project['zoho_id']?.toString() ??
+        project['id']?.toString();
+    final zohoData = project['zoho_data'] as Map<String, dynamic>?;
+    if (id == null) id = zohoData?['id']?.toString();
+    if (id == null) return null;
+    if (id.startsWith('zoho_')) return id.replaceFirst('zoho_', '');
+    return id;
+  }
+
+  /// Sync members from Zoho project. Shows confirmation with project and domains, then syncs.
+  Future<void> _syncProjectMembers(BuildContext context, Map<String, dynamic> project) async {
+    final zohoProjectId = _getZohoProjectId(project);
+    if (zohoProjectId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Zoho Project ID not found'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+    final token = ref.read(authProvider).token;
+    if (token == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Not authenticated'), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+    final portalId = project['portal_id']?.toString() ?? project['portalId']?.toString();
+    final zohoData = project['zoho_data'] as Map<String, dynamic>?;
+    final portalIdFromZoho = zohoData?['portal_id']?.toString() ?? zohoData?['portal']?.toString();
+    final effectivePortalId = portalId ?? portalIdFromZoho;
+    final zohoProjectName = project['name']?.toString();
+
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const Center(child: CircularProgressIndicator()),
+    );
+    Map<String, dynamic>? preview;
+    try {
+      preview = await _apiService.syncZohoProjectMembersPreview(
+        zohoProjectId: zohoProjectId,
+        portalId: effectivePortalId,
+        zohoProjectName: zohoProjectName,
+        token: token,
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not load preview: $e'), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    Navigator.of(context).pop();
+    final projectName = preview['projectName']?.toString() ?? 'Unknown';
+    final existingProject = preview['existingProject'] == true;
+    final domainsList = preview['domains'];
+    final domains = domainsList is List ? domainsList : <dynamic>[];
+    final domainNames = domains
+        .map((d) => d is Map ? '${d['name'] ?? d['code'] ?? '?'} (${d['code'] ?? ''})'.trim().replaceAll(' ()', '') : '$d')
+        .where((s) => s.isNotEmpty)
+        .toList();
+    final domainSummary = domainNames.isEmpty ? 'No domains from Zoho tasklists' : domainNames.join(', ');
+    final technologyNode = preview['technology_node']?.toString();
+    final startDate = preview['start_date']?.toString();
+    final targetDate = preview['target_date']?.toString();
+    final techLine = technologyNode != null && technologyNode.isNotEmpty ? 'Technology node: $technologyNode' : null;
+    final startLine = startDate != null && startDate.isNotEmpty ? 'Start date: $startDate' : null;
+    final targetLine = targetDate != null && targetDate.isNotEmpty ? 'Target date: $targetDate' : null;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Confirm Sync Projects'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'The following will be added or updated in the database:',
+                style: Theme.of(ctx).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 12),
+              Text('Project: $projectName', style: const TextStyle(fontWeight: FontWeight.w600)),
+              if (existingProject) Text('(existing project will be updated)', style: Theme.of(ctx).textTheme.bodySmall),
+              if (techLine != null) ...[const SizedBox(height: 6), Text(techLine, style: const TextStyle(fontWeight: FontWeight.w500))],
+              if (startLine != null) ...[const SizedBox(height: 4), Text(startLine, style: const TextStyle(fontWeight: FontWeight.w500))],
+              if (targetLine != null) ...[const SizedBox(height: 4), Text(targetLine, style: const TextStyle(fontWeight: FontWeight.w500))],
+              const SizedBox(height: 8),
+              Text('Domains: $domainSummary', style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 16),
+              const Text('Members from Zoho will be synced to this project. Continue?'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Confirm')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      final result = await _apiService.syncZohoProjectMembersByZohoId(
+        zohoProjectId: zohoProjectId,
+        portalId: effectivePortalId,
+        zohoProjectName: zohoProjectName,
+        token: token,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Successfully synced ${result['updatedAssignments']} members. Created ${result['createdUsers']} new users.',
+            ),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+        if (result['errors'] != null && (result['errors'] as List).isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Sync completed with ${(result['errors'] as List).length} errors.'),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error syncing members: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    }
+  }
+
   void _showExportToLinuxDialog(BuildContext context, Map<String, dynamic> project) async {
     final projectName = project['name'] ?? 'Unnamed Project';
     
@@ -600,24 +847,23 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         return;
       }
 
-      // Get project ID - handle both zoho_ prefix and direct ID
-      final projectId = project['zoho_project_id']?.toString() ?? 
-                       project['id']?.toString() ?? '';
+      // Non-admin (including CAD engineer): use DB only. Zoho only for auth.
+      final userRole = ref.read(authProvider).user?['role']?.toString();
+      final isAdmin = userRole == 'admin';
       
-      // Remove zoho_ prefix if present
-      final actualProjectId = projectId.startsWith('zoho_') 
-          ? projectId.replaceFirst('zoho_', '') 
-          : projectId;
+      // Get project ID - handle both zoho_ prefix and direct ID (only for Zoho projects when admin)
+      final isZohoProject = project['source'] == 'zoho' ||
+          (project['zoho_project_id'] != null && project['zoho_project_id'].toString().trim().isNotEmpty);
+      final rawId = isZohoProject ? (project['zoho_project_id'] ?? project['id'])?.toString() ?? '' : '';
+      final actualProjectId = rawId.startsWith('zoho_') ? rawId.replaceFirst('zoho_', '') : rawId;
       
       List<Map<String, dynamic>> domains = [];
       
-      // Try to fetch domains from Zoho tasks (project plan)
-      if (actualProjectId.isNotEmpty) {
+      // Only admin can fetch domains from Zoho; non-admin use DB only
+      if (isAdmin && isZohoProject && actualProjectId.isNotEmpty) {
         try {
-          // Get portal ID from zoho_data if available
           final zohoData = project['zoho_data'] as Map<String, dynamic>?;
-          final portalId = zohoData?['portal_id']?.toString() ?? 
-                          zohoData?['portal']?.toString();
+          final portalId = zohoData?['portal_id']?.toString() ?? zohoData?['portal']?.toString();
           
           final tasksResponse = await _apiService.getZohoTasks(
             projectId: actualProjectId,
@@ -719,7 +965,6 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
   void _showSetupDialog(BuildContext context, Map<String, dynamic> project) async {
     final projectName = project['name'] ?? 'Unnamed Project';
     
-    // Show loading dialog while fetching domains and blocks from project plan
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -732,7 +977,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       final token = ref.read(authProvider).token;
       if (token == null) {
         if (mounted) {
-          Navigator.of(context).pop(); // Close loading
+          Navigator.of(context).pop();
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Not authenticated'),
@@ -743,202 +988,45 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         return;
       }
 
-      // Get project ID - handle both zoho_ prefix and direct ID
-      final projectId = project['zoho_project_id']?.toString() ?? 
-                       project['id']?.toString() ?? '';
-      
-      // Remove zoho_ prefix if present
-      final actualProjectId = projectId.startsWith('zoho_') 
-          ? projectId.replaceFirst('zoho_', '') 
-          : projectId;
-      
-      // Get portal ID from zoho_data if available
-      final zohoData = project['zoho_data'] as Map<String, dynamic>?;
-      final portalId = zohoData?['portal_id']?.toString() ?? 
-                      zohoData?['portal']?.toString();
-      
-      // Get current user info
-      final currentUser = ref.read(authProvider).user;
-      final currentUserEmail = currentUser?['email']?.toString() ?? '';
-      
-      // Fetch tasks from Zoho to get domains and blocks
-      List<Map<String, dynamic>> userDomains = [];
-      Map<String, List<Map<String, dynamic>>> domainBlocksMap = {};
-      
-      if (actualProjectId.isNotEmpty) {
-        try {
-          final tasksResponse = await _apiService.getZohoTasks(
-            projectId: actualProjectId,
-            token: token,
-            portalId: portalId,
-          );
-          
-          final tasks = tasksResponse['tasks'] ?? [];
-          
-          // Extract domains (tasklists) and blocks (tasks) assigned to current user
-          final domainMap = <String, Map<String, dynamic>>{};
-          final blocksByDomain = <String, List<Map<String, dynamic>>>{};
-          
-          for (final task in tasks) {
-            final tasklistName = (task['tasklist_name'] ?? task['tasklistName'] ?? '').toString();
-            final taskName = (task['name'] ?? task['task_name'] ?? '').toString();
-            
-            // Get task owner information
-            String? ownerEmail = task['owner_email']?.toString() ?? 
-                               task['owner']?['email']?.toString() ??
-                               task['details']?['owners']?[0]?['email']?.toString();
-            
-            // Check if current user is assigned to this task (owner or in owners list)
-            bool isAssignedToUser = false;
-            if (ownerEmail != null && ownerEmail.toLowerCase() == currentUserEmail.toLowerCase()) {
-              isAssignedToUser = true;
-            } else if (task['details'] != null && task['details'] is Map) {
-              final details = task['details'] as Map;
-              if (details['owners'] != null && details['owners'] is List) {
-                for (final owner in details['owners'] as List) {
-                  final email = owner['email']?.toString() ?? '';
-                  if (email.toLowerCase() == currentUserEmail.toLowerCase()) {
-                    isAssignedToUser = true;
-                    break;
-                  }
-                }
-              }
-            }
-            
-            // Only include tasks/domains assigned to the current user
-            if (isAssignedToUser && tasklistName.isNotEmpty && taskName.isNotEmpty) {
-              // Add domain if not already added
-              if (!domainMap.containsKey(tasklistName)) {
-                final tasklistNameLower = tasklistName.toLowerCase();
-                
-                // Determine domain code from tasklist name
-                String domainCode;
-                if (tasklistNameLower.contains('pd') || 
-                    tasklistNameLower.contains('physical') || 
-                    tasklistNameLower.contains('physical design')) {
-                  domainCode = 'pd';
-                } else if (tasklistNameLower.contains('dv') || 
-                          tasklistNameLower.contains('design verification') ||
-                          tasklistNameLower.contains('verification')) {
-                  domainCode = 'dv';
-                } else if (tasklistNameLower.contains('rtl')) {
-                  domainCode = 'rtl';
-                } else if (tasklistNameLower.contains('dft')) {
-                  domainCode = 'dft';
-                } else if (tasklistNameLower.contains('al')) {
-                  domainCode = 'al';
-                } else {
-                  // Use first few characters of tasklist name as code
-                  domainCode = tasklistName.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '').substring(0, tasklistName.length > 3 ? 3 : tasklistName.length);
-                }
-                
-                domainMap[tasklistName] = {
-                  'name': tasklistName,
-                  'code': domainCode,
-                };
-                blocksByDomain[tasklistName] = [];
-              }
-              
-              // Add block (task) to the domain
-              if (blocksByDomain.containsKey(tasklistName)) {
-                blocksByDomain[tasklistName]!.add({
-                  'name': taskName,
-                  'id': task['id']?.toString() ?? task['task_id']?.toString() ?? '',
-                });
-              }
-            }
-          }
-          
-          userDomains = domainMap.values.toList();
-          domainBlocksMap = blocksByDomain;
-        } catch (e) {
-          print('Error fetching domains and blocks from Zoho tasks: $e');
-          // Fallback to project domains if Zoho fetch fails
-          userDomains = (project['domains'] as List<dynamic>? ?? [])
-              .where((d) => d != null && d is Map<String, dynamic>)
-              .map((d) => d as Map<String, dynamic>)
-              .toList();
-        }
+      // Fetch blocks from DB only (no Zoho). Use project id (local) or project name for resolution.
+      final projectIdOrName = project['id'] ?? project['name'] ?? projectName;
+      List<dynamic> blocksRaw = [];
+      try {
+        blocksRaw = await _apiService.getProjectBlocks(
+          projectIdOrName: projectIdOrName,
+          filterByAssigned: true,
+          token: token,
+        );
+      } catch (e) {
+        print('Error fetching blocks from DB: $e');
       }
-      
-      // Fallback to project domains if no domains found from Zoho
-      if (userDomains.isEmpty) {
-        userDomains = (project['domains'] as List<dynamic>? ?? [])
-            .where((d) => d != null && d is Map<String, dynamic>)
-            .map((d) => d as Map<String, dynamic>)
-            .toList();
-      }
-      
+      final blocks = (blocksRaw)
+          .where((b) => b != null && b is Map<String, dynamic>)
+          .map((b) => Map<String, dynamic>.from(b as Map))
+          .toList();
+
+      // Zoho project ID for save-run-directory (if linked)
+      final isZohoProject = project['source'] == 'zoho' ||
+          (project['zoho_project_id'] != null && project['zoho_project_id'].toString().trim().isNotEmpty);
+      final rawZohoId = isZohoProject
+          ? (project['zoho_project_id'] ?? project['id'])?.toString() ?? ''
+          : '';
+      String? actualZohoProjectId = rawZohoId.startsWith('zoho_')
+          ? rawZohoId.replaceFirst('zoho_', '')
+          : (rawZohoId.isNotEmpty ? rawZohoId : null);
+      if (actualZohoProjectId != null && actualZohoProjectId.isEmpty) actualZohoProjectId = null;
+
       if (mounted) {
-        Navigator.of(context).pop(); // Close loading dialog
-        
-        // Get Zoho project ID if this is a Zoho project
-        // Check both zoho_project_id and source to identify Zoho projects
-        final isZohoProject = project['source'] == 'zoho' || project['zoho_project_id'] != null;
-        
-        // Debug: Print project structure
-        print('🔍 Project structure for setup:');
-        print('   Name: ${project['name']}');
-        print('   ID: ${project['id']}');
-        print('   Source: ${project['source']}');
-        print('   zoho_project_id: ${project['zoho_project_id']}');
-        print('   Is Zoho Project: $isZohoProject');
-        
-        String? actualZohoProjectId;
-        
-        // First try: Get from zoho_project_id field (this is the actual Zoho ID)
-        final zohoProjectId = project['zoho_project_id']?.toString();
-        if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
-          // Remove zoho_ prefix if present
-          actualZohoProjectId = zohoProjectId.startsWith('zoho_')
-              ? zohoProjectId.replaceFirst('zoho_', '')
-              : zohoProjectId;
-          print('   ✅ Found zoho_project_id: $actualZohoProjectId');
-        } else if (isZohoProject) {
-          // Second try: Use project ID directly if it's a Zoho project
-          // /api/zoho/projects returns id as the raw Zoho ID (e.g., "173458000001945100")
-          // /api/projects?includeZoho=true returns id as "zoho_173458000001945100"
-          final projectId = project['id']?.toString();
-          if (projectId != null) {
-            if (projectId.startsWith('zoho_')) {
-              // Has zoho_ prefix, remove it
-              actualZohoProjectId = projectId.replaceFirst('zoho_', '');
-              print('   ✅ Extracted from project ID (with zoho_ prefix): $actualZohoProjectId');
-            } else {
-              // No prefix, use directly (this is the raw Zoho ID from /api/zoho/projects)
-              actualZohoProjectId = projectId;
-              print('   ✅ Using project ID directly (raw Zoho ID): $actualZohoProjectId');
-            }
-          }
-        }
-        
-        if (actualZohoProjectId == null && isZohoProject) {
-          print('   ⚠️ Warning: Zoho project detected but ID not found');
-        }
-        
+        Navigator.of(context).pop();
         showDialog(
           context: context,
           builder: (context) => _SetupDialog(
             projectName: projectName,
-            domains: userDomains,
-            domainBlocksMap: domainBlocksMap,
+            blocks: blocks,
             apiService: _apiService,
             zohoProjectId: actualZohoProjectId,
-            onRunDirectorySaved: (runDirectory) {
-              // Update the project in the list with the new run directory
-              setState(() {
-                final projectIndex = _projects.indexWhere(
-                  (p) => (p['name']?.toString().toLowerCase() == projectName.toLowerCase()) ||
-                         (p['zoho_project_id']?.toString() == actualZohoProjectId) ||
-                         (p['id']?.toString() == project['id']?.toString())
-                );
-                if (projectIndex != -1) {
-                  _projects[projectIndex] = {
-                    ..._projects[projectIndex],
-                    'run_directory': runDirectory,
-                  };
-                }
-              });
+            onRunDirectorySaved: (_) {
+              _loadProjects();
             },
           ),
         );
@@ -965,6 +1053,8 @@ class _ProjectCardWidget extends StatefulWidget {
   final String description;
   final String gateCount;
   final String technology;
+  final String? startDate;
+  final String? targetDate;
   final String lastRun;
   final double progress;
   final bool isRunning;
@@ -973,9 +1063,12 @@ class _ProjectCardWidget extends StatefulWidget {
   final VoidCallback onTap;
   final bool canExportToLinux;
   final bool isExported;
+  final bool isSetupCompleted;
   final VoidCallback? onExportToLinux;
   final bool canSetup;
   final VoidCallback? onSetup;
+  final bool canSyncProjects;
+  final VoidCallback? onSyncProjects;
 
   const _ProjectCardWidget({
     required this.project,
@@ -985,6 +1078,8 @@ class _ProjectCardWidget extends StatefulWidget {
     required this.description,
     required this.gateCount,
     required this.technology,
+    this.startDate,
+    this.targetDate,
     required this.lastRun,
     required this.progress,
     required this.isRunning,
@@ -993,9 +1088,12 @@ class _ProjectCardWidget extends StatefulWidget {
     required this.onTap,
     this.canExportToLinux = false,
     this.isExported = false,
+    this.isSetupCompleted = false,
     this.onExportToLinux,
     this.canSetup = false,
     this.onSetup,
+    this.canSyncProjects = false,
+    this.onSyncProjects,
   });
 
   @override
@@ -1099,18 +1197,6 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(height: 6),
-              
-              // Description
-              Text(
-                widget.description,
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
               const SizedBox(height: 16),
               
               // Details Grid - Gate Count and Technology
@@ -1167,6 +1253,60 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                   ),
                 ],
               ),
+              if (widget.startDate != null || widget.targetDate != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    if (widget.startDate != null)
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Start',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              widget.startDate!,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (widget.targetDate != null)
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Target',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              widget.targetDate!,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
               const SizedBox(height: 12),
               
               // Last Run
@@ -1285,6 +1425,23 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                   ),
                   Row(
                     children: [
+                      if (widget.canSyncProjects)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8.0),
+                          child: OutlinedButton.icon(
+                            onPressed: widget.onSyncProjects,
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              side: BorderSide(color: const Color(0xFF14B8A6)),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            icon: const Icon(Icons.sync, size: 16),
+                            label: const Text(
+                              'Sync Projects',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ),
                       if (widget.canSetup)
                         Padding(
                           padding: const EdgeInsets.only(right: 8.0),
@@ -1305,7 +1462,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                       if (widget.canExportToLinux)
                         Padding(
                           padding: const EdgeInsets.only(right: 8.0),
-                          child: widget.isExported
+                          child: (widget.isExported || widget.isSetupCompleted)
                               ? ElevatedButton.icon(
                                   onPressed: null, // Disabled when already exported
                                   style: ElevatedButton.styleFrom(
@@ -1378,6 +1535,7 @@ class _ExportToLinuxDialog extends ConsumerStatefulWidget {
 class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
   final Set<String> _selectedDomainCodes = {};
   bool _isRunning = false;
+  bool _exportSuccess = false;
   String? _output;
   String? _error;
 
@@ -1542,10 +1700,42 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
             result['stderr']?.toString().contains('password') == true));
       
       if (mounted && requiresPassword) {
-        final output = (result['stdout']?.toString() ?? '') + 
-                      (result['stderr']?.toString() ?? '');
-        _showPasswordRequiredDialog(context, command, output);
+        final output = (result['stdout']?.toString() ?? '') +
+            (result['stderr']?.toString() ?? '');
+        final success = await _showPasswordRequiredDialog(context, command, output);
+        if (success == true && mounted) {
+          setState(() {
+            _isRunning = false;
+            _exportSuccess = true;
+            _output = 'Export completed successfully.';
+            _error = null;
+          });
+          // Update DB: mark project setup completed when CAD engineer finishes Export to Linux
+          try {
+            await widget.apiService.markProjectSetupCompleted(
+              projectId: widget.projectId,
+              projectName: widget.projectName,
+              token: token,
+            );
+            widget.onExportSuccess?.call();
+          } catch (e) {
+            print('⚠️ Failed to mark setup completed: $e');
+          }
+        } else if (mounted) {
+          setState(() => _isRunning = false);
+        }
       } else if (mounted && isSuccess) {
+        // Update DB: mark project setup completed when CAD engineer finishes Export to Linux
+        try {
+          await widget.apiService.markProjectSetupCompleted(
+            projectId: widget.projectId,
+            projectName: widget.projectName,
+            token: token,
+          );
+          widget.onExportSuccess?.call();
+        } catch (e) {
+          print('⚠️ Failed to mark setup completed: $e');
+        }
         // Try to fetch and display the run directory path after successful execution
         try {
           print('═══════════════════════════════════════════════════════════');
@@ -1659,7 +1849,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
     }
   }
 
-  void _showPasswordRequiredDialog(BuildContext context, String command, String output) async {
+  Future<bool?> _showPasswordRequiredDialog(BuildContext context, String command, String output) async {
     final passwordController = TextEditingController();
     bool isSendingPassword = false;
     bool showOutput = false;
@@ -1667,11 +1857,45 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
     bool isCommandRunning = false;
     int? lastExitCode;
 
-    await showDialog(
+    return showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => Dialog(
+        builder: (context, setDialogState) {
+          // Minimal "Running......." only UI when Send Password hit or command running (no big form)
+          final showMinimalRunning = (showOutput && isCommandRunning) || isSendingPassword;
+          if (showMinimalRunning) {
+            return Dialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 40),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      'Running.......',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          return Dialog(
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),
@@ -1719,15 +1943,17 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                     ],
                   ),
                 ),
-                // Scrollable content
+                // Content: when complete show full output; else password form
                 Expanded(
                   child: showOutput
-                      ? _buildLiveOutputView(
-                          liveOutput, 
-                          setDialogState,
-                          isComplete: !isCommandRunning,
-                          exitCode: isCommandRunning ? null : lastExitCode,
-                        )
+                      ? (isCommandRunning
+                          ? const SizedBox.shrink() // minimal state handled above
+                          : _buildLiveOutputView(
+                              liveOutput,
+                              setDialogState,
+                              isComplete: true,
+                              exitCode: lastExitCode,
+                            ))
                       : SingleChildScrollView(
                           padding: const EdgeInsets.all(24),
                           child: Column(
@@ -1828,15 +2054,10 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                                       isSendingPassword = true;
                                     });
                                     await _sendPasswordAndShowOutput(
-                                      context, 
-                                      value, 
+                                      context,
+                                      value,
                                       command,
                                       setDialogState,
-                                      (newOutput) {
-                                        setDialogState(() {
-                                          liveOutput = newOutput;
-                                        });
-                                      },
                                       () {
                                         setDialogState(() {
                                           showOutput = true;
@@ -1844,13 +2065,10 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                                           isSendingPassword = false;
                                         });
                                       },
-                                      (exitCode) {
+                                      (newOutput, exitCode) {
                                         setDialogState(() {
+                                          liveOutput = newOutput;
                                           lastExitCode = exitCode;
-                                        });
-                                      },
-                                      () {
-                                        setDialogState(() {
                                           isCommandRunning = false;
                                         });
                                       },
@@ -1862,100 +2080,118 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                           ),
                         ),
                 ),
-                // Actions
-                if (!showOutput)
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade50,
-                      border: Border(
-                        top: BorderSide(color: Colors.grey.shade300),
-                      )
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        TextButton(
-                          onPressed: isSendingPassword ? null : () => Navigator.of(context).pop(),
-                          style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                          ),
-                          child: const Text('Cancel'),
-                        ),
-                        const SizedBox(width: 12),
-                        ElevatedButton.icon(
-                          onPressed: isSendingPassword || passwordController.text.isEmpty
-                              ? null
-                              : () async {
-                                  setDialogState(() {
-                                    isSendingPassword = true;
-                                  });
-                                  await _sendPasswordAndShowOutput(
-                                    context, 
-                                    passwordController.text, 
-                                    command,
-                                    setDialogState,
-                                    (newOutput) {
-                                      setDialogState(() {
-                                        liveOutput = newOutput;
-                                      });
-                                    },
-                                    () {
-                                      setDialogState(() {
-                                        showOutput = true;
-                                        isCommandRunning = true;
-                                        isSendingPassword = false;
-                                      });
-                                    },
-                                    (exitCode) {
-                                      setDialogState(() {
-                                        lastExitCode = exitCode;
-                                      });
-                                    },
-                                    () {
-                                      setDialogState(() {
-                                        isCommandRunning = false;
-                                      });
-                                    },
-                                  );
-                                },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.orange.shade600,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                          icon: isSendingPassword
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                                  ),
-                                )
-                              : const Icon(Icons.send, size: 18),
-                          label: Text(isSendingPassword ? 'Sending...' : 'Send Password'),
-                        ),
-                      ],
-                    ),
+                // Actions: when output shown and complete -> Close only; when password form -> Cancel + Send Password (enabled when text not empty)
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade50,
+                    border: Border(
+                      top: BorderSide(color: Colors.grey.shade300),
+                    )
                   ),
+                  child: showOutput && !isCommandRunning
+                      ? Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            ElevatedButton(
+                              onPressed: () => Navigator.of(context).pop(false),
+                              style: ElevatedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                              ),
+                              child: const Text('Close'),
+                            ),
+                          ],
+                        )
+                      : !showOutput
+                          ? ValueListenableBuilder<TextEditingValue>(
+                              valueListenable: passwordController,
+                              builder: (context, value, child) {
+                                final hasPassword = value.text.trim().isNotEmpty;
+                                return Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  children: [
+                                    TextButton(
+                                      onPressed: isSendingPassword ? null : () => Navigator.of(context).pop(null),
+                                      style: TextButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                      ),
+                                      child: const Text('Cancel'),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    ElevatedButton.icon(
+                                      onPressed: isSendingPassword || !hasPassword
+                                          ? null
+                                          : () async {
+                                              setDialogState(() {
+                                                isSendingPassword = true;
+                                              });
+                                              await _sendPasswordAndShowOutput(
+                                                context,
+                                                passwordController.text,
+                                                command,
+                                                setDialogState,
+                                                () {
+                                                  setDialogState(() {
+                                                    showOutput = true;
+                                                    isCommandRunning = true;
+                                                    isSendingPassword = false;
+                                                  });
+                                                },
+                                                (newOutput, exitCode) {
+                                                  setDialogState(() {
+                                                    liveOutput = newOutput;
+                                                    lastExitCode = exitCode;
+                                                    isCommandRunning = false;
+                                                  });
+                                                },
+                                              );
+                                              if (mounted) setDialogState(() {
+                                                isSendingPassword = false;
+                                              });
+                                            },
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.orange.shade600,
+                                        foregroundColor: Colors.white,
+                                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                      ),
+                                      icon: isSendingPassword
+                                          ? const SizedBox(
+                                              width: 16,
+                                              height: 16,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                              ),
+                                            )
+                                          : const Icon(Icons.send, size: 18),
+                                      label: Text(isSendingPassword ? 'Sending...' : 'Send Password'),
+                                    ),
+                                  ],
+                                );
+                              },
+                            )
+                          : const SizedBox.shrink(),
+                ),
               ],
             ),
           ),
-        ),
+        );
+        },
       ),
     );
   }
 
   Widget _buildLiveOutputView(String output, StateSetter setDialogState, {bool isComplete = false, int? exitCode}) {
     final scrollController = ScrollController();
-    
+
     // Clean up output - remove shell prompts and command echo
     String cleanOutput = _cleanCommandOutput(output);
-    
+    // When complete, prefer showing something: use raw output if cleaning stripped everything
+    final displayOutput = cleanOutput.isNotEmpty ? cleanOutput : (isComplete && output.trim().isNotEmpty ? output.trim() : '');
+
     // Determine status
     bool isSuccess = isComplete && exitCode == 0;
     
@@ -2134,11 +2370,11 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                       ],
                     ),
                   ),
-                  // Output content
+                  // Output content: when complete never show spinner; show output or "Command completed."
                   Expanded(
                     child: Container(
                       padding: const EdgeInsets.all(16),
-                      child: cleanOutput.isEmpty 
+                      child: (displayOutput.isEmpty && !isComplete)
                         ? Center(
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
@@ -2162,10 +2398,20 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                               ],
                             ),
                           )
-                        : SingleChildScrollView(
+                        : (displayOutput.isEmpty && isComplete)
+                            ? Center(
+                                child: Text(
+                                  'Command completed.',
+                                  style: TextStyle(
+                                    color: Colors.grey.shade400,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              )
+                            : SingleChildScrollView(
                             controller: scrollController,
                             child: SelectableText(
-                              cleanOutput,
+                              displayOutput,
                               style: const TextStyle(
                                 fontFamily: 'monospace',
                                 fontSize: 13,
@@ -2259,14 +2505,12 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
   }
 
   Future<void> _sendPasswordAndShowOutput(
-    BuildContext context, 
-    String password, 
+    BuildContext context,
+    String password,
     String command,
     StateSetter setDialogState,
-    Function(String) updateOutput,
     VoidCallback showOutputView,
-    Function(int?) setExitCode,
-    VoidCallback commandComplete,
+    void Function(String output, int? exitCode) onComplete,
   ) async {
     try {
       final token = ref.read(authProvider).token;
@@ -2304,12 +2548,8 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
           finalOutput += result['stderr'].toString();
         }
 
-        // Store exit code
         final exitCode = result['exitCode'] as int?;
-        
-        updateOutput(finalOutput);
-        setExitCode(exitCode);
-        commandComplete();
+        onComplete(finalOutput, exitCode);
 
         // Only close dialog when command completes successfully
         // Success criteria:
@@ -2355,9 +2595,9 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
           
           // Close dialog ONLY after successful command completion
           // Wait a brief moment to show the success state, then close
-          await Future.delayed(const Duration(milliseconds: 500));
+          await Future.delayed(const Duration(milliseconds: 400));
           if (context.mounted) {
-            Navigator.of(context).pop();
+            Navigator.of(context).pop(true);
           }
         } else {
           // Show error message but keep dialog open so user can see the error
@@ -2371,8 +2611,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
           }
         }
       } catch (e) {
-        updateOutput('Error executing command: $e');
-        commandComplete();
+        onComplete('Error executing command: $e', null);
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -2383,7 +2622,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
         }
       }
     } catch (e) {
-      commandComplete();
+      onComplete('Error sending password: $e', null);
       
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2536,29 +2775,40 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
               const SizedBox(height: 16),
             ],
 
-            // Action Buttons
+            // Action Buttons: on success only Close; else Cancel + Run
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(
-                  onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
-                ),
-                const SizedBox(width: 12),
-                ElevatedButton.icon(
-                  onPressed: _isRunning ? null : _runCommand,
-                  icon: _isRunning
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.play_arrow),
-                  label: Text(_isRunning ? 'Running...' : 'Run'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                if (!_exportSuccess) ...[
+                  TextButton(
+                    onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
                   ),
-                ),
+                  const SizedBox(width: 12),
+                ],
+                if (_exportSuccess)
+                  ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
+                    child: const Text('Close'),
+                  )
+                else
+                  ElevatedButton.icon(
+                    onPressed: _isRunning ? null : _runCommand,
+                    icon: _isRunning
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.play_arrow),
+                    label: Text(_isRunning ? 'Running...' : 'Run'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
+                  ),
               ],
             ),
           ],
@@ -2570,16 +2820,14 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
 
 class _SetupDialog extends ConsumerStatefulWidget {
   final String projectName;
-  final List<Map<String, dynamic>> domains;
-  final Map<String, List<Map<String, dynamic>>> domainBlocksMap;
+  final List<Map<String, dynamic>> blocks;
   final ApiService apiService;
   final String? zohoProjectId;
-  final Function(String runDirectory)? onRunDirectorySaved; // Callback to update parent state
+  final Function(String runDirectory)? onRunDirectorySaved;
 
   const _SetupDialog({
     required this.projectName,
-    required this.domains,
-    required this.domainBlocksMap,
+    required this.blocks,
     required this.apiService,
     this.zohoProjectId,
     this.onRunDirectorySaved,
@@ -2590,7 +2838,6 @@ class _SetupDialog extends ConsumerStatefulWidget {
 }
 
 class _SetupDialogState extends ConsumerState<_SetupDialog> {
-  String? _selectedDomainCode;
   String? _selectedBlock;
   final TextEditingController _experimentController = TextEditingController();
   bool _isRunning = false;
@@ -2604,25 +2851,8 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
     super.dispose();
   }
 
-  List<Map<String, dynamic>> get _availableBlocks {
-    if (_selectedDomainCode == null) return [];
-    
-    // Find the domain name that matches the selected domain code
-    final selectedDomain = widget.domains.firstWhere(
-      (d) => d['code']?.toString() == _selectedDomainCode,
-      orElse: () => {},
-    );
-    
-    final domainName = selectedDomain['name']?.toString() ?? '';
-    
-    if (domainName.isEmpty) return [];
-    
-    // Get blocks for this domain
-    return widget.domainBlocksMap[domainName] ?? [];
-  }
-
   Future<void> _runSetup() async {
-    if (_selectedDomainCode == null || _selectedBlock == null || _experimentController.text.trim().isEmpty) {
+    if (_selectedBlock == null || _experimentController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please fill in all fields'),
@@ -2644,11 +2874,10 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
         throw Exception('No authentication token');
       }
 
-      // Build the command: echo "setup ..." | newgrp {project} (CentOS: run setup in group context, output from setup only)
-      // Replace spaces with underscores in project name and block name (e.g., "mohan r4" -> "mohan_r4")
+      // Build the command: echo "setup ..." | newgrp {project}. Domain is pd (blocks from DB are PD only).
       final projectName = widget.projectName;
       final sanitizedProjectName = projectName.replaceAll(' ', '_');
-      final domainCode = _selectedDomainCode!;
+      const domainCode = 'pd';
       final blockName = _selectedBlock!;
       final sanitizedBlockName = blockName.replaceAll(' ', '_');
       final experimentName = _experimentController.text.trim();
@@ -2774,9 +3003,9 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
             blockName: blockName,
             experimentName: experimentName,
             runDirectory: actualRunDirectory,
-            username: actualUsername, // Pass the actual username from SSH session
+            username: actualUsername,
             zohoProjectId: widget.zohoProjectId,
-            domainCode: domainCode, // Pass domain code to link domain to project
+            domainCode: domainCode,
             token: token,
           );
           
@@ -2849,6 +3078,10 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
               duration: Duration(seconds: 3),
             ),
           );
+          // Close Project Setup dialog automatically when setup is done
+          Future.delayed(const Duration(milliseconds: 800), () {
+            if (mounted) Navigator.of(context).pop();
+          });
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -2909,6 +3142,35 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
             ),
             const SizedBox(height: 24),
 
+            // While running show simple "Running......." UI; else show full form
+            if (_isRunning)
+              Container(
+                constraints: const BoxConstraints(minHeight: 200),
+                alignment: Alignment.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const SizedBox(
+                      width: 48,
+                      height: 48,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      'Running.......',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w500,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.8),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
             // Project Name (read-only)
             TextField(
               readOnly: true,
@@ -2924,63 +3186,60 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
             ),
             const SizedBox(height: 20),
 
-            // Domain Selection Dropdown
-            DropdownButtonFormField<String>(
-              value: _selectedDomainCode,
-              decoration: InputDecoration(
-                labelText: 'Domain',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                filled: true,
-              ),
-              items: widget.domains.map((domain) {
-                final code = domain['code']?.toString() ?? '';
-                final name = domain['name']?.toString() ?? code;
-                return DropdownMenuItem<String>(
-                  value: code,
-                  child: Text(name),
-                );
-              }).toList(),
-              onChanged: _isRunning
-                  ? null
-                  : (value) {
-                      setState(() {
-                        _selectedDomainCode = value;
-                        _selectedBlock = null; // Reset block when domain changes
-                      });
-                    },
-            ),
+            // Block Selection Dropdown (from DB only; no domain shown)
+            widget.blocks.isEmpty
+                ? Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outline.withOpacity(0.5),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline, size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'No blocks available for this project. Sync blocks from Zoho (admin) or ask an admin to add blocks.',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                : DropdownButtonFormField<String>(
+                    value: _selectedBlock,
+                    decoration: InputDecoration(
+                      labelText: 'Block',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      filled: true,
+                    ),
+                    items: widget.blocks.map((block) {
+                      final name = block['block_name']?.toString() ?? block['name']?.toString() ?? '';
+                      return DropdownMenuItem<String>(
+                        value: name,
+                        child: Text(name),
+                      );
+                    }).toList(),
+                    onChanged: _isRunning
+                        ? null
+                        : (value) {
+                            setState(() {
+                              _selectedBlock = value;
+                            });
+                          },
+                  ),
             const SizedBox(height: 20),
 
-            // Block Selection Dropdown (filtered by selected domain)
-            DropdownButtonFormField<String>(
-              value: _selectedBlock,
-              decoration: InputDecoration(
-                labelText: 'Block/Module',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                filled: true,
-              ),
-              items: _availableBlocks.map((block) {
-                final name = block['name']?.toString() ?? '';
-                return DropdownMenuItem<String>(
-                  value: name,
-                  child: Text(name),
-                );
-              }).toList(),
-              onChanged: _isRunning
-                  ? null
-                  : (value) {
-                      setState(() {
-                        _selectedBlock = value;
-                      });
-                    },
-            ),
-            const SizedBox(height: 20),
-
-            // Experiment Input
+            // Experiment Name (input only, not fetched)
             TextField(
               controller: _experimentController,
               enabled: !_isRunning,
@@ -3027,36 +3286,46 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
               const SizedBox(height: 16),
             ],
 
-            // Action Buttons
+            // Action Buttons: on success show only Close; while running show Cancel disabled + Running...; else Cancel + Setup
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(
-                  onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
-                ),
-                const SizedBox(width: 12),
-                ElevatedButton.icon(
-                  onPressed: _isRunning ? null : _runSetup,
-                  icon: _isRunning
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                          ),
-                        )
-                      : const Icon(Icons.settings),
-                  label: Text(_isRunning ? 'Running...' : 'Setup'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    backgroundColor: _isSuccess ? Colors.green : null,
-                    foregroundColor: _isSuccess ? Colors.white : null,
+                if (!_isSuccess) ...[
+                  TextButton(
+                    onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
                   ),
-                ),
+                  const SizedBox(width: 12),
+                ],
+                if (_isSuccess)
+                  ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
+                    child: const Text('Close'),
+                  )
+                else
+                  ElevatedButton.icon(
+                    onPressed: (_isRunning || widget.blocks.isEmpty) ? null : _runSetup,
+                    icon: _isRunning
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          )
+                        : const Icon(Icons.settings),
+                    label: Text(_isRunning ? 'Running...' : 'Setup'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
+                  ),
               ],
             ),
+            ], // end else (full form)
           ],
         ),
       ),

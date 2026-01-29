@@ -350,7 +350,9 @@ export async function executeSSHCommand(userId: number, command: string, retries
               const lines = allOutput.split('\n');
               const lastLine = lines[lines.length - 1] || '';
               const secondLastLine = lines[lines.length - 2] || '';
-              const hasPrompt = /[\w@\-]+[:\/][\w\/~]+[#$>]\s*$/.test(lastLine.trim());
+              // Lenient prompt: user@host(path):path$ or user@host:[...]$ (dots, parens, brackets)
+              const promptRegex = /^[\w@.\-()]+@[\w.\-()]+[:\/][\w\/~\[\]\.\-]*[#$>]\s*$/;
+              const hasPrompt = promptRegex.test(lastLine.trim());
               
               // More sophisticated completion detection:
               // 1. If password was prompted but not sent, wait longer (don't resolve yet)
@@ -387,12 +389,13 @@ export async function executeSSHCommand(userId: number, command: string, retries
                   // 3. Error messages that indicate completion
                   const hasOutputAfterCommand = outputAfterCommand.trim().length > 0;
                   const lastFewLines = linesAfterCommand.slice(-3).join('\n');
-                  const hasPromptInLastLines = /[\w@\-]+[:\/][\w\/~]+[#$>]\s*$/.test(lastFewLines);
+                  const promptRegex = /^[\w@.\-()]+@[\w.\-()]+[:\/][\w\/~\[\]\.\-]*[#$>]\s*$/;
+                  const hasPromptInLastLines = promptRegex.test(lastFewLines.trim());
                   
-                  // More lenient prompt detection - check if any line looks like a prompt
+                  // More lenient prompt detection - check if any line looks like a prompt (user@host:path$)
                   const anyLineIsPrompt = linesAfterCommand.some(line => {
                     const trimmed = line.trim();
-                    return /^[\w@\-]+[:\/][\w\/~]+[#$>]\s*$/.test(trimmed) && trimmed.length < 100;
+                    return promptRegex.test(trimmed) && trimmed.length < 150;
                   });
                   
                   // Only log completion check details if not already completing (to reduce log spam)
@@ -407,33 +410,48 @@ export async function executeSSHCommand(userId: number, command: string, retries
                   
                   // Complete if:
                   // 1. We see a prompt in the output (command finished)
-                  // 2. We see "Done." or success message (command explicitly finished)
-                  // 3. No activity for 60 seconds (command likely finished or hung) - increased from 30s
-                  // 4. We have substantial output and no activity for 30 seconds - increased from 15s
+                  // 2. We see "Done." or success message (command explicitly finished) — no wait
+                  // 3. We have "Done." and 2s+ inactivity (fast path so UI updates quickly)
+                  // 4. No activity for 60 seconds (command likely finished or hung)
+                  // 5. Substantial output and no activity for 8 seconds (reduced from 30s for faster UI)
                   if (anyLineIsPrompt && hasOutputAfterCommand) {
                     if (!completionInProgress) {
                       console.log('Command completion detected: Shell prompt found after command output');
                     }
                     shouldComplete = true;
                   } else if (hasDoneMessage || hasSuccessMessage) {
-                    // Command explicitly indicates completion
                     if (!completionInProgress) {
                       console.log(`Command completion detected: Found completion message (Done/Success)`);
                     }
                     shouldComplete = true;
+                  } else if (hasDoneMessage && timeSinceLastActivity > 2000) {
+                    // Fast path: "Done." in output and 2s no new data — complete so UI updates quickly
+                    if (!completionInProgress) {
+                      console.log('Command completion detected: Done. with 2s inactivity');
+                    }
+                    shouldComplete = true;
                   } else if (timeSinceLastActivity > 60000) {
-                    // Wait up to 60 seconds after password sent for command to complete (increased from 30s)
                     console.log('Command completion detected: Timeout (60s) after password sent');
                     shouldComplete = true;
-                  } else if (hasOutputAfterCommand && outputAfterCommand.length > 100 && timeSinceLastActivity > 30000) {
-                    // If we have substantial output and no activity for 30 seconds, likely done (increased from 15s)
-                    console.log('Command completion detected: Substantial output with 30s inactivity');
+                  } else if (hasOutputAfterCommand && outputAfterCommand.length > 100 && timeSinceLastActivity > 8000) {
+                    // Substantial output and 8s inactivity — likely done (reduced from 30s for faster UI)
+                    if (!completionInProgress) {
+                      console.log('Command completion detected: Substantial output with 8s inactivity');
+                    }
                     shouldComplete = true;
                   }
-                } else if (timeSinceLastActivity > 30000) {
-                  // Fallback: if we can't find command but no activity for 30s, complete
-                  console.log('Command completion detected: Timeout (30s) - command not found in output');
-                  shouldComplete = true;
+                } else {
+                  // Command line not found in output — still check for "Done." so we don't wait 30s
+                  const hasDoneInAll = /Done\./i.test(allOutput) || /done\./i.test(allOutput);
+                  if (hasDoneInAll && timeSinceLastActivity > 2000) {
+                    if (!completionInProgress) {
+                      console.log('Command completion detected: Done. in output (command line not found)');
+                    }
+                    shouldComplete = true;
+                  } else if (timeSinceLastActivity > 15000) {
+                    console.log('Command completion detected: Timeout (15s) - command not found in output');
+                    shouldComplete = true;
+                  }
                 }
               } else {
                 // No password prompt - normal command completion
@@ -489,8 +507,8 @@ export async function executeSSHCommand(userId: number, command: string, retries
                     cleanOutput = cleanOutput.split('\n')
                       .filter(line => {
                         const trimmed = line.trim();
-                        // Remove shell prompts
-                        if (/^[\w@\-]+[:\/][\w\/~]+[#$>]\s*$/.test(trimmed)) {
+                        // Remove shell prompts (lenient: user@host(path):path$)
+                        if (/^[\w@.\-()]+@[\w.\-()]+[:\/][\w\/~\[\]\.\-]*[#$>]\s*$/.test(trimmed)) {
                           return false;
                         }
                         // Remove "Last login" messages
@@ -537,7 +555,7 @@ export async function executeSSHCommand(userId: number, command: string, retries
                     
                     resolve({ stdout, stderr, code: exitCode });
                   }
-                }, 3000); // Wait 3 seconds after completion detection to capture all output
+                }, 1500); // Wait 1.5s after completion detection so UI updates quickly
               }
             };
             
@@ -574,8 +592,8 @@ export async function executeSSHCommand(userId: number, command: string, retries
                   cleanOutput = cleanOutput.split('\n')
                     .filter(line => {
                       const trimmed = line.trim();
-                      // Remove shell prompts
-                      if (/^[\w@\-]+[:\/][\w\/~]+[#$>]\s*$/.test(trimmed)) {
+                      // Remove shell prompts (lenient: user@host(path):path$)
+                      if (/^[\w@.\-()]+@[\w.\-()]+[:\/][\w\/~\[\]\.\-]*[#$>]\s*$/.test(trimmed)) {
                         return false;
                       }
                       // Remove "Last login" messages

@@ -1,7 +1,7 @@
 import express from 'express';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import zohoService from '../services/zoho.service';
-import { authenticate } from '../middleware/auth.middleware';
+import { authenticate, authorize } from '../middleware/auth.middleware';
 import { pool } from '../config/database';
 
 const router = express.Router();
@@ -86,9 +86,9 @@ function mapZohoRoleToAppRole(designation: string | undefined): string {
 
 /**
  * GET /api/zoho/auth
- * Get authorization URL to start OAuth flow
+ * Get authorization URL to start OAuth flow (admin only; non-admin use Zoho only for login)
  */
-router.get('/auth', authenticate, (req, res) => {
+router.get('/auth', authenticate, authorize('admin'), (req, res) => {
   try {
     const userId = (req as any).user?.id;
     if (!userId) {
@@ -184,55 +184,19 @@ router.get('/callback', async (req, res) => {
         const { pool } = await import('../config/database');
         const jwt = (await import('jsonwebtoken')).default;
         
-        // Extract user info from Zoho response
-        // Zoho user info structure may vary, try multiple possible fields
+        // Extract user info from Zoho response (email and name only - no role from Zoho for non-admin)
         const email = zohoUserInfo.email || zohoUserInfo.Email || zohoUserInfo.mail || zohoUserInfo.Mail;
-        const fullName = zohoUserInfo.display_name || zohoUserInfo.Display_Name || 
+        const fullName = zohoUserInfo.display_name || zohoUserInfo.Display_Name ||
                         zohoUserInfo.name || zohoUserInfo.Name ||
                         `${zohoUserInfo.first_name || ''} ${zohoUserInfo.last_name || ''}`.trim() ||
                         email?.split('@')[0] || 'Zoho User';
-
-        // Fetch Zoho People record to determine role/designation
-        let peopleRecord: any = {};
-        let designation = '';
-        
-        try {
-          peopleRecord = await zohoService.getZohoPeopleRecord(tokenData.access_token!, email);
-          
-          // Handle array response (sometimes Zoho returns array)
-          if (Array.isArray(peopleRecord) && peopleRecord.length > 0) {
-            peopleRecord = peopleRecord[0];
-          }
-          
-          // Try multiple possible field names for designation/role
-          designation = peopleRecord?.Designation || 
-                       peopleRecord?.designation || 
-                       peopleRecord?.Designation_ID?.name ||
-                       peopleRecord?.designation_id?.name ||
-                       peopleRecord?.Designation_ID?.Designation ||
-                       peopleRecord?.designation_id?.designation ||
-                       peopleRecord?.Role || 
-                       peopleRecord?.role ||
-                       peopleRecord?.Job_Title ||
-                       peopleRecord?.job_title ||
-                       peopleRecord?.Title ||
-                       peopleRecord?.title ||
-                       peopleRecord?.Job_Role ||
-                       peopleRecord?.job_role ||
-                       '';
-        } catch (peopleError: any) {
-          console.error('❌ Error fetching Zoho People record:', peopleError.message);
-          designation = ''; // Will default to engineer
-        }
-        
-        const mappedRole = mapZohoRoleToAppRole(designation);
 
         if (!email) {
           throw new Error('Could not retrieve email from Zoho account. Please ensure your Zoho account has an email address.');
         }
 
-        // Check if user exists by email
-        let userResult = await pool.query(
+        // Check if user exists by email - role is always from DB / user_projects, never from Zoho
+        const userResult = await pool.query(
           'SELECT * FROM users WHERE email = $1',
           [email]
         );
@@ -241,40 +205,37 @@ router.get('/callback', async (req, res) => {
         let user: any;
 
         if (userResult.rows.length === 0) {
-          // Create new user from Zoho
+          // Create new user: default role 'engineer'; admin assigns projects/roles via user_projects
           const username = email.split('@')[0] + '_zoho';
           const insertResult = await pool.query(
             `INSERT INTO users (username, email, password_hash, full_name, role, is_active)
              VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING id, username, email, full_name, role, is_active, created_at`,
-            [username, email, 'zoho_oauth_user', fullName || null, mappedRole, true]
+            [username, email, 'zoho_oauth_user', fullName || null, 'engineer', true]
           );
           user = insertResult.rows[0];
           userId = user.id;
         } else {
-          // User exists, use existing user
+          // Existing user: keep DB role; do not overwrite from Zoho
           user = userResult.rows[0];
           userId = user.id;
-          
-          // Update last login, full name, and role
-          // ALWAYS update the role from Zoho People, overwriting any previous role
           await pool.query(
-            'UPDATE users SET last_login = NOW(), full_name = COALESCE($1, full_name), role = $2 WHERE id = $3',
-            [fullName || null, mappedRole, userId]
+            'UPDATE users SET last_login = NOW(), full_name = COALESCE($1, full_name) WHERE id = $2',
+            [fullName || null, userId]
           );
-          
-          // Fetch updated user to get the new role
-          const updatedUserResult = await pool.query(
+          user = (await pool.query(
             'SELECT id, username, email, full_name, role, is_active, created_at FROM users WHERE id = $1',
             [userId]
-          );
-          user = updatedUserResult.rows[0];
+          )).rows[0];
         }
+
+        // Global role = users table only. Project-based role = user_projects only (resolved per-request in APIs).
+        const globalRole = user.role;
 
         // Save Zoho tokens for this user
         await zohoService.saveTokens(userId, tokenData);
 
-        // Generate JWT token for our system
+        // Generate JWT token for our system (role = users.role, not a mix of user_projects)
         const jwtSecret = process.env.JWT_SECRET || 'your-secret-key';
         const jwtExpiresIn = process.env.JWT_EXPIRES_IN || '7d';
         
@@ -283,7 +244,7 @@ router.get('/callback', async (req, res) => {
             id: user.id,
             username: user.username,
             email: user.email,
-            role: user.role
+            role: globalRole
           },
           jwtSecret,
           { expiresIn: jwtExpiresIn } as SignOptions
@@ -511,9 +472,9 @@ router.get('/status', authenticate, async (req, res) => {
 
 /**
  * GET /api/zoho/portals
- * Get all portals (workspaces) from Zoho Projects
+ * Get all portals (workspaces) from Zoho Projects (admin only; non-admin use DB only)
  */
-router.get('/portals', authenticate, async (req, res) => {
+router.get('/portals', authenticate, authorize('admin'), async (req, res) => {
   try {
     const userId = (req as any).user?.id;
     const portals = await zohoService.getPortals(userId);
@@ -584,9 +545,9 @@ router.get('/people/employees', authenticate, async (req, res) => {
 
 /**
  * GET /api/zoho/projects
- * Get all projects from Zoho Projects
+ * Get all projects from Zoho Projects (admin only; non-admin use DB only, Zoho is for auth only)
  */
-router.get('/projects', authenticate, async (req, res) => {
+router.get('/projects', authenticate, authorize('admin'), async (req, res) => {
   try {
     const userId = (req as any).user?.id;
     const { portalId } = req.query;
@@ -814,6 +775,652 @@ router.get('/projects', authenticate, async (req, res) => {
 });
 
 /**
+ * Helper: resolve a single domain id from code or id.
+ */
+async function resolveOneDomainId(domainCode?: string | null, domainId?: number | null): Promise<number | null> {
+  if (domainId != null) {
+    const byId = await pool.query('SELECT id FROM domains WHERE id = $1 AND is_active = true', [domainId]);
+    if (byId.rows.length > 0) return byId.rows[0].id;
+  }
+  if (domainCode && String(domainCode).trim()) {
+    const code = String(domainCode).trim().toUpperCase();
+    const byCode = await pool.query('SELECT id FROM domains WHERE UPPER(code) = $1 AND is_active = true', [code]);
+    if (byCode.rows.length > 0) return byCode.rows[0].id;
+  }
+  return null;
+}
+
+/**
+ * Resolve multiple domain ids from request only (no default). From arrays or single domainCode/domainId.
+ */
+async function resolveDomainIdsFromRequest(opts: {
+  domainCodes?: string[] | string | null;
+  domainIds?: number[] | number | null;
+  domainCode?: string | null;
+  domainId?: number | null;
+}): Promise<number[]> {
+  const ids: number[] = [];
+  const seen = new Set<number>();
+  const rawIds = Array.isArray(opts.domainIds) ? opts.domainIds : opts.domainIds != null ? [opts.domainIds] : [];
+  for (const id of rawIds) {
+    const resolved = await resolveOneDomainId(null, id);
+    if (resolved != null && !seen.has(resolved)) { seen.add(resolved); ids.push(resolved); }
+  }
+  const rawCodes = Array.isArray(opts.domainCodes) ? opts.domainCodes : opts.domainCodes != null && typeof opts.domainCodes === 'string' ? [opts.domainCodes] : [];
+  for (const code of rawCodes) {
+    const resolved = await resolveOneDomainId(code, null);
+    if (resolved != null && !seen.has(resolved)) { seen.add(resolved); ids.push(resolved); }
+  }
+  if (ids.length === 0 && (opts.domainCode != null || opts.domainId != null)) {
+    const one = await resolveOneDomainId(opts.domainCode ?? undefined, opts.domainId ?? undefined);
+    if (one != null) ids.push(one);
+  }
+  return ids;
+}
+
+/**
+ * Fetch domains from Zoho the same way as project plan: get tasks via getTasks (which has fallback to projects list), extract tasklist_name from each task, map to our domain ids.
+ */
+async function getDomainIdsFromZohoTasklists(userId: number, zohoProjectId: string, portalId?: string): Promise<number[]> {
+  try {
+    const tasks = await zohoService.getTasks(userId, zohoProjectId, portalId || undefined);
+    const tasklistNames = new Set<string>();
+    for (const task of tasks) {
+      const name = (task.tasklist_name ?? task.tasklistName ?? '').toString().trim();
+      if (name) tasklistNames.add(name);
+    }
+    if (tasklistNames.size === 0) {
+      console.log('[Sync Projects] No tasklist names from Zoho tasks for project', zohoProjectId);
+      return [];
+    }
+    console.log('[Sync Projects] Zoho tasklists (domains) from tasks:', [...tasklistNames].join(', '));
+    const domainIds: number[] = [];
+    const seen = new Set<number>();
+    for (const tasklistName of tasklistNames) {
+      const did = await domainIdFromTasklistName(tasklistName);
+      if (did != null && !seen.has(did)) {
+        seen.add(did);
+        domainIds.push(did);
+      } else if (!did) {
+        console.log('[Sync Projects] No matching domain for tasklist:', tasklistName);
+      }
+    }
+    return domainIds;
+  } catch (e: any) {
+    console.warn('[Sync Projects] Failed to get domains from Zoho tasks (project plan logic):', e.message);
+    return [];
+  }
+}
+
+/**
+ * Extract technology_node, start_date, target_date from Zoho project. Uses same logic as project list (project.routes).
+ * Logs Zoho field names and values. Returns { technology_node, start_date, target_date } for DB (dates as YYYY-MM-DD or null).
+ */
+function extractZohoProjectDetails(zohoProject: any): { technology_node: string | null; start_date: string | null; target_date: string | null } {
+  const keys = zohoProject ? Object.keys(zohoProject) : [];
+  console.log('[Sync Projects] Zoho project keys:', keys.join(', '));
+
+  let technology_node: string | null = null;
+  if (zohoProject?.technology_node) {
+    technology_node = String(zohoProject.technology_node).trim();
+  } else if (zohoProject?.technology) {
+    technology_node = String(zohoProject.technology).trim();
+  } else if (zohoProject?.technologyNode) {
+    technology_node = String(zohoProject.technologyNode).trim();
+  } else if (zohoProject?.technology_code) {
+    technology_node = String(zohoProject.technology_code).trim();
+  } else if (zohoProject?.['Technology Node']) {
+    technology_node = String(zohoProject['Technology Node']).trim();
+  } else if (zohoProject?.['technology node']) {
+    technology_node = String(zohoProject['technology node']).trim();
+  }
+  const customFields = zohoProject?.custom_fields;
+  if (!technology_node && Array.isArray(customFields)) {
+    for (const f of customFields) {
+      if (f && typeof f === 'object') {
+        const val = f.technology_node ?? f.technologyNode ?? f.technology ?? f.value ?? f.content;
+        if (val != null && String(val).trim()) {
+          technology_node = String(val).trim();
+          break;
+        }
+        const label = (f?.label ?? f?.name ?? f?.field_name ?? '').toLowerCase();
+        if ((label.includes('technology') || label.includes('node')) && (f.value ?? f.content) != null) {
+          technology_node = String(f.value ?? f.content).trim();
+          break;
+        }
+        for (const k of Object.keys(f)) {
+          if (k.toLowerCase().includes('technology') && f[k]) {
+            technology_node = String(f[k]).trim();
+            break;
+          }
+        }
+        if (technology_node) break;
+      }
+    }
+  }
+  if (!technology_node && typeof customFields === 'object' && !Array.isArray(customFields)) {
+    for (const k of Object.keys(customFields)) {
+      if ((k.toLowerCase().includes('technology') || k.toLowerCase().includes('node')) && customFields[k]) {
+        technology_node = String(customFields[k]).trim();
+        break;
+      }
+    }
+  }
+  if (!technology_node && zohoProject) {
+    for (const key of Object.keys(zohoProject)) {
+      const keyLower = key.toLowerCase();
+      if ((keyLower.includes('technology') || (keyLower.includes('tech') && keyLower.includes('node'))) && zohoProject[key]) {
+        technology_node = String(zohoProject[key]).trim();
+        break;
+      }
+    }
+  }
+  console.log('[Sync Projects] Zoho technology_node:', technology_node ?? '(not found)');
+
+  // Start date: try common Zoho field names and custom_fields by label
+  let startRaw =
+    zohoProject?.start_date ??
+    zohoProject?.start_date_format ??
+    zohoProject?.Start_Date ??
+    zohoProject?.start_date_long ??
+    zohoProject?.start_time ??
+    zohoProject?.begin_date ??
+    zohoProject?.planned_start ??
+    zohoProject?.created_time;
+  // End/target date: try common Zoho field names
+  let endRaw =
+    zohoProject?.end_date ??
+    zohoProject?.end_date_format ??
+    zohoProject?.End_Date ??
+    zohoProject?.target_date ??
+    zohoProject?.end_date_long ??
+    zohoProject?.due_date ??
+    zohoProject?.deadline ??
+    zohoProject?.end_time ??
+    zohoProject?.planned_end ??
+    zohoProject?.completion_date;
+
+  // Search custom_fields for date-like fields by label (reuse customFields from above)
+  if ((!startRaw || !endRaw) && (Array.isArray(customFields) || (typeof customFields === 'object' && customFields))) {
+    const arr = Array.isArray(customFields) ? customFields : [customFields];
+    for (const f of arr) {
+      if (!f || typeof f !== 'object') continue;
+      const label = (f.label ?? f.name ?? f.field_name ?? '').toString().toLowerCase();
+      const val = f.value ?? f.content ?? f.date_value;
+      if (val == null) continue;
+      if (!startRaw && (label.includes('start') || label.includes('begin') || label === 'start date')) {
+        startRaw = val;
+        break;
+      }
+    }
+    for (const f of arr) {
+      if (!f || typeof f !== 'object') continue;
+      const label = (f.label ?? f.name ?? f.field_name ?? '').toString().toLowerCase();
+      const val = f.value ?? f.content ?? f.date_value;
+      if (val == null) continue;
+      if (!endRaw && (label.includes('end') || label.includes('target') || label.includes('due') || label.includes('deadline') || label === 'end date' || label === 'target date')) {
+        endRaw = val;
+        break;
+      }
+    }
+  }
+  // Fallback: any top-level key containing "start" or "end"/"target"/"due"
+  if (!startRaw && zohoProject) {
+    for (const key of Object.keys(zohoProject)) {
+      const k = key.toLowerCase();
+      if ((k.includes('start') || k.includes('begin')) && (zohoProject[key] != null)) {
+        startRaw = zohoProject[key];
+        break;
+      }
+    }
+  }
+  if (!endRaw && zohoProject) {
+    for (const key of Object.keys(zohoProject)) {
+      const k = key.toLowerCase();
+      if ((k.includes('end') || k.includes('target') || k.includes('due') || k.includes('deadline')) && (zohoProject[key] != null)) {
+        endRaw = zohoProject[key];
+        break;
+      }
+    }
+  }
+
+  console.log('[Sync Projects] Zoho start_date (start_date, start_date_format, created_time, custom_fields, etc.):', startRaw ?? '(not found)');
+  console.log('[Sync Projects] Zoho end_date / target_date (end_date, target_date, deadline, due_date, custom_fields, etc.):', endRaw ?? '(not found)');
+
+  const toDate = (v: any): string | null => {
+    if (v == null && v !== 0) return null;
+    if (typeof v === 'number') {
+      const d = new Date(v < 1e12 ? v * 1000 : v);
+      if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+      return null;
+    }
+    const s = String(v).trim();
+    if (!s) return null;
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    return null;
+  };
+
+  return {
+    technology_node: technology_node || null,
+    start_date: toDate(startRaw),
+    target_date: toDate(endRaw),
+  };
+}
+
+/**
+ * Map Zoho tasklist name to our domain id (match by domain name or code).
+ */
+async function domainIdFromTasklistName(tasklistName: string): Promise<number | null> {
+  if (!tasklistName || !String(tasklistName).trim()) return null;
+  const name = String(tasklistName).trim();
+  const normalized = name.toLowerCase();
+  const byCode = await pool.query(
+    'SELECT id FROM domains WHERE is_active = true AND (LOWER(code) = $1 OR LOWER(TRIM(name)) = $1) LIMIT 1',
+    [normalized]
+  );
+  if (byCode.rows.length > 0) return byCode.rows[0].id;
+  const byNameLike = await pool.query(
+    'SELECT id FROM domains WHERE is_active = true AND (LOWER(TRIM(name)) LIKE $1 OR LOWER(code) LIKE $1) LIMIT 1',
+    [`%${normalized}%`]
+  );
+  return byNameLike.rows.length > 0 ? byNameLike.rows[0].id : null;
+}
+
+/**
+ * True if the tasklist is PD (Physical Design). Only PD tasklist tasks are synced as blocks; DV and others are skipped.
+ */
+function isPDTasklist(tasklistName: string | null | undefined): boolean {
+  if (!tasklistName || !String(tasklistName).trim()) return false;
+  const name = String(tasklistName).trim().toLowerCase();
+  return (
+    name.includes('pd') ||
+    name.includes('physical') ||
+    name.includes('physical design')
+  );
+}
+
+/**
+ * Sync blocks and block-to-user assignments from Zoho tasks (same mapping as UI: task = block, task owner = assigned user).
+ * Only tasks under the PD tasklist are added as blocks; DV and other tasklists are skipped.
+ * Call when admin does Sync Projects.
+ */
+async function syncBlocksAndBlockUsers(
+  asiProjectId: number,
+  zohoProjectId: string,
+  portalId: string | undefined,
+  userId: number
+): Promise<{ blocksUpserted: number; assignmentsUpserted: number; errors: string[] }> {
+  const errors: string[] = [];
+  let blocksUpserted = 0;
+  let assignmentsUpserted = 0;
+  try {
+    const tasks = await zohoService.getTasks(userId, zohoProjectId, portalId);
+    if (tasks.length === 0) {
+      console.log('[Sync Projects] No Zoho tasks for project', zohoProjectId, '- skipping blocks sync');
+      return { blocksUpserted: 0, assignmentsUpserted: 0, errors: [] };
+    }
+    const blockUsersExists = await pool.query(
+      `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'block_users')`
+    );
+    const hasBlockUsersTable = blockUsersExists.rows[0]?.exists === true;
+    for (const task of tasks) {
+      const tasklistName = (task.tasklist_name ?? task.tasklistName ?? '').toString().trim();
+      if (!isPDTasklist(tasklistName)) continue;
+      const blockName = (task.name ?? task.task_name ?? '').toString().trim();
+      if (!blockName) continue;
+      let blockId: number;
+      try {
+        const upsert = await pool.query(
+          `INSERT INTO blocks (project_id, block_name) VALUES ($1, $2)
+           ON CONFLICT (project_id, block_name) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+           RETURNING id`,
+          [asiProjectId, blockName]
+        );
+        blockId = upsert.rows[0].id;
+        blocksUpserted++;
+      } catch (e: any) {
+        errors.push(`Block "${blockName}": ${e.message || 'insert failed'}`);
+        continue;
+      }
+      const ownerEmails: string[] = [];
+      const ownerEmail = task.owner_email ?? task.owner?.email ?? null;
+      if (ownerEmail && String(ownerEmail).trim()) ownerEmails.push(String(ownerEmail).trim());
+      const details = task.details ?? {};
+      const owners = details.owners ?? (Array.isArray(details.Owners) ? details.Owners : []);
+      if (Array.isArray(owners)) {
+        for (const o of owners) {
+          const email = o?.email ?? o?.Email ?? null;
+          if (email && String(email).trim() && !ownerEmails.includes(String(email).trim())) {
+            ownerEmails.push(String(email).trim());
+          }
+        }
+      }
+      if (!hasBlockUsersTable) continue;
+      for (const email of ownerEmails) {
+        try {
+          const userRow = await pool.query('SELECT id FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))', [email]);
+          if (userRow.rows.length === 0) continue;
+          const uid = userRow.rows[0].id;
+          await pool.query(
+            `INSERT INTO block_users (block_id, user_id) VALUES ($1, $2) ON CONFLICT (block_id, user_id) DO NOTHING`,
+            [blockId, uid]
+          );
+          assignmentsUpserted++;
+        } catch (e: any) {
+          errors.push(`Block "${blockName}" user ${email}: ${e.message || 'assign failed'}`);
+        }
+      }
+    }
+    console.log('[Sync Projects] Blocks and assignments synced:', { blocksUpserted, assignmentsUpserted, errors: errors.length });
+  } catch (e: any) {
+    console.warn('[Sync Projects] syncBlocksAndBlockUsers failed:', e.message);
+    errors.push(e.message || 'sync blocks failed');
+  }
+  return { blocksUpserted, assignmentsUpserted, errors };
+}
+
+/**
+ * Ensure project has domains linked. Domains come only from Zoho tasklists (mapped to our domains) or from request; no default.
+ */
+async function ensureProjectHasDomains(
+  projectId: number,
+  opts: {
+    domainIdsFromZoho?: number[];
+    domainCodes?: string[] | string | null;
+    domainIds?: number[] | number | null;
+    domainCode?: string | null;
+    domainId?: number | null;
+  }
+): Promise<void> {
+  const seen = new Set<number>();
+  const domainIds: number[] = [];
+  if (opts.domainIdsFromZoho && opts.domainIdsFromZoho.length > 0) {
+    for (const id of opts.domainIdsFromZoho) {
+      if (!seen.has(id)) { seen.add(id); domainIds.push(id); }
+    }
+  }
+  const fromRequest = await resolveDomainIdsFromRequest(opts);
+  for (const id of fromRequest) {
+    if (!seen.has(id)) { seen.add(id); domainIds.push(id); }
+  }
+  if (domainIds.length === 0) {
+    console.log('[Sync Projects] No domains to link (none from Zoho tasklists and none in request). project_id:', projectId);
+    return;
+  }
+  const linked: string[] = [];
+  for (const did of domainIds) {
+    await pool.query(
+      'INSERT INTO project_domains (project_id, domain_id) VALUES ($1, $2) ON CONFLICT (project_id, domain_id) DO NOTHING',
+      [projectId, did]
+    );
+    const domainInfo = await pool.query('SELECT name, code FROM domains WHERE id = $1', [did]);
+    const dname = domainInfo.rows[0]?.name ?? '?';
+    const dcode = domainInfo.rows[0]?.code ?? '?';
+    linked.push(`${dname} (${dcode})`);
+  }
+  console.log('[Sync Projects] Domains linked to project (from Zoho tasklists / request) | project_id:', projectId, '| domains:', linked.join(', '), '| stored in: project_domains (project_id, domain_id)');
+}
+
+/**
+ * Fetch project name and linked domains from DB (same as CAD setup uses) and log for admin.
+ */
+async function logProjectAndDomains(projectId: number, context: string): Promise<void> {
+  const projectRow = await pool.query('SELECT name FROM projects WHERE id = $1', [projectId]);
+  const asiProjectName = projectRow.rows[0]?.name ?? '?';
+  const domainsRows = await pool.query(
+    `SELECT d.id, d.name, d.code FROM project_domains pd
+     JOIN domains d ON d.id = pd.domain_id
+     WHERE pd.project_id = $1 ORDER BY d.name`,
+    [projectId]
+  );
+  const domainList = domainsRows.rows.length > 0
+    ? domainsRows.rows.map((r: any) => `${r.name} (${r.code})`).join(', ')
+    : '(none yet)';
+  console.log('[Sync Projects]', context, '| Project:', asiProjectName, '(id:', projectId + ')', '| Domains:', domainList, '| DB: projects, project_domains, domains');
+}
+
+/**
+ * GET /api/zoho/projects/sync-members/preview
+ * Admin-only. Returns project name and domains that would be added/linked (no DB writes). For confirmation dialog.
+ * Query: zohoProjectId, portalId?, zohoProjectName?
+ */
+router.get(
+  '/projects/sync-members/preview',
+  authenticate,
+  authorize('admin'),
+  async (req, res) => {
+    try {
+      const userId = (req as any).user?.id;
+      const zohoProjectId = req.query.zohoProjectId as string | undefined;
+      const portalId = req.query.portalId as string | undefined;
+      const zohoProjectName = req.query.zohoProjectName as string | undefined;
+
+      if (!zohoProjectId) {
+        return res.status(400).json({ error: 'zohoProjectId is required' });
+      }
+
+      const zohoIdStr = zohoProjectId.toString();
+      const projectName = zohoProjectName?.trim() || `Project from Zoho ${zohoIdStr}`;
+
+      let existingProjectId: number | null = null;
+      let displayProjectName = projectName;
+      const mappingResult = await pool.query(
+        'SELECT local_project_id FROM zoho_projects_mapping WHERE zoho_project_id = $1',
+        [zohoIdStr]
+      );
+      if (mappingResult.rows.length > 0 && mappingResult.rows[0].local_project_id) {
+        existingProjectId = mappingResult.rows[0].local_project_id;
+        const nameRow = await pool.query('SELECT name FROM projects WHERE id = $1', [existingProjectId]);
+        if (nameRow.rows.length > 0) displayProjectName = nameRow.rows[0].name;
+      }
+      if (existingProjectId == null) {
+        const byName = await pool.query(
+          'SELECT id, name FROM projects WHERE LOWER(name) = LOWER($1)',
+          [projectName]
+        );
+        if (byName.rows.length > 0) {
+          existingProjectId = byName.rows[0].id;
+          displayProjectName = byName.rows[0].name;
+        }
+      }
+
+      const domainIds = await getDomainIdsFromZohoTasklists(userId, zohoIdStr, portalId);
+      const domains: { id: number; name: string; code: string }[] = [];
+      for (const did of domainIds) {
+        const row = await pool.query('SELECT id, name, code FROM domains WHERE id = $1', [did]);
+        if (row.rows.length > 0) {
+          domains.push({
+            id: row.rows[0].id,
+            name: row.rows[0].name ?? '',
+            code: row.rows[0].code ?? '',
+          });
+        }
+      }
+
+      const zohoProjectPreview = await zohoService.getProjectWithFallback(userId, zohoIdStr, portalId || undefined);
+      const { technology_node: technologyNode, start_date: startDate, target_date: targetDate } = zohoProjectPreview
+        ? extractZohoProjectDetails(zohoProjectPreview)
+        : { technology_node: null, start_date: null, target_date: null };
+
+      return res.json({
+        projectName: displayProjectName,
+        projectId: existingProjectId ?? undefined,
+        existingProject: existingProjectId != null,
+        domains,
+        technology_node: technologyNode ?? undefined,
+        start_date: startDate ?? undefined,
+        target_date: targetDate ?? undefined,
+        message: existingProjectId != null
+          ? `Project "${displayProjectName}" will be updated; domains will be linked.`
+          : `Project "${displayProjectName}" and domains will be added to the database.`,
+      });
+    } catch (error: any) {
+      console.error('[API] GET /api/zoho/projects/sync-members/preview error:', error);
+      res.status(500).json({
+        error: error.message || 'Failed to get sync preview',
+      });
+    }
+  }
+);
+
+/**
+ * POST /api/zoho/projects/sync-members
+ * Admin-only. Creates ASI project and domain link if needed, then syncs members.
+ * Body: { zohoProjectId, portalId?, zohoProjectName?, domainCode?, domainId?, domainCodes?, domainIds? }
+ * Domains come from Zoho tasklists (tasklist names mapped to our domains); optional request domainCodes/domainIds override. No default domains.
+ */
+router.post(
+  '/projects/sync-members',
+  authenticate,
+  authorize('admin'),
+  async (req, res) => {
+    try {
+      const userId = (req as any).user?.id;
+      const { zohoProjectId, portalId, zohoProjectName, domainCode, domainId, domainCodes, domainIds } = req.body;
+
+      console.log('[Sync Projects] Request received:', {
+        zohoProjectId,
+        portalId: portalId ?? '(not provided)',
+        zohoProjectName: zohoProjectName ?? '(not provided)',
+        domainCode: domainCode ?? '(not provided)',
+        domainId: domainId ?? '(not provided)',
+        domainCodes: domainCodes ?? '(not provided)',
+        domainIds: domainIds ?? '(not provided)',
+        userId,
+      });
+
+      if (!zohoProjectId) {
+        return res.status(400).json({ error: 'zohoProjectId is required' });
+      }
+
+      const zohoIdStr = zohoProjectId.toString();
+      const projectName = zohoProjectName || `Project from Zoho ${zohoIdStr}`;
+
+      // Fetch Zoho project (with fallback) for technology_node, start_date, target_date
+      const zohoProject = await zohoService.getProjectWithFallback(userId, zohoIdStr, portalId || undefined);
+      const { technology_node: technologyNode, start_date: startDate, target_date: targetDate } = zohoProject
+        ? extractZohoProjectDetails(zohoProject)
+        : { technology_node: null, start_date: null, target_date: null };
+
+      // Resolve ASI project: from mapping, or by name, or create
+      let asiProjectId: number | null = null;
+      const mappingResult = await pool.query(
+        'SELECT local_project_id FROM zoho_projects_mapping WHERE zoho_project_id = $1',
+        [zohoIdStr]
+      );
+      if (mappingResult.rows.length > 0 && mappingResult.rows[0].local_project_id) {
+        asiProjectId = mappingResult.rows[0].local_project_id;
+        await logProjectAndDomains(asiProjectId!, 'Using existing project (from mapping)');
+      }
+      if (asiProjectId == null) {
+        const byName = await pool.query(
+          'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
+          [projectName]
+        );
+        if (byName.rows.length > 0) {
+          asiProjectId = byName.rows[0].id;
+          await logProjectAndDomains(asiProjectId!, 'Using existing project (matched by name)');
+        }
+      }
+      if (asiProjectId == null) {
+        const createResult = await pool.query(
+          `INSERT INTO projects (name, created_by, technology_node, start_date, target_date, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           RETURNING id`,
+          [projectName, userId, technologyNode, startDate, targetDate]
+        );
+        asiProjectId = createResult.rows[0].id;
+        console.log('[Sync Projects] Project created | id:', asiProjectId, '| name:', projectName, '| technology_node:', technologyNode ?? '(none)', '| start_date:', startDate ?? '(none)', '| target_date:', targetDate ?? '(none)', '| stored in: projects (id, name, created_by, technology_node, start_date, target_date, created_at, updated_at)');
+        await pool.query(
+          `INSERT INTO zoho_projects_mapping (zoho_project_id, local_project_id, zoho_project_name)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (zoho_project_id) DO UPDATE SET
+             local_project_id = EXCLUDED.local_project_id,
+             zoho_project_name = COALESCE(EXCLUDED.zoho_project_name, zoho_projects_mapping.zoho_project_name),
+             updated_at = CURRENT_TIMESTAMP`,
+          [zohoIdStr, asiProjectId, projectName]
+        );
+        console.log('[Sync Projects] Mapping stored | zoho_project_id:', zohoIdStr, '| local_project_id:', asiProjectId, '| zoho_project_name:', projectName, '| stored in: zoho_projects_mapping (zoho_project_id, local_project_id, zoho_project_name)');
+        const domainIdsFromZoho = await getDomainIdsFromZohoTasklists(userId, zohoIdStr, portalId);
+        await ensureProjectHasDomains(asiProjectId!, { domainIdsFromZoho, domainCodes, domainIds, domainCode, domainId });
+        await logProjectAndDomains(asiProjectId!, 'After create and domain link');
+      } else {
+        await pool.query(
+          `INSERT INTO zoho_projects_mapping (zoho_project_id, local_project_id, zoho_project_name)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (zoho_project_id) DO UPDATE SET
+             zoho_project_name = COALESCE(EXCLUDED.zoho_project_name, zoho_projects_mapping.zoho_project_name),
+             updated_at = CURRENT_TIMESTAMP`,
+          [zohoIdStr, asiProjectId, projectName]
+        );
+        console.log('[Sync Projects] Mapping stored | zoho_project_id:', zohoIdStr, '| local_project_id:', asiProjectId, '| zoho_project_name:', projectName, '| stored in: zoho_projects_mapping (zoho_project_id, local_project_id, zoho_project_name)');
+        const domainIdsFromZoho = await getDomainIdsFromZohoTasklists(userId, zohoIdStr, portalId);
+        await ensureProjectHasDomains(asiProjectId!, { domainIdsFromZoho, domainCodes, domainIds, domainCode, domainId });
+        // Update existing project with technology_node, start_date, target_date from Zoho
+        if (technologyNode != null || startDate != null || targetDate != null) {
+          await pool.query(
+            `UPDATE projects SET technology_node = COALESCE($2, technology_node), start_date = COALESCE($3, start_date), target_date = COALESCE($4, target_date), updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+            [asiProjectId, technologyNode, startDate, targetDate]
+          );
+          console.log('[Sync Projects] Updated project | id:', asiProjectId, '| technology_node:', technologyNode ?? '(unchanged)', '| start_date:', startDate ?? '(unchanged)', '| target_date:', targetDate ?? '(unchanged)');
+        }
+        await logProjectAndDomains(asiProjectId!, 'After ensuring domain');
+      }
+
+      if (asiProjectId == null) {
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to resolve or create ASI project',
+        });
+      }
+
+      console.log('[Sync Projects] Syncing members: ASI project id', asiProjectId, ', Zoho project id', zohoIdStr);
+      const result = await zohoService.syncProjectMembers(
+        asiProjectId,
+        zohoIdStr,
+        portalId || undefined,
+        userId
+      );
+
+      const blocksResult = await syncBlocksAndBlockUsers(asiProjectId, zohoIdStr, portalId || undefined, userId);
+      if (blocksResult.errors.length > 0) {
+        console.log('[Sync Projects] Block sync warnings:', blocksResult.errors);
+      }
+
+      console.log('[Sync Projects] Done:', {
+        asiProjectId,
+        zohoProjectId: zohoIdStr,
+        totalMembers: result?.totalMembers ?? '(n/a)',
+        createdUsers: result?.createdUsers ?? '(n/a)',
+        updatedAssignments: result?.updatedAssignments ?? '(n/a)',
+        blocksUpserted: blocksResult.blocksUpserted,
+        blockAssignmentsUpserted: blocksResult.assignmentsUpserted,
+        errors: (result?.errors?.length ?? 0) > 0 ? result.errors : 'none',
+      });
+
+      res.json({
+        success: true,
+        message: 'Project members synced successfully',
+        ...result,
+        asiProjectId,
+        blocksUpserted: blocksResult.blocksUpserted,
+        blockAssignmentsUpserted: blocksResult.assignmentsUpserted,
+        blockSyncErrors: blocksResult.errors.length > 0 ? blocksResult.errors : undefined,
+      });
+    } catch (error: any) {
+      console.error('[API] POST /api/zoho/projects/sync-members error:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to sync project members',
+      });
+    }
+  }
+);
+
+/**
  * POST /api/zoho/projects/:projectId/mark-exported
  * Mark a Zoho project as exported to Linux
  */
@@ -917,7 +1524,23 @@ router.post('/projects/:projectId/mark-exported', authenticate, async (req, res)
         [actualProjectId, currentPortalId || null, currentProjectName, true, userId]
       );
     }
-    
+
+    // Also set setup_completed and exported_to_linux on the linked local project (projects table only)
+    try {
+      const mappingResult = await pool.query(
+        'SELECT local_project_id FROM zoho_projects_mapping WHERE zoho_project_id = $1 OR zoho_project_id::text = $1',
+        [actualProjectId]
+      );
+      if (mappingResult.rows.length > 0 && mappingResult.rows[0].local_project_id) {
+        await pool.query(
+          `UPDATE projects SET setup_completed = true, setup_completed_at = CURRENT_TIMESTAMP, exported_to_linux = true, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+          [mappingResult.rows[0].local_project_id]
+        );
+      }
+    } catch (e) {
+      // Non-fatal: export was saved; project table update is best-effort
+    }
+
     res.json({
       success: true,
       message: 'Project marked as exported to Linux',
@@ -934,9 +1557,9 @@ router.post('/projects/:projectId/mark-exported', authenticate, async (req, res)
 
 /**
  * GET /api/zoho/projects/:projectId
- * Get single project details from Zoho Projects
+ * Get single project details from Zoho Projects (admin only; non-admin use DB only)
  */
-router.get('/projects/:projectId', authenticate, async (req, res) => {
+router.get('/projects/:projectId', authenticate, authorize('admin'), async (req, res) => {
   try {
     const userId = (req as any).user?.id;
     const { projectId } = req.params;
@@ -1040,9 +1663,9 @@ router.get('/projects/:projectId', authenticate, async (req, res) => {
 
 /**
  * GET /api/zoho/projects/:zohoProjectId/members
- * Get all members for a Zoho project (preview before sync)
+ * Get all members for a Zoho project (admin only; non-admin use DB only)
  */
-router.get('/projects/:zohoProjectId/members', authenticate, async (req, res) => {
+router.get('/projects/:zohoProjectId/members', authenticate, authorize('admin'), async (req, res) => {
   try {
     const userId = (req as any).user?.id;
     const { zohoProjectId } = req.params;
@@ -1091,9 +1714,9 @@ router.get('/projects/:zohoProjectId/members', authenticate, async (req, res) =>
 
 /**
  * GET /api/zoho/projects/:projectId/tasks
- * Get all tasks for a Zoho project (including subtasks)
+ * Get all tasks for a Zoho project (admin only; non-admin use DB only)
  */
-router.get('/projects/:projectId/tasks', authenticate, async (req, res) => {
+router.get('/projects/:projectId/tasks', authenticate, authorize('admin'), async (req, res) => {
   try {
     const userId = (req as any).user?.id;
     const { projectId } = req.params;
@@ -1135,9 +1758,9 @@ router.get('/projects/:projectId/tasks', authenticate, async (req, res) => {
 
 /**
  * GET /api/zoho/projects/:projectId/milestones
- * Get all milestones for a Zoho project
+ * Get all milestones for a Zoho project (admin only; non-admin use DB only)
  */
-router.get('/projects/:projectId/milestones', authenticate, async (req, res) => {
+router.get('/projects/:projectId/milestones', authenticate, authorize('admin'), async (req, res) => {
   try {
     const userId = (req as any).user?.id;
     const { projectId } = req.params;

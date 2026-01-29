@@ -4,6 +4,11 @@ import 'auth_provider.dart';
 
 final apiServiceProvider = Provider<ApiService>((ref) => ApiService());
 
+List<dynamic> _projectsFromMap(Map<dynamic, dynamic> m) {
+  final raw = m['all'] ?? m['local'] ?? <dynamic>[];
+  return raw is List ? List<dynamic>.from(raw) : <dynamic>[];
+}
+
 final dashboardProvider = StateNotifierProvider<DashboardNotifier, AsyncValue<Map<String, dynamic>>>(
   (ref) {
     final apiService = ref.read(apiServiceProvider);
@@ -49,7 +54,13 @@ class DashboardNotifier extends StateNotifier<AsyncValue<Map<String, dynamic>>> 
         }),
       ]);
       
-      final projects = results[0] as List<dynamic>;
+      // Projects API may return List or Map (e.g. { all, local, zoho } for Zoho integration; admin gets Zoho only)
+      final projectsRaw = results[0];
+      final List<dynamic> projects = projectsRaw is List
+          ? List<dynamic>.from(projectsRaw as List)
+          : (projectsRaw is Map)
+              ? _projectsFromMap(projectsRaw as Map)
+              : <dynamic>[];
       final domains = results[1] as List<dynamic>;
       final designs = results[2] as List<dynamic>;
       final chips = results[3] as List<dynamic>;
@@ -197,7 +208,13 @@ final dashboardChartDataProvider = FutureProvider<Map<String, dynamic>>((ref) as
       apiService.getDomains(token: token),
     ]);
     
-    final projects = results[0] as List<dynamic>;
+    // Projects API may return List or Map (e.g. { all, local, zoho }; admin gets Zoho only)
+    final projectsRaw = results[0];
+    final List<dynamic> projects = projectsRaw is List
+        ? List<dynamic>.from(projectsRaw as List)
+        : (projectsRaw is Map)
+            ? _projectsFromMap(projectsRaw as Map)
+            : <dynamic>[];
     final domains = results[1] as List<dynamic>;
     
     // Only fetch EDA files if domain distribution from projects is empty

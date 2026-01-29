@@ -41,6 +41,8 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   
   // Store block data with IDs for QMS navigation
   Map<String, int> _blockNameToId = {};
+  // Cache: block name -> experiment names (from DB, filled on project open; no extra call when block selected)
+  Map<String, List<String>> _blockToExperiments = {};
   
   // Command execution state
   bool _isExecutingCommand = false;
@@ -62,16 +64,35 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   // Run history data
   List<Map<String, dynamic>> _runHistory = [];
   bool _isLoadingRunHistory = false;
+
+  // Run directory: loading state so we show "Loading..." only while fetching, not when result is null
+  bool _isLoadingRunDirectory = false;
   
   // Development Tools expansion state
   bool _isDevelopmentToolsExpanded = false;
+
+  /// Local project identifier for API calls (DB only, no Zoho). Prefer local id, else project name.
+  dynamic get _localProjectIdentifier {
+    final rawId = widget.project['id'];
+    final name = widget.project['name']?.toString() ?? '';
+    final isLocalId = rawId is int || (rawId is String && rawId.toString().isNotEmpty && !rawId.toString().startsWith('zoho_'));
+    return isLocalId ? rawId : (name.isNotEmpty ? name : rawId);
+  }
 
   @override
   void initState() {
     super.initState();
     _selectedTab = widget.initialTab ?? 'Dashboard';
+    // Log when project tab is opened (user clicked project card)
+    final role = ref.read(authProvider).user?['role']?.toString();
+    final projectName = widget.project['name']?.toString();
+    print('═══════════════════════════════════════════════════════════');
+    print('📂 [PROJECT OPENED] User clicked project card');
+    print('   Project: $projectName');
+    print('   User role: $role');
+    print('═══════════════════════════════════════════════════════════');
+    // On project open: only load blocks from DB (one call). Run history and EDA load when user selects block/experiment.
     _loadBlocksAndExperiments();
-    _loadRunHistory();
   }
 
   @override
@@ -100,78 +121,41 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         return;
       }
 
-      // Determine project identifier for API call
-      // For Zoho projects, use "zoho_<zoho_project_id>" format
-      // For local projects, use project ID or name
-      dynamic projectIdentifier;
-      final zohoProjectId = widget.project['zoho_project_id']?.toString();
-      if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
-        projectIdentifier = 'zoho_$zohoProjectId';
-      } else {
-        // Try project ID first, fallback to project name
-        projectIdentifier = widget.project['id'] ?? projectName;
-      }
+      final projectIdOrName = _localProjectIdentifier;
+      print('🔵 [BLOCKS] Loading blocks from DB only (one call). projectIdOrName: $projectIdOrName');
 
-      // Load blocks and experiments from setup data (and EDA files)
-      final blocksData = await _apiService.getBlocksAndExperiments(
-        projectIdOrName: projectIdentifier,
+      // Single DB call: blocks + experiments per block. No EDA, no run history at open.
+      final blocksDataList = await _apiService.getBlocksAndExperiments(
+        projectIdOrName: projectIdOrName,
         token: token,
       );
+      print('🔵 [BLOCKS] API returned ${blocksDataList.length} blocks from DB');
 
-      // Extract unique blocks and experiments from setup data
       final blockSet = <String>{};
-      final experimentSet = <String>{};
-      
-      for (var blockData in blocksData) {
+      final blockToExperiments = <String, List<String>>{};
+      for (var blockData in blocksDataList) {
         final blockName = blockData['block_name']?.toString();
-        if (blockName != null && blockName.isNotEmpty) {
-          blockSet.add(blockName);
-        }
-        
-        // Extract experiments from this block
+        if (blockName == null || blockName.isEmpty) continue;
+        blockSet.add(blockName);
         final experiments = blockData['experiments'];
+        final expList = <String>[];
         if (experiments is List) {
           for (var exp in experiments) {
             final experiment = exp['experiment']?.toString();
-            if (experiment != null && experiment.isNotEmpty) {
-              experimentSet.add(experiment);
-            }
+            if (experiment != null && experiment.isNotEmpty) expList.add(experiment);
           }
         }
+        expList.sort();
+        blockToExperiments[blockName] = expList;
       }
 
-      // Also load from EDA files to get any additional blocks/experiments
-      try {
-        final filesResponse = await _apiService.getEdaFiles(
-          token: token,
-          projectName: projectName,
-          limit: 200,
-        );
-
-        final files = filesResponse['files'] ?? [];
-      for (var file in files) {
-        final blockName = file['block_name']?.toString();
-        final experiment = file['experiment']?.toString();
-        
-        if (blockName != null && blockName.isNotEmpty) {
-          blockSet.add(blockName);
-        }
-        
-        if (experiment != null && experiment.isNotEmpty) {
-          experimentSet.add(experiment);
-        }
-        }
-      } catch (e) {
-        // Silently fail - we already have data from setup
-        print('Failed to load from EDA files (non-critical): $e');
-      }
-
-      // Load block IDs from API
-      _loadBlockIds(projectName, token);
-
+      final finalBlocks = blockSet.toList()..sort();
+      print('🔵 [BLOCKS] Block dropdown: ${finalBlocks.length} blocks. Run history / EDA load when user selects block or experiment.');
+      print('═══════════════════════════════════════════════════════════');
       setState(() {
-        _availableBlocks = blockSet.toList()..sort();
-        _availableExperiments = experimentSet.toList()..sort();
+        _availableBlocks = finalBlocks;
+        _blockToExperiments = blockToExperiments;
+        _availableExperiments = []; // Experiments show after user selects a block (from cache)
         _isLoadingBlocks = false;
       });
     } catch (e) {
@@ -189,55 +173,38 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     }
   }
 
+  List<dynamic> _normalizeProjectsResponse(dynamic response) {
+    if (response is List) return response;
+    if (response is Map) {
+      if (response['all'] is List) return response['all'] as List<dynamic>;
+      if (response['local'] is List) return response['local'] as List<dynamic>;
+    }
+    return [];
+  }
+
   Future<void> _loadBlockIds(String projectName, String token) async {
     try {
-      // Get project ID first
-      final projects = await _apiService.getProjects(token: token);
-      Map<String, dynamic>? project;
-      try {
-        project = projects.firstWhere(
-          (p) => (p['name']?.toString().toLowerCase() ?? '') == projectName.toLowerCase(),
-        ) as Map<String, dynamic>?;
-      } catch (e) {
-        // Project not found
-        return;
-      }
-      
-      if (project == null || project['id'] == null) {
-        return;
-      }
-      
-      final projectId = project['id'] as int;
-      
-      // Get blocks for this project
-      final headers = <String, String>{
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      };
-      
-      final response = await http.get(
-        Uri.parse('${ApiService.baseUrl}/projects/$projectId/blocks'),
-        headers: headers,
+      // Always request filterByAssigned=true; backend uses project-specific role from user_projects
+      // to decide whether to actually filter (engineers get assigned blocks only, admin/manager/lead get all).
+      final projectIdOrName = _localProjectIdentifier;
+      final blocks = await _apiService.getProjectBlocks(
+        projectIdOrName: projectIdOrName,
+        filterByAssigned: true,
+        token: token,
       );
-      
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final blocks = data is Map && data['data'] != null ? data['data'] : (data is List ? data : []);
-        if (blocks is List) {
-          final blockMap = <String, int>{};
-          for (var block in blocks) {
-            final blockName = block['block_name']?.toString();
-            final blockId = block['id'];
-            if (blockName != null && blockId != null) {
-              blockMap[blockName] = blockId is int ? blockId : int.tryParse(blockId.toString()) ?? 0;
-            }
-          }
-          if (mounted) {
-            setState(() {
-              _blockNameToId = blockMap;
-            });
+      if (mounted) {
+        final blockMap = <String, int>{};
+        for (var block in blocks) {
+          if (block is! Map<String, dynamic>) continue;
+          final blockName = block['block_name']?.toString() ?? block['name']?.toString();
+          final blockId = block['id'];
+          if (blockName != null && blockName.isNotEmpty && blockId != null) {
+            blockMap[blockName] = blockId is int ? blockId : (int.tryParse(blockId.toString()) ?? 0);
           }
         }
+        setState(() {
+          _blockNameToId = blockMap;
+        });
       }
     } catch (e) {
       // Silently fail - block IDs won't be available for QMS navigation
@@ -256,10 +223,39 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         throw Exception('No authentication token');
       }
 
-      // Get project ID
-      final projects = await _apiService.getProjects(token: token);
-      final projectName = widget.project['name'] ?? '';
-      if (projectName.isEmpty) {
+      // Use project ID from card (DB) to avoid extra getProjects round trip
+      int? projectId;
+      final rawId = widget.project['id'];
+      if (rawId != null) {
+        if (rawId is int) {
+          projectId = rawId;
+        } else if (rawId is String && rawId.isNotEmpty && !rawId.toString().startsWith('zoho_')) {
+          projectId = int.tryParse(rawId.toString());
+        }
+      }
+      if (projectId == null) {
+        // Fallback: resolve by name (e.g. Zoho project)
+        final projectName = widget.project['name'] ?? '';
+        if (projectName.isEmpty) {
+          setState(() {
+            _isLoadingRunHistory = false;
+            _runHistory = [];
+          });
+          return;
+        }
+        final projectsRaw = await _apiService.getProjects(token: token);
+        final projects = _normalizeProjectsResponse(projectsRaw);
+        try {
+          final project = projects.firstWhere(
+            (p) => (p['name']?.toString().toLowerCase() ?? '') == projectName.toLowerCase(),
+          ) as Map<String, dynamic>?;
+          if (project != null && project['id'] != null) {
+            projectId = project['id'] is int ? project['id'] as int : int.tryParse(project['id'].toString());
+          }
+        } catch (_) {}
+      }
+
+      if (projectId == null) {
         setState(() {
           _isLoadingRunHistory = false;
           _runHistory = [];
@@ -267,31 +263,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         return;
       }
 
-      Map<String, dynamic>? project;
-      try {
-        project = projects.firstWhere(
-          (p) => (p['name']?.toString().toLowerCase() ?? '') == projectName.toLowerCase(),
-        ) as Map<String, dynamic>?;
-      } catch (e) {
-        // Project not found
-        setState(() {
-          _isLoadingRunHistory = false;
-          _runHistory = [];
-        });
-        return;
-      }
-
-      if (project == null || project['id'] == null) {
-        setState(() {
-          _isLoadingRunHistory = false;
-          _runHistory = [];
-        });
-        return;
-      }
-
-      final projectId = project['id'] as int;
-
-      // Load run history with optional filters
+      // Load run history from DB (single call)
       final runHistory = await _apiService.getRunHistory(
         projectId: projectId,
         blockName: _selectedBlock != 'Select a block' ? _selectedBlock : null,
@@ -322,33 +294,39 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       _selectedBlock = value ?? 'Select a block';
       _selectedExperiment = 'Select an experiment'; // Reset experiment when block changes
       _metricsData = null; // Reset metrics when block changes
-      _currentRunDirectory = null; // Reset run directory when block changes
+      _currentRunDirectory = null;
+      _isLoadingRunDirectory = false;
       _qmsChecklists = [];
       _qmsBlockStatus = null;
     });
     
-    // Load experiments for the selected block
+    // Show experiments for the selected block (from DB cache; no extra API call)
     if (_selectedBlock != 'Select a block') {
-      _loadExperimentsForBlock(_selectedBlock);
-      
-      // Load QMS data if QMS tab is selected
-      if (_selectedTab == 'QMS') {
-        _loadQmsData();
+      final experiments = _blockToExperiments[_selectedBlock] ?? [];
+      setState(() {
+        _availableExperiments = List<String>.from(experiments);
+      });
+      // Load block IDs for QMS only when needed (first time a block is selected)
+      final token = ref.read(authProvider).token;
+      if (_blockNameToId.isEmpty && token != null) {
+        final projectName = widget.project['name']?.toString() ?? '';
+        if (projectName.isNotEmpty) _loadBlockIds(projectName, token);
       }
+      if (_selectedTab == 'QMS') _loadQmsData();
     } else {
       setState(() {
         _availableExperiments = [];
       });
     }
-    
-    // Reload run history with new block filter
+    // Load run history only when user selects block (DB only)
     _loadRunHistory();
   }
   
   void _onExperimentChanged(String? value) async {
     setState(() {
       _selectedExperiment = value ?? 'Select an experiment';
-      _currentRunDirectory = null; // Reset run directory when experiment changes
+      _currentRunDirectory = null;
+      _isLoadingRunDirectory = false; // Will be set true when _loadRunDirectory runs
     });
     
     // Load metrics and run directory when experiment is selected
@@ -367,107 +345,68 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       return;
     }
 
+    final token = ref.read(authProvider).token;
+    if (token == null) return;
+
+    final projectName = widget.project['name'] ?? '';
+    if (projectName.isEmpty) return;
+
+    if (mounted) setState(() => _isLoadingRunDirectory = true);
+
     try {
-      final token = ref.read(authProvider).token;
-      if (token == null) {
-        return;
-      }
+      String? runDirectoryFromBlockUser;
+      String? runDirectoryFromExperiment;
 
-      final projectName = widget.project['name'] ?? '';
-      if (projectName.isEmpty) {
-        return;
-      }
-
-      // Determine project identifier
-      dynamic projectIdentifier;
-      final zohoProjectId = widget.project['zoho_project_id']?.toString();
-      final isZohoProject = zohoProjectId != null && zohoProjectId.isNotEmpty;
-      if (isZohoProject) {
-        projectIdentifier = 'zoho_$zohoProjectId';
-      } else {
-        projectIdentifier = widget.project['id'] ?? projectName;
-      }
-
-      String? runDirectoryFromEdaFiles;
-      String? runDirectoryFromSetup;
-
-      // First, try to load from EDA files (actual run directory from processed files)
-      // This is more accurate as it comes from the actual EDA output files
-      try {
-      final filesResponse = await _apiService.getEdaFiles(
-        token: token,
-        projectName: projectName,
-          limit: 1000, // Increased limit to find matching files
-      );
-
-      final files = filesResponse['files'] ?? [];
-      
-      // Find first matching file for this block and experiment
-      final matchingFile = files.firstWhere(
-        (file) {
-          final fileBlock = file['block_name']?.toString();
-          final fileExperiment = file['experiment']?.toString();
-          return fileBlock == _selectedBlock && fileExperiment == _selectedExperiment;
-        },
-        orElse: () => null,
-      );
-
-        if (matchingFile != null) {
-          runDirectoryFromEdaFiles = matchingFile['run_directory']?.toString();
-        }
-      } catch (e) {
-        print('Error loading run directory from EDA files: $e');
-      }
-
-      // Also try to load from setup data (zoho_project_run_directories for Zoho, blocks/runs for local)
+      // Run directory from DB only: block_users (per block per user) then runs (per experiment). No EDA files.
       try {
         final blocksData = await _apiService.getBlocksAndExperiments(
-          projectIdOrName: projectIdentifier,
+          projectIdOrName: _localProjectIdentifier,
           token: token,
         );
 
-        // Find the matching block and experiment
         for (var blockData in blocksData) {
           final blockName = blockData['block_name']?.toString();
-          if (blockName == _selectedBlock) {
-            final experiments = blockData['experiments'];
-            if (experiments is List) {
-              for (var exp in experiments) {
-                final experiment = exp['experiment']?.toString();
-                if (experiment == _selectedExperiment) {
-                  final runDir = exp['run_directory']?.toString();
-                  if (runDir != null && runDir.isNotEmpty) {
-                    runDirectoryFromSetup = runDir;
-                    break;
-                  }
+          if (blockName != _selectedBlock) continue;
+
+          // 1) block_users.run_directory (set when engineer completes setup)
+          final blockUserRunDir = blockData['block_user_run_directory']?.toString();
+          if (blockUserRunDir != null && blockUserRunDir.isNotEmpty) {
+            runDirectoryFromBlockUser = blockUserRunDir;
+          }
+
+          // 2) runs.run_directory for this experiment (fallback)
+          final experiments = blockData['experiments'];
+          if (experiments is List) {
+            for (var exp in experiments) {
+              final experiment = exp['experiment']?.toString();
+              if (experiment == _selectedExperiment) {
+                final runDir = exp['run_directory']?.toString();
+                if (runDir != null && runDir.isNotEmpty) {
+                  runDirectoryFromExperiment = runDir;
+                  break;
                 }
               }
             }
           }
+          break;
         }
       } catch (e) {
-        print('Error loading run directory from setup data: $e');
+        print('Error loading run directory from DB: $e');
       }
 
-      // Prefer EDA files run directory (actual) over setup data, but use setup if EDA not available
-      final finalRunDirectory = runDirectoryFromEdaFiles ?? runDirectoryFromSetup;
-      
-      if (mounted && finalRunDirectory != null && finalRunDirectory.isNotEmpty) {
+      final finalRunDirectory = runDirectoryFromBlockUser ?? runDirectoryFromExperiment;
+      if (mounted) {
         setState(() {
-          _currentRunDirectory = finalRunDirectory;
-        });
-      } else if (mounted) {
-        // Clear run directory if not found in either source
-        setState(() {
-          _currentRunDirectory = null;
+          _currentRunDirectory = (finalRunDirectory != null && finalRunDirectory.isNotEmpty) ? finalRunDirectory : null;
+          _isLoadingRunDirectory = false;
         });
       }
     } catch (e) {
-      // Silently fail - run directory will remain null
       print('Error loading run directory: $e');
       if (mounted) {
         setState(() {
           _currentRunDirectory = null;
+          _isLoadingRunDirectory = false;
         });
       }
     }
@@ -516,19 +455,12 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       if (matchingFiles.isEmpty) {
         setState(() {
           _metricsData = null;
-          _currentRunDirectory = null;
           _isLoadingMetrics = false;
         });
         return;
       }
 
-      // Extract run directory from the first matching file
-      final runDirectory = matchingFiles.first['run_directory']?.toString();
-      setState(() {
-        _currentRunDirectory = runDirectory;
-      });
-
-      // Get the latest stage (by timestamp or stage order)
+      // Get the latest stage (by timestamp or stage order). Run directory comes only from DB (_loadRunDirectory), not EDA.
       final stageOrder = ['syn', 'init', 'floorplan', 'place', 'cts', 'postcts', 'route', 'postroute'];
       Map<String, dynamic>? latestStage;
       int latestIndex = -1;
@@ -638,77 +570,6 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     return 'N/A';
   }
 
-  Future<void> _loadExperimentsForBlock(String blockName) async {
-    try {
-      final token = ref.read(authProvider).token;
-      if (token == null) return;
-
-      final projectName = widget.project['name'] ?? '';
-      if (projectName.isEmpty) return;
-
-      // Determine project identifier
-      dynamic projectIdentifier;
-      final zohoProjectId = widget.project['zoho_project_id']?.toString();
-      if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
-        projectIdentifier = 'zoho_$zohoProjectId';
-      } else {
-        projectIdentifier = widget.project['id'] ?? projectName;
-      }
-
-      // Load blocks and experiments from setup data
-      final blocksData = await _apiService.getBlocksAndExperiments(
-        projectIdOrName: projectIdentifier,
-        token: token,
-      );
-
-      final experimentSet = <String>{};
-      
-      // Find the selected block and extract its experiments
-      for (var blockData in blocksData) {
-        final fileBlockName = blockData['block_name']?.toString();
-        if (fileBlockName == blockName) {
-          final experiments = blockData['experiments'];
-          if (experiments is List) {
-            for (var exp in experiments) {
-              final experiment = exp['experiment']?.toString();
-              if (experiment != null && experiment.isNotEmpty) {
-                experimentSet.add(experiment);
-              }
-            }
-          }
-        }
-      }
-
-      // Also check EDA files for additional experiments
-      try {
-      final filesResponse = await _apiService.getEdaFiles(
-        token: token,
-        projectName: projectName,
-        limit: 1000,
-      );
-
-      final files = filesResponse['files'] ?? [];
-      for (var file in files) {
-        final fileBlockName = file['block_name']?.toString();
-        final experiment = file['experiment']?.toString();
-        
-        if (fileBlockName == blockName && experiment != null && experiment.isNotEmpty) {
-          experimentSet.add(experiment);
-        }
-        }
-      } catch (e) {
-        // Silently fail - we already have data from setup
-      }
-
-      setState(() {
-        _availableExperiments = experimentSet.toList()..sort();
-      });
-    } catch (e) {
-      // Silently fail - experiments list will remain empty
-      print('Error loading experiments for block: $e');
-    }
-  }
-  
   Future<void> _openQMSInNewWindow() async {
     try {
       // Check if a block is selected
@@ -848,6 +709,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   
   Future<void> _openViewScreenInNewWindow() async {
     try {
+      // Project and domain from DB only (no Zoho, no EDA files)
       final projectName = widget.project['name'] ?? '';
       if (projectName.isEmpty) {
         if (mounted) {
@@ -861,25 +723,14 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         return;
       }
 
-      // Get first domain for the project (if available)
-      // Use minimal limit since we only need one file to get domain name
+      // Get first domain from project's domains (project_domains table, DB only)
       String? domainName;
-      try {
-        final token = ref.read(authProvider).token;
-        if (token != null) {
-          final filesResponse = await _apiService.getEdaFiles(
-            token: token,
-            projectName: projectName,
-            limit: 10, // Reduced from 100 to 10 - we only need first file for domain name
-          );
-          final files = filesResponse['files'] ?? [];
-          if (files.isNotEmpty) {
-            final firstFile = files[0];
-            domainName = firstFile['domain_name']?.toString();
-          }
+      final domains = widget.project['domains'];
+      if (domains is List && domains.isNotEmpty) {
+        final firstDomain = domains.first;
+        if (firstDomain is Map) {
+          domainName = firstDomain['name']?.toString();
         }
-      } catch (e) {
-        // Ignore domain loading errors - domain is optional
       }
 
       // Determine view type based on user role
@@ -1140,7 +991,9 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         ),
                 const SizedBox(height: 4),
                 SelectableText(
-                  _currentRunDirectory ?? 'Loading...',
+                  _isLoadingRunDirectory
+                      ? 'Loading...'
+                      : (_currentRunDirectory ?? 'No run directory set'),
                   style: TextStyle(
                     fontSize: 12,
                     color: Theme.of(context).colorScheme.onSurface,

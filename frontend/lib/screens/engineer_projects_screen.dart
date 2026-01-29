@@ -112,10 +112,12 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
     try {
       final authState = ref.read(authProvider);
       final token = authState.token;
+      final userRole = authState.user?['role'];
+      final isAdmin = userRole == 'admin';
 
-      // Load projects with Zoho option
+      // Admin sees only Zoho projects; others use Zoho if connected
       Map<String, dynamic> projectsData;
-      if (_isZohoConnected) {
+      if (isAdmin || _isZohoConnected) {
         projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
       } else {
         final projects = await _apiService.getProjects(token: token);

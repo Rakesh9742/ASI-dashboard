@@ -14,12 +14,15 @@ class ViewScreen extends ConsumerStatefulWidget {
   final String? initialProject;
   final String? initialDomain;
   final String? initialViewType;
-  
+  /// When true (e.g. popout), show only the one project and only linked domains from DB.
+  final bool isStandalone;
+
   const ViewScreen({
     super.key,
     this.initialProject,
     this.initialDomain,
     this.initialViewType,
+    this.isStandalone = false,
   });
 
   @override
@@ -174,20 +177,24 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       final token = authState.token;
       final userRole = authState.user?['role'];
       
-      // Load projects with Zoho option - backend will check if Zoho is connected
-      // This avoids an extra API call to check Zoho status
+      // Standalone (popout): DB only, one project. Else: load with Zoho option.
       Map<String, dynamic> projectsData;
-      try {
-        // Try to load with Zoho first - backend handles gracefully if not connected
-        projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
-      } catch (e) {
-        // If Zoho fails, fallback to regular projects
+      if (widget.isStandalone && widget.initialProject != null && widget.initialProject!.isNotEmpty) {
         final projects = await _apiService.getProjects(token: token);
-        projectsData = {'all': projects, 'local': projects, 'zoho': []};
+        final all = projects is List ? projects : [];
+        final matchName = widget.initialProject!.trim().toLowerCase();
+        final filtered = all.where((p) => (p['name']?.toString().trim().toLowerCase() ?? '') == matchName).toList();
+        projectsData = {'all': filtered.isNotEmpty ? filtered : all, 'local': filtered.isNotEmpty ? filtered : all, 'zoho': []};
+      } else {
+        try {
+          projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
+        } catch (e) {
+          final projects = await _apiService.getProjects(token: token);
+          projectsData = {'all': projects, 'local': projects, 'zoho': []};
+        }
       }
-      
+
       // Set default view type based on user role
-      // Note: Project-specific role will be fetched later and may override this
       String defaultViewType = 'engineer';
       if (userRole == 'management') {
         defaultViewType = 'management';
@@ -196,15 +203,13 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       } else if (userRole == 'customer') {
         defaultViewType = 'customer';
       } else if (userRole == 'admin' || userRole == 'project_manager') {
-        // Admin and project_manager can see manager view, but default to manager (not management)
         defaultViewType = 'manager';
       } else if (userRole == 'lead') {
         defaultViewType = 'lead';
       }
-      
+
       setState(() {
         _projects = projectsData['all'] ?? projectsData['local'] ?? [];
-        // View type will be set based on project-specific role after project is loaded
         _isLoading = false;
       });
       
@@ -1042,186 +1047,37 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       
       final domainSet = <String>{};
       
-      // First, try to get domains from project data (project_domains table)
-      Map<String, dynamic>? matchingProject;
+      // Get domains from project data only (project_domains table, DB). No Zoho, no EDA files.
       try {
-        // Use getProjectsWithZoho to get both local and Zoho projects
-        final projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
-        final allProjects = projectsData['all'] ?? [];
-        
-        matchingProject = allProjects.firstWhere(
-          (p) => (p['name']?.toString() ?? '') == projectName,
-          orElse: () => null,
-        );
-        
-        if (matchingProject != null) {
-          // Check if it's a Zoho project
-          final isZohoProject = matchingProject['source'] == 'zoho' || 
-                                matchingProject['zoho_project_id'] != null;
-          
-          // Check if project has domains array (from project_domains table)
-          final projectDomains = matchingProject['domains'];
+        final allProjects = widget.isStandalone
+            ? _projects
+            : (await _apiService.getProjectsWithZoho(token: token, includeZoho: true))['all'] ?? [];
+        final matchName = projectName.trim().toLowerCase();
+        for (var p in allProjects) {
+          if (p is! Map) continue;
+          final pName = (p['name']?.toString() ?? '').trim().toLowerCase();
+          if (pName != matchName) continue;
+          final projectDomains = p['domains'];
           if (projectDomains is List && projectDomains.isNotEmpty) {
             for (var domain in projectDomains) {
-              if (domain is Map<String, dynamic>) {
+              if (domain is Map) {
                 final domainName = domain['name']?.toString();
                 if (domainName != null && domainName.isNotEmpty) {
-                  domainSet.add(domainName);
+                  final normalized = _normalizeDomainName(domainName);
+                  if (normalized.isNotEmpty) domainSet.add(normalized);
                 }
               }
             }
           }
-          
-          // For Zoho projects, also try to get domains from Zoho tasklists
-          if (isZohoProject && domainSet.isEmpty) {
-            try {
-              final zohoProjectId = matchingProject['zoho_project_id']?.toString();
-              final zohoData = matchingProject['zoho_data'] as Map<String, dynamic>?;
-              final portalId = zohoData?['portal_id']?.toString() ?? 
-                              zohoData?['portal']?.toString();
-              
-              if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
-                print('🔵 [VIEW_SCREEN] Fetching domains from Zoho tasklists for project: $projectName');
-                final tasksResponse = await _apiService.getZohoTasks(
-                  projectId: zohoProjectId,
-                  token: token,
-                  portalId: portalId,
-                );
-                
-                final tasks = tasksResponse['tasks'] ?? [];
-                final tasklistNames = <String>{};
-                
-                for (final task in tasks) {
-                  final tasklistName = (task['tasklist_name'] ?? task['tasklistName'] ?? '').toString();
-                  if (tasklistName.isNotEmpty) {
-                    tasklistNames.add(tasklistName);
-                  }
-                }
-                
-                // Add tasklist names as domains (normalized to avoid duplicates)
-                for (final tasklistName in tasklistNames) {
-                  final normalized = _normalizeDomainName(tasklistName);
-                  if (normalized.isNotEmpty) {
-                    domainSet.add(normalized);
-                  }
-                }
-                
-                print('🔵 [VIEW_SCREEN] Found ${tasklistNames.length} domains from Zoho tasklists: $tasklistNames');
-              }
-            } catch (e) {
-              print('Error loading domains from Zoho tasklists: $e');
-            }
-          }
+          break;
         }
       } catch (e) {
         print('Error loading domains from project data: $e');
       }
-      
-      // Also load EDA files to find domains for this project
-      try {
-        final filesResponse = await _apiService.getEdaFiles(
-          token: token,
-          limit: 1000,
-        );
-        
-        final files = filesResponse['files'] ?? [];
-        
-        for (var file in files) {
-          final projectNameFromFile = file['project_name']?.toString() ?? 'Unknown';
-          final domainName = file['domain_name']?.toString() ?? '';
-          if (projectNameFromFile == projectName && domainName.isNotEmpty) {
-            final normalized = _normalizeDomainName(domainName);
-            if (normalized.isNotEmpty) {
-              domainSet.add(normalized);
-            }
-          }
-        }
-      } catch (e) {
-        print('Error loading domains from EDA files: $e');
-      }
-      
-      // For Zoho projects, also extract domains from run_directory paths
-      // Run directory format: /CX_RUN_NEW/{project}/{domain}/users/{username}/{block}/{experiment}
-      if (matchingProject != null) {
-        try {
-          final isZohoProject = matchingProject['source'] == 'zoho' || 
-                                matchingProject['zoho_project_id'] != null;
-          
-          if (isZohoProject) {
-            // Try to get domains from run directories
-            final runDirectories = matchingProject['run_directories'] as List<dynamic>? ?? [];
-            if (runDirectories.isEmpty) {
-              final runDirectory = matchingProject['run_directory']?.toString();
-              if (runDirectory != null && runDirectory.isNotEmpty) {
-                runDirectories.add(runDirectory);
-              }
-            }
-            
-            // Extract domain from run directory paths
-            // Format: /CX_RUN_NEW/{project}/{domain}/users/...
-            for (var runDir in runDirectories) {
-              final runDirStr = runDir.toString();
-              // Match pattern: /CX_RUN_NEW/{project}/{domain}/
-              final match = RegExp(r'/CX_RUN_NEW/[^/]+/([^/]+)/').firstMatch(runDirStr);
-              if (match != null && match.groupCount >= 1) {
-                final domainFromPath = match.group(1);
-                if (domainFromPath != null && domainFromPath.isNotEmpty) {
-                  final normalized = _normalizeDomainName(domainFromPath);
-                  if (normalized.isNotEmpty) {
-                    domainSet.add(normalized);
-                  }
-                }
-              }
-            }
-            
-            // Also check if project is mapped to local project and get domains from there
-            // Need to fetch projects again to get local projects list
-            final asiProjectId = matchingProject['asi_project_id'];
-            if (asiProjectId != null) {
-              try {
-                final projectsDataForLocal = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
-                final localProjects = projectsDataForLocal['local'] ?? [];
-                final localProject = localProjects.firstWhere(
-                  (p) => p['id'] == asiProjectId,
-                  orElse: () => null,
-                );
-                
-                if (localProject != null) {
-                  final localProjectDomains = localProject['domains'];
-                  if (localProjectDomains is List) {
-                    for (var domain in localProjectDomains) {
-                      if (domain is Map<String, dynamic>) {
-                        final domainName = domain['name']?.toString();
-                        if (domainName != null && domainName.isNotEmpty) {
-                          final normalized = _normalizeDomainName(domainName);
-                          if (normalized.isNotEmpty) {
-                            domainSet.add(normalized);
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              } catch (e) {
-                print('Error loading domains from mapped local project: $e');
-              }
-            }
-          }
-        } catch (e) {
-          print('Error extracting domains from run directories: $e');
-        }
-      }
-      
-      // If initialDomain is provided but not in the found domains, add it to the list
-      // This ensures the domain dropdown shows the passed domain even if it's not in the database yet
-      if (widget.initialDomain != null && 
-          widget.initialDomain!.isNotEmpty) {
-        final normalizedInitial = _normalizeDomainName(widget.initialDomain!);
-        if (normalizedInitial.isNotEmpty && !domainSet.contains(normalizedInitial)) {
-          print('🔵 [VIEW_SCREEN] Initial domain ${widget.initialDomain} (normalized: $normalizedInitial) not found in available domains, adding it to list');
-          domainSet.add(normalizedInitial);
-        }
-      }
+
+      // Only show domains that are linked to this project (project_domains).
+      // Do NOT add initialDomain from URL/link if it's not linked — that would show
+      // two domains (e.g. DV + PD) when the project only has one (e.g. PD).
       
       final availableDomains = domainSet.toList()..sort();
       
@@ -5406,6 +5262,11 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     
     return blockSummaryList;
   }
+
+  List<dynamic> _normalizeProjectsList(Map<dynamic, dynamic> m) {
+    final raw = m['all'] ?? m['local'] ?? <dynamic>[];
+    return raw is List ? List<dynamic>.from(raw) : <dynamic>[];
+  }
   
   // Load block IDs and QMS checklist data
   Future<void> _loadQmsDataForBlocks(List<Map<String, dynamic>> blockSummary) async {
@@ -5415,11 +5276,16 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       final token = ref.read(authProvider).token;
       if (token == null) return;
       
-      // Get project ID
-      final projects = await _apiService.getProjects(token: token);
+      // Get project ID (API may return List or Map with all/local/zoho for Zoho integration)
+      final projectsRaw = await _apiService.getProjects(token: token);
+      final List<dynamic> projectsList = projectsRaw is List
+          ? List<dynamic>.from(projectsRaw as List)
+          : (projectsRaw is Map)
+              ? _normalizeProjectsList(projectsRaw as Map)
+              : <dynamic>[];
       Map<String, dynamic>? project;
       try {
-        project = projects.firstWhere(
+        project = projectsList.firstWhere(
           (p) => (p['name']?.toString().toLowerCase() ?? '') == _selectedProject!.toLowerCase(),
         ) as Map<String, dynamic>?;
       } catch (e) {
@@ -5428,7 +5294,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       
       if (project == null || project['id'] == null) return;
       
-      final projectId = project['id'] as int;
+      // id may be int (local) or string e.g. "zoho_123" (Zoho)
+      final projectId = project['id'];
       
       // Get blocks for this project
       final headers = <String, String>{

@@ -6,6 +6,7 @@ export interface AuthRequest extends Request {
     id: number;
     username: string;
     email: string;
+    /** Global role only: from users table (set at login). Project-based role = user_projects per request. */
     role: string;
   };
 }
@@ -41,6 +42,7 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
       process.env.JWT_SECRET || 'your-secret-key'
     ) as any;
 
+    // req.user.role = global role only (from users table, set at login). Project-based role comes from user_projects per request.
     req.user = {
       id: decoded.id,
       username: decoded.username,

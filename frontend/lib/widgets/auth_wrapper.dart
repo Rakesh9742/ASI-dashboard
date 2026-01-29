@@ -15,6 +15,20 @@ class AuthWrapper extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final authState = ref.watch(authProvider);
+    final apiService = ref.read(apiServiceProvider);
+    // When session expires (401), logout and show login; user sees "Session expired" message
+    apiService.onSessionExpired = () {
+      ref.read(authProvider.notifier).logout();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Session expired. You have been logged out. Please log in again.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    };
     
     // Check if this is a standalone window
     final url = html.window.location.href;

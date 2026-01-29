@@ -2,6 +2,9 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
+  /// When set, called on 401 (session expired). App logs out and shows login (set from AuthWrapper).
+  void Function()? onSessionExpired;
+
   // Backend URL - Use full URL for local development, relative for production
   // In development (Flutter dev server), use http://localhost:3000/api
   // In production (nginx), use relative /api which nginx proxies
@@ -33,6 +36,21 @@ class ApiService {
       headers['Authorization'] = 'Bearer $token';
     }
     return headers;
+  }
+
+  /// Runs request; if token was used and response is 401, triggers onSessionExpired and throws.
+  Future<http.Response> _request(Future<http.Response> Function() fn, {String? token}) async {
+    final response = await fn();
+    _throwIfSessionExpired(response, token);
+    return response;
+  }
+
+  /// Call after any authenticated response; if 401, triggers onSessionExpired and throws.
+  void _throwIfSessionExpired(http.Response response, String? token) {
+    if (token != null && response.statusCode == 401) {
+      onSessionExpired?.call();
+      throw Exception('Session expired. Please log in again.');
+    }
   }
 
   // Health check
@@ -136,9 +154,12 @@ class ApiService {
 
   // Projects
   Future<List<dynamic>> getProjects({String? token}) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/projects'),
-      headers: _getHeaders(token: token),
+    final response = await _request(
+      () => http.get(
+        Uri.parse('$baseUrl/projects'),
+        headers: _getHeaders(token: token),
+      ),
+      token: token,
     );
 
     if (response.statusCode == 200) {
@@ -319,9 +340,12 @@ class ApiService {
 
   // Get all users (admin only) - requires authentication token
   Future<List<dynamic>> getUsers({String? token}) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/auth/users'),
-      headers: _getHeaders(token: token),
+    final response = await _request(
+      () => http.get(
+        Uri.parse('$baseUrl/auth/users'),
+        headers: _getHeaders(token: token),
+      ),
+      token: token,
     );
     
     if (response.statusCode == 200) {
@@ -588,7 +612,7 @@ class ApiService {
     }
   }
 
-  // Sync Zoho project members to ASI project
+  // Sync Zoho project members to ASI project (requires ASI project ID - for mapped projects)
   Future<Map<String, dynamic>> syncZohoProjectMembers({
     required int asiProjectId,
     required String zohoProjectId,
@@ -612,15 +636,71 @@ class ApiService {
     }
   }
 
+  /// Preview what will be added when syncing: project name and domains (for confirmation dialog).
+  /// GET /api/zoho/projects/sync-members/preview
+  Future<Map<String, dynamic>> syncZohoProjectMembersPreview({
+    required String zohoProjectId,
+    String? portalId,
+    String? zohoProjectName,
+    String? token,
+  }) async {
+    final queryParams = <String, String>{
+      'zohoProjectId': zohoProjectId,
+      if (portalId != null && portalId.isNotEmpty) 'portalId': portalId,
+      if (zohoProjectName != null && zohoProjectName.isNotEmpty) 'zohoProjectName': zohoProjectName,
+    };
+    final uri = Uri.parse('$baseUrl/zoho/projects/sync-members/preview').replace(queryParameters: queryParams);
+    final response = await http.get(
+      uri,
+      headers: _getHeaders(token: token),
+    );
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to get sync preview');
+    }
+  }
+
+  /// Sync members from Zoho project by Zoho project ID only (admin-only).
+  /// Backend creates ASI project and domain link if needed, then syncs members.
+  Future<Map<String, dynamic>> syncZohoProjectMembersByZohoId({
+    required String zohoProjectId,
+    String? portalId,
+    String? zohoProjectName,
+    String? domainCode,
+    int? domainId,
+    String? token,
+  }) async {
+    final body = <String, dynamic>{
+      'zohoProjectId': zohoProjectId,
+      if (portalId != null) 'portalId': portalId,
+      if (zohoProjectName != null) 'zohoProjectName': zohoProjectName,
+      if (domainCode != null) 'domainCode': domainCode,
+      if (domainId != null) 'domainId': domainId,
+    };
+    final response = await http.post(
+      Uri.parse('$baseUrl/zoho/projects/sync-members'),
+      headers: _getHeaders(token: token),
+      body: json.encode(body),
+    );
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to sync Zoho project members');
+    }
+  }
+
   // Get projects with Zoho integration option
   Future<Map<String, dynamic>> getProjectsWithZoho({String? token, bool includeZoho = false}) async {
     final uri = includeZoho
         ? Uri.parse('$baseUrl/projects?includeZoho=true')
         : Uri.parse('$baseUrl/projects');
     
-    final response = await http.get(
-      uri,
-      headers: _getHeaders(token: token),
+    final response = await _request(
+      () => http.get(uri, headers: _getHeaders(token: token)),
+      token: token,
     );
     
     if (response.statusCode == 200) {
@@ -988,6 +1068,28 @@ class ApiService {
     }
   }
 
+  // Mark project setup as completed (e.g. when CAD engineer finishes Export to Linux successfully)
+  Future<Map<String, dynamic>> markProjectSetupCompleted({
+    String? projectId,
+    String? projectName,
+    String? token,
+  }) async {
+    final body = <String, dynamic>{};
+    if (projectId != null && projectId.isNotEmpty) body['projectId'] = projectId;
+    if (projectName != null && projectName.isNotEmpty) body['projectName'] = projectName;
+    final response = await http.post(
+      Uri.parse('$baseUrl/projects/mark-setup-completed'),
+      headers: _getHeaders(token: token),
+      body: json.encode(body),
+    );
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? error['message'] ?? 'Failed to mark setup completed');
+    }
+  }
+
   // Save run directory path after setup
   Future<Map<String, dynamic>> saveRunDirectory({
     required String projectName,
@@ -1031,6 +1133,34 @@ class ApiService {
     }
   }
 
+  // Get blocks for a project from DB only (for Setup dialog). projectIdOrName = local id or project name.
+  // filterByAssigned: if true and user is not admin, return only blocks assigned to current user (block_users).
+  Future<List<dynamic>> getProjectBlocks({
+    required dynamic projectIdOrName,
+    bool filterByAssigned = true,
+    String? token,
+  }) async {
+    final projectIdOrNameStr = projectIdOrName.toString();
+    final query = filterByAssigned ? '?filterByAssigned=true' : '';
+    final response = await _request(
+      () => http.get(
+        Uri.parse('$baseUrl/projects/$projectIdOrNameStr/blocks$query'),
+        headers: _getHeaders(token: token),
+      ),
+      token: token,
+    );
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      if (data is Map && data.containsKey('data')) {
+        return data['data'] as List;
+      }
+      return [];
+    } else {
+      final error = json.decode(response.body);
+      throw Exception(error['error'] ?? 'Failed to load blocks');
+    }
+  }
+
   // Get blocks and experiments for a project (from setup data and EDA files)
   // projectIdOrName can be either an int (for local projects), a string like "zoho_123" (for Zoho projects), or project name
   Future<List<dynamic>> getBlocksAndExperiments({
@@ -1038,9 +1168,12 @@ class ApiService {
     String? token,
   }) async {
     final projectIdOrNameStr = projectIdOrName.toString();
-    final response = await http.get(
-      Uri.parse('$baseUrl/projects/$projectIdOrNameStr/blocks-experiments'),
-      headers: _getHeaders(token: token),
+    final response = await _request(
+      () => http.get(
+        Uri.parse('$baseUrl/projects/$projectIdOrNameStr/blocks-experiments'),
+        headers: _getHeaders(token: token),
+      ),
+      token: token,
     );
     
     if (response.statusCode == 200) {

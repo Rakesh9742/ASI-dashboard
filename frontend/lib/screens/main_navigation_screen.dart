@@ -4,7 +4,6 @@ import '../providers/auth_provider.dart';
 import '../providers/tab_provider.dart';
 import '../providers/theme_provider.dart';
 import 'projects_screen.dart';
-import 'project_management_screen.dart';
 import 'user_management_screen.dart';
 import 'semicon_dashboard_screen.dart';
 import 'view_screen.dart';
@@ -60,8 +59,6 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
           project: activeTab.project,
         );
       }
-    } else if (currentNav == 'Project Management' && !isCustomer) {
-      currentScreen = const ProjectManagementScreen();
     } else if (currentNav == 'Users' && isAdmin) {
       currentScreen = const UserManagementScreen();
     } else {
@@ -223,8 +220,6 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   _buildNavTab('Projects', isSelected: currentNav == 'Projects'),
-                  const SizedBox(width: 6),
-                  _buildNavTab('Project Management', isSelected: currentNav == 'Project Management'),
                   if (isAdmin) ...[
                     const SizedBox(width: 6),
                     _buildNavTab('Users', isSelected: currentNav == 'Users'),
@@ -480,8 +475,6 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     IconData icon;
     if (label == 'Projects') {
       icon = Icons.folder_outlined;
-    } else if (label == 'Project Management') {
-      icon = Icons.settings_outlined;
     } else {
       icon = Icons.people_outline;
     }
