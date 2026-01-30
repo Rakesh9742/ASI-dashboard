@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'widgets/auth_wrapper.dart';
 import 'screens/standalone_project_screen.dart';
 import 'screens/standalone_view_screen.dart';
-import 'screens/qms_dashboard_screen.dart';
+import 'screens/standalone_qms_dashboard_screen.dart';
 import 'screens/terminal_screen.dart';
 import 'screens/vnc_screen.dart';
 import 'providers/theme_provider.dart';
@@ -109,31 +109,9 @@ class MyApp extends ConsumerWidget {
           );
         }
         if (settings.name == '/qms-dashboard' || settings.name?.contains('/qms-dashboard') == true) {
-          // Extract blockId from query parameters
-          final uri = Uri.parse(settings.name ?? '');
-          final blockIdStr = uri.queryParameters['blockId'];
-          if (blockIdStr != null) {
-            final blockId = int.tryParse(blockIdStr);
-            if (blockId != null) {
-              return MaterialPageRoute(
-                builder: (context) => QmsDashboardScreen(blockId: blockId),
-              );
-            }
-          }
-          // Fallback: try to get from localStorage
-          try {
-            final storedBlockId = html.window.localStorage['standalone_qms_blockId'];
-            if (storedBlockId != null) {
-              final blockId = int.tryParse(storedBlockId);
-              if (blockId != null) {
-                return MaterialPageRoute(
-                  builder: (context) => QmsDashboardScreen(blockId: blockId),
-                );
-              }
-            }
-          } catch (e) {
-            // Ignore errors
-          }
+          return MaterialPageRoute(
+            builder: (context) => const StandaloneQmsDashboardScreen(),
+          );
         }
         if (settings.name == '/terminal' || settings.name?.contains('/terminal') == true) {
           return MaterialPageRoute(

@@ -1,0 +1,471 @@
+{
+    "stage": "syn",
+    "block_name": "aes_cipher_top2",
+    "rtl_tag": "tag2",
+    "project": "saraswathi1",
+    "timestamp": "2026-01-29 19:20:19",
+    "stage_directory": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top2/exp2/syn",
+    "summary": {
+      "overall_status": "FAIL",
+      "total_checks": 50,
+      "passed_checks": 38,
+      "failed_checks": 3,
+      "warned_checks": 6,
+      "skipped_checks": 2,
+      "pass_rate": 76.0,
+      "critical_failures": [],
+      "recommendations": []
+    },
+    "checks": {
+      "SYN-TL-001": {
+        "check_name": "correct_tool_version",
+        "status": "PASS",
+        "message": "Using Genus 21.18-s082_1",
+        "details": "",
+        "value": "21.18-s082_1",
+        "expected": null,
+        "report_path": null
+      },
+      "SYN-TL-002": {
+        "check_name": "no_rtl_errors",
+        "status": "PASS",
+        "message": "No RTL errors found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": null
+      },
+      "SYN-TL-003": {
+        "check_name": "no_rtl_warnings",
+        "status": "WARN",
+        "message": "Found 4 RTL warnings during read_hdl",
+        "details": "Count: 4 (between read_hdl and elaborate)",
+        "value": 4,
+        "expected": 0,
+        "report_path": null
+      },
+      "SYN-TL-004": {
+        "check_name": "no_unresolved_refs",
+        "status": "PASS",
+        "message": "No unresolved references found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": null
+      },
+      "SYN-TL-005": {
+        "check_name": "no_pin_mismatches",
+        "status": "PASS",
+        "message": "No pin mismatches found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": null
+      },
+      "SYN-TL-006": {
+        "check_name": "no_constraint_errors",
+        "status": "PASS",
+        "message": "No constraint errors found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": null
+      },
+      "SYN-TL-007": {
+        "check_name": "no_constraint_warnings",
+        "status": "PASS",
+        "message": "No constraint warnings found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": null
+      },
+      "SYN-TL-008": {
+        "check_name": "no_synthesis_errors",
+        "status": "PASS",
+        "message": "No synthesis errors found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": null
+      },
+      "SYN-TL-009": {
+        "check_name": "synthesis_warnings_count",
+        "status": "WARN",
+        "message": "Found 3 synthesis warnings (syn_generic/map/opt)",
+        "details": "Check log for specific synthesis warnings.",
+        "value": 3,
+        "expected": 0,
+        "report_path": null
+      },
+      "SYN-SC-001": {
+        "check_name": "clock_gating_coverage",
+        "status": "PASS",
+        "message": "Clock gating coverage (44.0%) is within limit (85.0%)",
+        "details": "",
+        "value": 44.0,
+        "expected": "<= 85.0%",
+        "report_path": null
+      },
+      "latest_cad_version": {
+        "check_name": "latest_cad_version",
+        "status": "PASS",
+        "message": "CAD version check passed (implement based on environment)",
+        "details": "",
+        "value": null,
+        "expected": null,
+        "report_path": null
+      },
+      "correct_rtl_tag": {
+        "check_name": "correct_rtl_tag",
+        "status": "PASS",
+        "message": "Using RTL tag: tag2",
+        "details": "",
+        "value": "tag2",
+        "expected": null,
+        "report_path": null
+      },
+      "SYN-CD-001": {
+        "check_name": "no_unresolved_references",
+        "status": "PASS",
+        "message": "No unresolved references found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_design.rpt"
+      },
+      "SYN-CD-002": {
+        "check_name": "no_empty_modules",
+        "status": "PASS",
+        "message": "No empty modules found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_design.rpt"
+      },
+      "SYN-CD-003": {
+        "check_name": "no_undriven_ports",
+        "status": "PASS",
+        "message": "No undriven port(s) found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_design.rpt"
+      },
+      "SYN-CD-004": {
+        "check_name": "no_undriven_leaf_pins",
+        "status": "PASS",
+        "message": "No undriven leaf pin(s) found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_design.rpt"
+      },
+      "SYN-CD-006": {
+        "check_name": "no_multidriven_ports",
+        "status": "PASS",
+        "message": "No multidriven port(s) found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_design.rpt"
+      },
+      "SYN-CD-005": {
+        "check_name": "no_multidriven_leaf_pins",
+        "status": "PASS",
+        "message": "No multidriven leaf pin(s) found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_design.rpt"
+      },
+      "SYN-CD-007": {
+        "check_name": "preserved_leaf_instances",
+        "status": "PASS",
+        "message": "Preserved leaf instances: 0 (limit 5)",
+        "details": "",
+        "value": 0,
+        "expected": 5,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_design.rpt"
+      },
+      "SYN-CD-008": {
+        "check_name": "preserved_hierarchical_instances",
+        "status": "PASS",
+        "message": "Preserved hierarchical instances: 0 (limit 5)",
+        "details": "",
+        "value": 0,
+        "expected": 5,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_design.rpt"
+      },
+      "SYN-CT-001": {
+        "check_name": "seq_clock_pins_ok",
+        "status": "PASS",
+        "message": "All sequential clock pins have waveforms",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_timing.rpt"
+      },
+      "SYN-CT-002": {
+        "check_name": "endpoints_constrained",
+        "status": "SKIP",
+        "message": "Pattern not found",
+        "details": "",
+        "value": null,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_timing.rpt"
+      },
+      "SYN-CT-003": {
+        "check_name": "inputs_delay_constrained",
+        "status": "FAIL",
+        "message": "Found 130 inputs without external delays",
+        "details": "",
+        "value": 130,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_timing.rpt"
+      },
+      "SYN-CT-004": {
+        "check_name": "outputs_delay_constrained",
+        "status": "FAIL",
+        "message": "Found 1 outputs without external delays",
+        "details": "",
+        "value": 1,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_timing.rpt"
+      },
+      "SYN-CT-005": {
+        "check_name": "conflicting_case_constants",
+        "status": "PASS",
+        "message": "No Pins/ports with conflicting case constants found",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_timing.rpt"
+      },
+      "SYN-CT-006": {
+        "check_name": "master_clock_reachable",
+        "status": "PASS",
+        "message": "Master clock reachability check passed",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_timing.rpt"
+      },
+      "SYN-CT-007": {
+        "check_name": "seq_clock_multi_clock_waveforms",
+        "status": "PASS",
+        "message": "No sequential clock pins with multiple waveforms detected",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_timing.rpt"
+      },
+      "SYN-CT-008": {
+        "check_name": "seq_data_pin_driven_by_clock",
+        "status": "PASS",
+        "message": "No sequential data pins driven by a clock signal detected",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_timing.rpt"
+      },
+      "SYN-CT-009": {
+        "check_name": "no_combinational_loops",
+        "status": "PASS",
+        "message": "No combinational loops detected",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/check_design.combo.loops.rpt"
+      },
+      "SYN-QR-001": {
+        "check_name": "max_logic_levels",
+        "status": "PASS",
+        "message": "All logic levels within threshold 30",
+        "details": "",
+        "value": 23,
+        "expected": 30,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/report_qor.rpt"
+      },
+      "SYN-QR-003": {
+        "check_name": "no_reg2reg_violations",
+        "status": "PASS",
+        "message": "reg2reg slack is positive: 8526.5",
+        "details": "",
+        "value": 8526.5,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/timing_summary.rpt"
+      },
+      "SYN-QR-004": {
+        "check_name": "no_in2reg_violations",
+        "status": "PASS",
+        "message": "in2reg slack is positive: 7462.8",
+        "details": "",
+        "value": 7462.8,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/timing_summary.rpt"
+      },
+      "SYN-QR-005": {
+        "check_name": "no_reg2out_violations",
+        "status": "PASS",
+        "message": "reg2out slack is positive: 7420.8",
+        "details": "",
+        "value": 7420.8,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/timing_summary.rpt"
+      },
+      "SYN-QR-006": {
+        "check_name": "no_in2out_violations",
+        "status": "N/A",
+        "message": "No paths for in2out",
+        "details": "",
+        "value": "N/A",
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/timing_summary.rpt"
+      },
+      "SYN-QR-007": {
+        "check_name": "no_max_tran_violations",
+        "status": "PASS",
+        "message": "No max_transition violations",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/timing_summary.rpt"
+      },
+      "SYN-QR-008": {
+        "check_name": "no_max_cap_violations",
+        "status": "PASS",
+        "message": "No max_capacitance violations",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/timing_summary.rpt"
+      },
+      "SYN-QR-009": {
+        "check_name": "min_pulse_width_violations",
+        "status": "SKIP",
+        "message": "min_period.rpt not found",
+        "details": "",
+        "value": "N/A",
+        "expected": "N/A",
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/min_period.rpt"
+      },
+      "SYN-QR-002": {
+        "check_name": "instance_count_stable",
+        "status": "FAIL",
+        "message": "Leaf instance increase exceeds 5%: +1489",
+        "details": "",
+        "value": 1489,
+        "expected": 417,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/report_qor.rpt"
+      },
+      "proper_elaboration": {
+        "check_name": "proper_elaboration",
+        "status": "WARN",
+        "message": "Elaboration status unclear",
+        "details": "",
+        "value": null,
+        "expected": null,
+        "report_path": null
+      },
+      "synthesis_mapping_ok": {
+        "check_name": "synthesis_mapping_ok",
+        "status": "WARN",
+        "message": "Mapping status unclear",
+        "details": "",
+        "value": null,
+        "expected": null,
+        "report_path": null
+      },
+      "synthesis_optimization_ok": {
+        "check_name": "synthesis_optimization_ok",
+        "status": "WARN",
+        "message": "Optimization status unclear",
+        "details": "",
+        "value": null,
+        "expected": null,
+        "report_path": null
+      },
+      "clock_gating_insertion": {
+        "check_name": "clock_gating_insertion",
+        "status": "WARN",
+        "message": "Clock gating status unclear",
+        "details": "",
+        "value": null,
+        "expected": null,
+        "report_path": null
+      },
+      "SYN-SC-015": {
+        "check_name": "netlist_generated",
+        "status": "PASS",
+        "message": "Netlist generated successfully (1076694 bytes)",
+        "details": "",
+        "value": 1076694,
+        "expected": null,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/outputs/aes_cipher_top.v"
+      },
+      "SYN-SC-016": {
+        "check_name": "sdc_generated",
+        "status": "PASS",
+        "message": "Sdc generated successfully (204291 bytes)",
+        "details": "",
+        "value": 204291,
+        "expected": null,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/outputs/aes_cipher_top.sdc"
+      },
+      "reports_complete": {
+        "check_name": "reports_complete",
+        "status": "PASS",
+        "message": "All expected reports generated",
+        "details": "",
+        "value": null,
+        "expected": null,
+        "report_path": null
+      },
+      "proper_icg_cells": {
+        "check_name": "proper_icg_cells",
+        "status": "PASS",
+        "message": "Proper ICG cells used for clock gating - check passed",
+        "details": "",
+        "value": null,
+        "expected": null,
+        "report_path": null
+      },
+      "valid_parameters": {
+        "check_name": "valid_parameters",
+        "status": "PASS",
+        "message": "All parameters instantiated with valid values - check passed",
+        "details": "",
+        "value": null,
+        "expected": null,
+        "report_path": null
+      },
+      "proper_uncertainty": {
+        "check_name": "proper_uncertainty",
+        "status": "PASS",
+        "message": "Proper uncertainty applied for all clocks - check passed",
+        "details": "",
+        "value": null,
+        "expected": null,
+        "report_path": null
+      },
+      "correct_derating": {
+        "check_name": "correct_derating",
+        "status": "PASS",
+        "message": "All derating factors applied correctly - check passed",
+        "details": "",
+        "value": null,
+        "expected": null,
+        "report_path": null
+      },
+      "SYN-SC-014": {
+        "check_name": "optimal_drive_strength",
+        "status": "PASS",
+        "message": "No high drive strength cells found in the design",
+        "details": "",
+        "value": 0,
+        "expected": 0,
+        "report_path": "/CX_PROJ/ganga/pd/users/bhavya/tag2/aes_cipher_top/exp_test1/syn/reports/high_drive_cell_check.rpt"
+      }
+    }
+  }

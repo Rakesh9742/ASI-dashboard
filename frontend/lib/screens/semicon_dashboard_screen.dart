@@ -74,8 +74,15 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   /// Local project identifier for API calls (DB only, no Zoho). Prefer local id, else project name.
   dynamic get _localProjectIdentifier {
     final rawId = widget.project['id'];
+    final source = widget.project['source']?.toString();
+    final zohoProjectId = widget.project['zoho_project_id']?.toString();
     final name = widget.project['name']?.toString() ?? '';
-    final isLocalId = rawId is int || (rawId is String && rawId.toString().isNotEmpty && !rawId.toString().startsWith('zoho_'));
+    if (rawId is String && rawId.startsWith('zoho_')) return rawId;
+    if (source == 'zoho' || (zohoProjectId != null && zohoProjectId.isNotEmpty)) {
+      return 'zoho_${zohoProjectId ?? rawId}';
+    }
+    final isLocalId = rawId is int ||
+        (rawId is String && rawId.toString().isNotEmpty && !rawId.toString().startsWith('zoho_'));
     return isLocalId ? rawId : (name.isNotEmpty ? name : rawId);
   }
 

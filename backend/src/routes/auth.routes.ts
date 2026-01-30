@@ -440,6 +440,16 @@ router.put('/users/:id', authenticate, async (req, res) => {
 
     const { ssh_user, sshpassword, full_name, role, domain_id, is_active, run_directory } = req.body;
 
+    // Check if run_directory column exists
+    const columnCheck = await pool.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'users'
+        AND column_name = 'run_directory'
+    `);
+    const hasRunDirectory = columnCheck.rows.length > 0;
+
     // Get IP and port from environment variables (hardcoded)
     const ipaddress = process.env.SSH_IP || null;
     let port = null;
@@ -516,7 +526,7 @@ router.put('/users/:id', authenticate, async (req, res) => {
         values.push(null);
       }
     }
-    if (run_directory !== undefined) {
+    if (hasRunDirectory && run_directory !== undefined) {
       updates.push(`run_directory = $${paramCount++}`);
       values.push(run_directory || null);
     }
@@ -526,9 +536,10 @@ router.put('/users/:id', authenticate, async (req, res) => {
     }
 
     values.push(userId);
+    const returningRunDirectory = hasRunDirectory ? ', run_directory' : '';
     const query = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount}
-                   RETURNING id, username, email, full_name, role, domain_id, is_active, 
-                             created_at, ipaddress, port, ssh_user, run_directory`;
+                   RETURNING id, username, email, full_name, role, domain_id, is_active,
+                             created_at, ipaddress, port, ssh_user${returningRunDirectory}`;
 
     const result = await pool.query(query, values);
 

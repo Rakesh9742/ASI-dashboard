@@ -631,114 +631,97 @@ router.post(
 );
 
 /**
+ * POST /api/qms/checklists/backfill-default-template
+ * Backfill default checklist template for all existing block+experiment pairs.
+ */
+router.post(
+  '/checklists/backfill-default-template',
+  authenticate,
+  authorize('admin', 'project_manager', 'lead'),
+  async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || null;
+      const result = await qmsService.backfillDefaultChecklistsForAllExperiments(userId);
+      res.json({
+        success: true,
+        message: 'Default checklists backfilled',
+        ...result,
+      });
+    } catch (error: any) {
+      console.error('Error backfilling default checklists:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
  * POST /api/qms/external/checklists/:checklistId/items/upload-report
- * External API endpoint for uploading CSV reports to check items
+ * External API endpoint for uploading JSON reports to a checklist
  * Requires API key authentication via X-API-Key header
  * Accepts file upload or report_path
  */
 router.post(
   '/external/checklists/:checklistId/items/upload-report',
   authenticateApiKey,
-  csvUpload.single('file'),
+  async (req, res) => {
+    res.status(410).json({
+      error: 'Endpoint moved',
+      message: 'Use /api/qms/external-checklists/upload-report with report_path (JSON).'
+    });
+  }
+);
+
+/**
+ * POST /api/qms/external-checklists/upload-report
+ * External API endpoint for uploading JSON reports without checklist id in URL
+ * Requires API key authentication via X-API-Key header
+ * Accepts report_path only (JSON file path)
+ */
+router.post(
+  '/external-checklists/upload-report',
+  authenticateApiKey,
   async (req, res) => {
     try {
-      const checklistId = parseInt(req.params.checklistId, 10);
-      const { check_id, report_path, signoff, result_value, comments } = req.body;
-      const file = (req as any).file as Express.Multer.File;
-      
-      if (isNaN(checklistId)) {
-        return res.status(400).json({ error: 'Invalid checklist ID' });
-      }
-
-      if (!check_id) {
-        return res.status(400).json({ error: 'check_id is required' });
-      }
-
-      // Get check item by check_id (name) and checklist_id
-      const checkItemResult = await pool.query(
-        'SELECT id FROM check_items WHERE checklist_id = $1 AND name = $2',
-        [checklistId, check_id]
-      );
-
-      if (checkItemResult.rows.length === 0) {
-        return res.status(404).json({ 
-          error: 'Check item not found',
-          message: `No check item found with check_id "${check_id}" in checklist ${checklistId}`
+      const { report_path } = req.body;
+      if (!report_path) {
+        return res.status(400).json({
+          error: 'report_path is required',
+          message: 'Provide JSON report_path in request body'
         });
       }
 
-      const checkItemId = checkItemResult.rows[0].id;
-      
-      // Determine report path: use uploaded file path or provided report_path
-      let finalReportPath: string;
-      if (file) {
-        // Use uploaded file path
-        finalReportPath = file.path;
-      } else if (report_path) {
-        // Use provided report_path (must exist on server)
-        if (!fs.existsSync(report_path)) {
-          return res.status(400).json({ 
-            error: 'Report file not found',
-            message: `The file at ${report_path} does not exist on the server`
-          });
-        }
-        finalReportPath = report_path;
-      } else {
-        return res.status(400).json({ 
-          error: 'No file or report_path provided',
-          message: 'Either upload a file using the "file" field or provide "report_path" in form data'
+      if (!fs.existsSync(report_path)) {
+        return res.status(400).json({
+          error: 'Report file not found',
+          message: `The file at ${report_path} does not exist on the server`
         });
       }
 
-      // Execute fill action (processes CSV/JSON and updates check item)
-      // Note: We need a system user ID for audit logging. Use 1 (admin) or create a system user
-      const systemUserId = 1; // Default to admin user for external API calls
-      
-      const reportData = await qmsService.executeFillAction(
-        checkItemId, 
-        finalReportPath, 
-        systemUserId,
-        {
-          signoff_status: signoff,
-          result_value: result_value,
-          engineer_comments: comments
-        }
-      );
-
-      // Clean up uploaded file if it was uploaded (not using existing path)
-      if (file && fs.existsSync(file.path)) {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (unlinkError) {
-          console.warn('Failed to delete uploaded file:', unlinkError);
-        }
+      if (!report_path.toLowerCase().endsWith('.json')) {
+        return res.status(400).json({
+          error: 'Invalid report file type',
+          message: 'Only JSON report files are supported'
+        });
       }
+
+      const systemUserId = 1;
+      const result = await qmsService.applyExternalSynReport(report_path, systemUserId);
+      console.log(
+        `✅ [QMS EXTERNAL] checklist_id=${result.checklist_id} updated=${result.updated} ` +
+        `missing_check_ids=${result.missing_check_ids.join(', ')} ` +
+        `extra_check_ids=${result.extra_check_ids.join(', ')}`
+      );
 
       res.json({
         success: true,
         message: 'Report uploaded and processed successfully',
-        data: {
-          check_item_id: checkItemId,
-          check_id: check_id,
-          report_path: finalReportPath,
-          rows_count: Array.isArray(reportData) ? reportData.length : 1,
-          processed_at: new Date().toISOString()
-        }
+        report_path,
+        processed_at: new Date().toISOString(),
+        ...result
       });
     } catch (error: any) {
-      // Clean up uploaded file on error
-      if ((req as any).file && fs.existsSync((req as any).file.path)) {
-        try {
-          fs.unlinkSync((req as any).file.path);
-        } catch (unlinkError) {
-          console.warn('Failed to delete uploaded file on error:', unlinkError);
-        }
-      }
-      console.error('Error uploading report via external API:', error);
-      res.status(500).json({ 
-        success: false,
-        error: error.message || 'An error occurred while processing the report'
-      });
+      console.error('Error uploading report:', error);
+      res.status(500).json({ error: error.message });
     }
   }
 );

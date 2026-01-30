@@ -56,6 +56,39 @@ class QmsStatusBadge extends StatelessWidget {
           'color': Colors.grey,
           'icon': Icons.pending,
         };
+      case 'pass':
+        return {
+          'label': 'Pass',
+          'color': Colors.green.shade700,
+          'icon': Icons.check_circle,
+        };
+      case 'fail':
+        return {
+          'label': 'Fail',
+          'color': Colors.red,
+          'icon': Icons.cancel,
+        };
+      case 'warn':
+      case 'warning':
+        return {
+          'label': 'Warn',
+          'color': Colors.orange,
+          'icon': Icons.warning,
+        };
+      case 'skip':
+      case 'skipped':
+        return {
+          'label': 'Skip',
+          'color': Colors.blueGrey,
+          'icon': Icons.skip_next,
+        };
+      case 'n/a':
+      case 'na':
+        return {
+          'label': 'N/A',
+          'color': Colors.blueGrey,
+          'icon': Icons.remove_circle_outline,
+        };
       case 'in_review':
         return {
           'label': 'In Review',
@@ -96,9 +129,9 @@ class QmsStatusBadge extends StatelessWidget {
       case 'draft':
       default:
         return {
-          'label': 'Draft',
-          'color': Colors.grey.shade600,
-          'icon': Icons.edit,
+          'label': 'Pending',
+          'color': Colors.grey,
+          'icon': Icons.pending,
         };
     }
   }

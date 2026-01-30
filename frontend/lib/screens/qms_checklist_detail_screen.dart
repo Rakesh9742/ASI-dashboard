@@ -1156,6 +1156,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                               // Define explicit column widths to ensure perfect alignment
                               const double colCheckbox = 50;
                               const double colCheckId = 120;
+                              const double colCheckName = 180;
                               const double colCategory = 150;
                               const double colSubCategory = 150;
                               const double colDescription = 300;
@@ -1171,29 +1172,27 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                               const double colComments = 200;
                               const double colReviewerComments = 200;
                               const double colSignoff = 120;
-                              const double colAuto = 80;
-
-                              const double totalWidth = colCheckbox + colCheckId + colCategory + colSubCategory + colDescription + colSeverity + colBronze + colSilver + colGold + colInfo + colEvidence + colReportPath + colResult + colStatus + colComments + colReviewerComments + colSignoff + colAuto;
+                              const double totalWidth = colCheckbox + colCheckId + colCheckName + colCategory + colSubCategory + colDescription + colSeverity + colBronze + colSilver + colGold + colInfo + colEvidence + colReportPath + colResult + colStatus + colComments + colReviewerComments + colSignoff;
 
                               final columnWidths = {
                                 0: const FixedColumnWidth(colCheckbox),
                                 1: const FixedColumnWidth(colCheckId),
-                                2: const FixedColumnWidth(colCategory),
-                                3: const FixedColumnWidth(colSubCategory),
-                                4: const FixedColumnWidth(colDescription),
-                                5: const FixedColumnWidth(colSeverity),
-                                6: const FixedColumnWidth(colBronze),
-                                7: const FixedColumnWidth(colSilver),
-                                8: const FixedColumnWidth(colGold),
-                                9: const FixedColumnWidth(colInfo),
-                                10: const FixedColumnWidth(colEvidence),
-                                11: const FixedColumnWidth(colReportPath),
-                                12: const FixedColumnWidth(colResult),
-                                13: const FixedColumnWidth(colStatus),
-                                14: const FixedColumnWidth(colComments),
-                                15: const FixedColumnWidth(colReviewerComments),
-                                16: const FixedColumnWidth(colSignoff),
-                                17: const FixedColumnWidth(colAuto),
+                                2: const FixedColumnWidth(colCheckName),
+                                3: const FixedColumnWidth(colCategory),
+                                4: const FixedColumnWidth(colSubCategory),
+                                5: const FixedColumnWidth(colDescription),
+                                6: const FixedColumnWidth(colSeverity),
+                                7: const FixedColumnWidth(colBronze),
+                                8: const FixedColumnWidth(colSilver),
+                                9: const FixedColumnWidth(colGold),
+                                10: const FixedColumnWidth(colInfo),
+                                11: const FixedColumnWidth(colEvidence),
+                                12: const FixedColumnWidth(colReportPath),
+                                13: const FixedColumnWidth(colResult),
+                                14: const FixedColumnWidth(colStatus),
+                                15: const FixedColumnWidth(colComments),
+                                16: const FixedColumnWidth(colReviewerComments),
+                                17: const FixedColumnWidth(colSignoff),
                               };
 
                               Widget buildHeaderCell(Widget child) {
@@ -1272,6 +1271,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                                                     ),
                                                   ),
                                                   buildHeaderCell(_buildHeaderFilter(title: 'Check ID', value: _selectedCheckId, options: checkIdOptions, onChanged: (v) => setState(() { _selectedCheckId = v; _currentPage = 0; }))),
+                                                  buildHeaderCell(Text('Check Name', style: TextStyle(color: Theme.of(context).colorScheme.onSurface, fontWeight: FontWeight.bold, fontSize: 13))),
                                                   buildHeaderCell(_buildHeaderFilter(title: 'Category', value: _selectedCategory, options: categoryOptions, onChanged: (v) => setState(() { _selectedCategory = v; _currentPage = 0; }))),
                                                   buildHeaderCell(_buildHeaderFilter(title: 'Sub-Category', value: _selectedSubCategory, options: subCategoryOptions, onChanged: (v) => setState(() { _selectedSubCategory = v; _currentPage = 0; }))),
                                                   buildHeaderCell(Text('Check Description', style: TextStyle(color: Theme.of(context).colorScheme.onSurface, fontWeight: FontWeight.bold, fontSize: 13))),
@@ -1287,7 +1287,6 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                                                   buildHeaderCell(Text('Comments', style: TextStyle(color: Theme.of(context).colorScheme.onSurface, fontWeight: FontWeight.bold, fontSize: 13))),
                                                   buildHeaderCell(Text('Reviewer Comments', style: TextStyle(color: Theme.of(context).colorScheme.onSurface, fontWeight: FontWeight.bold, fontSize: 13))),
                                                   buildHeaderCell(Text('Signoff', style: TextStyle(color: Theme.of(context).colorScheme.onSurface, fontWeight: FontWeight.bold, fontSize: 13))),
-                                                  buildHeaderCell(Text('Auto', style: TextStyle(color: Theme.of(context).colorScheme.onSurface, fontWeight: FontWeight.bold, fontSize: 13))),
                                                 ],
                                               ),
                                             ],
@@ -1313,8 +1312,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                                                   final approval = item['approval'];
                                                   final status = reportData?['status'] ?? 'pending';
                                                   final signoffStatus = reportData?['signoff_status'] ?? 'N/A';
-                                                  final autoApprove = item['auto_approve'] ?? false;
-
+                                                  final checkName = item['check_name']?.toString() ?? 'N/A';
                                                   const baseTextStyle = TextStyle(
                                                     fontSize: 13,
                                                     color: Colors.black87,
@@ -1402,6 +1400,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                                                           style: baseTextStyle.copyWith(fontWeight: FontWeight.w600, color: const Color(0xFF14B8A6)),
                                                         ),
                                                       ),
+                                                      buildBodyCell(Text(checkName, style: baseTextStyle, overflow: TextOverflow.ellipsis)),
                                                       buildBodyCell(Text(item['category'] ?? 'N/A', style: baseTextStyle, overflow: TextOverflow.ellipsis)),
                                                       buildBodyCell(Text(item['sub_category'] ?? 'N/A', style: baseTextStyle, overflow: TextOverflow.ellipsis)),
                                                       buildBodyCell(
@@ -1466,14 +1465,6 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                                                             fontWeight: signoffStatus != 'N/A' ? FontWeight.w500 : FontWeight.normal,
                                                           ),
                                                         ),
-                                                      ),
-                                                      buildBodyCell(
-                                                        Icon(
-                                                          autoApprove ? Icons.check_circle : Icons.cancel,
-                                                          color: autoApprove ? Colors.green : Colors.grey,
-                                                          size: 20,
-                                                        ),
-                                                        alignment: Alignment.center,
                                                       ),
                                                     ],
                                                   );
