@@ -564,20 +564,24 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
             return techNode && techNode !== null && techNode !== '' && techNode !== 'N/A';
           });
 
-          // Combine local DB projects with Zoho projects (no mapped/unmapped logic)
+          // Exclude local projects that are mapped to a Zoho project (so same project doesn't appear twice)
+          const mappedLocalProjectIds = new Set(projectMappings.values());
+          const localOnlyProjects = filteredLocalProjects.filter((p: any) => !mappedLocalProjectIds.has(p.id));
+
+          // Combine: local-only projects + Zoho projects (mapped projects appear only as Zoho)
           const allProjects = [
-            ...filteredLocalProjects,
+            ...localOnlyProjects,
             ...zohoProjectsWithTechNode
           ];
 
-          console.log(`Total projects: ${allProjects.length} (${filteredLocalProjects.length} local from DB, ${zohoProjectsWithTechNode.length} Zoho)`);
+          console.log(`Total projects: ${allProjects.length} (${localOnlyProjects.length} local-only, ${zohoProjectsWithTechNode.length} Zoho; ${filteredLocalProjects.length - localOnlyProjects.length} local hidden as mapped)`);
 
           return res.json({
-            local: filteredLocalProjects,
+            local: localOnlyProjects,
             zoho: zohoProjectsWithTechNode,
             all: allProjects,
             counts: {
-              local: filteredLocalProjects.length,
+              local: localOnlyProjects.length,
               zoho: zohoProjectsWithTechNode.length,
               total: allProjects.length
             }
