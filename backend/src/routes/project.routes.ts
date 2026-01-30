@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import { pool } from '../config/database';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import zohoService from '../services/zoho.service';
+import qmsService from '../services/qms.service';
 
 const router = express.Router();
 
@@ -814,15 +815,41 @@ router.get(
       }
 
       let projectId: number | null = null;
-      const numericId = parseInt(projectIdOrName, 10);
-      if (!Number.isNaN(numericId) && String(numericId) === projectIdOrName) {
-        projectId = numericId;
-      } else {
-        const byName = await pool.query(
-          'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
-          [projectIdOrName]
+      if (projectIdOrName.startsWith('zoho_')) {
+        const zohoId = projectIdOrName.replace('zoho_', '');
+        const mappingResult = await pool.query(
+          'SELECT local_project_id FROM zoho_projects_mapping WHERE zoho_project_id = $1 OR zoho_project_id::text = $1',
+          [zohoId]
         );
-        if (byName.rows.length > 0) projectId = byName.rows[0].id;
+        if (mappingResult.rows.length > 0 && mappingResult.rows[0].local_project_id) {
+          projectId = mappingResult.rows[0].local_project_id;
+        }
+        if (!projectId) {
+          return res.json({ success: true, data: [] });
+        }
+      } else {
+        const numericId = parseInt(projectIdOrName, 10);
+        if (!Number.isNaN(numericId) && String(numericId) === projectIdOrName) {
+          const byIdResult = await pool.query(
+            'SELECT id FROM projects WHERE id = $1',
+            [numericId]
+          );
+          if (byIdResult.rows.length > 0) {
+            projectId = byIdResult.rows[0].id;
+          } else {
+            const byName = await pool.query(
+              'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
+              [projectIdOrName]
+            );
+            if (byName.rows.length > 0) projectId = byName.rows[0].id;
+          }
+        } else {
+          const byName = await pool.query(
+            'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
+            [projectIdOrName]
+          );
+          if (byName.rows.length > 0) projectId = byName.rows[0].id;
+        }
       }
 
       if (projectId == null) {
@@ -2133,7 +2160,8 @@ router.post(
       );
 
       let runId: number;
-      if (runResult.rows.length > 0) {
+      const isNewRun = runResult.rows.length === 0;
+      if (!isNewRun) {
         runId = runResult.rows[0].id;
         // Update run_directory and ensure rtl_tag is set (in case it was NULL)
         await client.query(
@@ -2170,6 +2198,14 @@ router.post(
       );
 
       await client.query('COMMIT');
+
+      if (isNewRun) {
+        try {
+          await qmsService.ensureDefaultChecklistForBlockExperiment(blockId, sanitizedExperimentName, userId);
+        } catch (qmsError: any) {
+          console.error('Error auto-creating default checklist template:', qmsError?.message || qmsError);
+        }
+      }
 
       res.json({
         success: true,
@@ -2237,7 +2273,20 @@ router.get(
       } else {
         const parsedId = parseInt(projectIdOrName, 10);
         if (!Number.isNaN(parsedId) && String(parsedId) === projectIdOrName) {
-          projectId = parsedId;
+          const byIdResult = await client.query(
+            'SELECT id FROM projects WHERE id = $1',
+            [parsedId]
+          );
+          if (byIdResult.rows.length > 0) {
+            projectId = byIdResult.rows[0].id;
+          } else {
+            // If numeric ID doesn't exist, try treating it as a project name
+            const projectResult = await client.query(
+              'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',
+              [projectIdOrName]
+            );
+            if (projectResult.rows.length > 0) projectId = projectResult.rows[0].id;
+          }
         } else {
           const projectResult = await client.query(
             'SELECT id FROM projects WHERE LOWER(name) = LOWER($1)',

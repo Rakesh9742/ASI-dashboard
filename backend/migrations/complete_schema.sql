@@ -336,7 +336,7 @@ CREATE TABLE IF NOT EXISTS check_items (
     gold VARCHAR(50),
     info TEXT,
     evidence TEXT,
-    auto_approve BOOLEAN DEFAULT false,
+    check_name VARCHAR(255),
     version VARCHAR(50) DEFAULT 'v1',
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

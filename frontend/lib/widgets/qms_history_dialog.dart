@@ -494,9 +494,7 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
     const double colComments = 200;
     const double colRevComments = 200;
     const double colSignoff = 150;
-    const double colAuto = 80;
-
-    final totalWidth = colId + colCat + colSub + colDesc + colSev + colBronze + colSilver + colGold + colInfo + colEvidence + colReport + colResult + colStatus + colComments + colRevComments + colSignoff + colAuto;
+    final totalWidth = colId + colCat + colSub + colDesc + colSev + colBronze + colSilver + colGold + colInfo + colEvidence + colReport + colResult + colStatus + colComments + colRevComments + colSignoff;
 
     final columnWidths = {
       0: const FixedColumnWidth(colId),
@@ -515,7 +513,6 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
       13: const FixedColumnWidth(colComments),
       14: const FixedColumnWidth(colRevComments),
       15: const FixedColumnWidth(colSignoff),
-      16: const FixedColumnWidth(colAuto),
     };
 
     // Get filter options for headers
@@ -566,7 +563,6 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
                             _buildHeaderCell('Comments'),
                             _buildHeaderCell('Reviewer Comments'),
                             _buildHeaderCell('Signoff'),
-                            _buildHeaderCell('Auto'),
                           ]),
                         ],
                       ),
@@ -601,11 +597,6 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
                                 _buildBodyCell(Text(item['engineer_comments'] ?? 'No comments', maxLines: 2, overflow: TextOverflow.ellipsis)),
                                 _buildBodyCell(Text(item['approval_comments'] ?? 'No comments', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontStyle: FontStyle.italic))),
                                 _buildBodyCell(Text(item['signoff_status'] ?? 'N/A')),
-                                _buildBodyCell(Icon(
-                                  item['auto_approve'] == true ? Icons.check_circle : Icons.cancel,
-                                  color: item['auto_approve'] == true ? Colors.green : Colors.grey,
-                                  size: 16,
-                                )),
                               ],
                             );
                           }).toList(),
