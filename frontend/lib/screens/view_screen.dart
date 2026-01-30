@@ -702,8 +702,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Hide header for customers and management - they don't need project/domain selection
-                if (_viewType != 'customer' && _viewType != 'management') ...[
+                // Hide header for customers - other views should show project/domain and view tabs
+                if (_viewType != 'customer') ...[
                 _buildHeader(),
                 const SizedBox(height: 24),
                 ],
@@ -7132,12 +7132,17 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     return SingleChildScrollView(
       child: Padding(
         padding: const EdgeInsets.all(24.0),
-        child: Wrap(
-          spacing: 24,
-          runSpacing: 24,
-          children: _managementProjects.map<Widget>((project) {
-            return _buildProjectCard(project as Map<String, dynamic>);
-          }).toList(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 24,
+              runSpacing: 24,
+              children: _managementProjects.map<Widget>((project) {
+                return _buildProjectCard(project as Map<String, dynamic>);
+              }).toList(),
+            ),
+          ],
         ),
       ),
     );

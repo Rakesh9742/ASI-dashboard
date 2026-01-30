@@ -10,14 +10,19 @@ import 'qms_checklist_detail_screen.dart';
 
 class QmsDashboardScreen extends ConsumerStatefulWidget {
   final int blockId;
+  final bool isStandalone;
 
-  const QmsDashboardScreen({super.key, required this.blockId});
+  const QmsDashboardScreen({
+    super.key,
+    required this.blockId,
+    this.isStandalone = false,
+  });
 
   @override
-  ConsumerState<QmsDashboardScreen> createState() => _QmsDashboardScreenState();
+  ConsumerState<QmsDashboardScreen> createState() => QmsDashboardScreenState();
 }
 
-class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
+class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
   final QmsService _qmsService = QmsService();
   bool _isLoading = true;
   bool _isUploading = false;
@@ -35,6 +40,10 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
   void initState() {
     super.initState();
     _loadData();
+  }
+
+  void refreshData() {
+    _refreshData();
   }
 
   @override
@@ -451,17 +460,19 @@ class _QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('QMS Dashboard'),
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _refreshData,
-            tooltip: 'Refresh',
-          ),
-        ],
-      ),
+      appBar: widget.isStandalone
+          ? null
+          : AppBar(
+              title: const Text('QMS Dashboard'),
+              elevation: 0,
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: refreshData,
+                  tooltip: 'Refresh',
+                ),
+              ],
+            ),
       body: RefreshIndicator(
         onRefresh: _loadData,
         child: SingleChildScrollView(

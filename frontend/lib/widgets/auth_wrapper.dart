@@ -6,6 +6,7 @@ import '../screens/login_screen.dart';
 import '../screens/main_navigation_screen.dart';
 import '../screens/standalone_project_screen.dart';
 import '../screens/standalone_view_screen.dart';
+import '../screens/standalone_qms_dashboard_screen.dart';
 import '../screens/terminal_screen.dart';
 import '../screens/vnc_screen.dart';
 
@@ -34,6 +35,7 @@ class AuthWrapper extends ConsumerWidget {
     final url = html.window.location.href;
     final isStandaloneProject = url.contains('#/project');
     final isStandaloneView = url.contains('#/view');
+    final isStandaloneQms = url.contains('#/qms-dashboard');
     final isTerminal = url.contains('#/terminal');
     final isVnc = url.contains('#/vnc');
 
@@ -60,6 +62,9 @@ class AuthWrapper extends ConsumerWidget {
     // If standalone view window, show view screen
     if (isStandaloneView) {
       return const StandaloneViewScreen();
+    }
+    if (isStandaloneQms) {
+      return const StandaloneQmsDashboardScreen();
     }
     
     // Otherwise show main navigation
