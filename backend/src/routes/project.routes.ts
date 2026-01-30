@@ -41,7 +41,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     const userId = (req as any).user?.id;
     const userRole = (req as any).user?.role;
     
-    // Admin sees ONLY Zoho projects (no local projects). Non-admin: never use Zoho for projects (DB only).
+    // Admin prefers Zoho projects when connected; when Zoho not connected, admin sees local projects too.
     const adminZohoOnly = userRole === 'admin';
     const effectiveIncludeZoho = userRole === 'admin' && (includeZoho === 'true' || includeZoho === '1' || adminZohoOnly);
     
@@ -97,12 +97,8 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     // SSH username not used for GET /api/projects - skip to avoid slow SSH timeouts for all roles
     const userUsername: string | null = null;
 
-    // Get local projects (skip for admin - admin sees only Zoho projects)
-    let result: { rows: any[] };
-    if (adminZohoOnly) {
-      result = { rows: [] };
-    } else {
-      result = await pool.query(
+    // Get local projects (admin also gets local projects; when Zoho not connected, admin sees them)
+    const result = await pool.query(
         `
         SELECT 
           p.*,
@@ -157,7 +153,6 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       `,
         userUsername ? [...queryParams, userUsername] : queryParams
       );
-    }
 
     // Build local projects — exported_to_linux from projects table only (no other tables)
     const localProjects = result.rows.map((p: any) => {
@@ -588,16 +583,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
             }
           });
         } else {
-          // Zoho not connected
-          if (adminZohoOnly) {
-            return res.json({
-              local: [],
-              zoho: [],
-              all: [],
-              counts: { local: 0, zoho: 0, total: 0 },
-              message: 'Connect Zoho to see projects. Admin sees only Zoho projects.'
-            });
-          }
+          // Zoho not connected — show local projects for everyone (including admin)
           return res.json({
             local: filteredLocalProjects,
             zoho: [],
@@ -607,20 +593,14 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
               zoho: 0,
               total: filteredLocalProjects.length
             },
-            message: 'Zoho Projects not connected. Use /api/zoho/auth to connect.'
+            message: adminZohoOnly
+              ? 'Zoho not connected. Showing local projects. Connect Zoho to see Zoho projects.'
+              : 'Zoho Projects not connected. Use /api/zoho/auth to connect.'
           });
         }
       } catch (zohoError: any) {
         console.error('Error fetching Zoho projects:', zohoError);
-        if (adminZohoOnly) {
-          return res.json({
-            local: [],
-            zoho: [],
-            all: [],
-            counts: { local: 0, zoho: 0, total: 0 },
-            error: `Failed to fetch Zoho projects: ${zohoError.message}`
-          });
-        }
+        // On Zoho error, show local projects for everyone (including admin)
         return res.json({
           local: filteredLocalProjects,
           zoho: [],
@@ -1302,21 +1282,24 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
     const effectiveRole = projectRole || globalRole;
     
     // Determine available view types based on role
-    // IMPORTANT: Users with 'admin' role from project profile (Zoho) should have same access as global admins
+    // Admin: all views. Manager: engineer, lead, manager. Lead: engineer, lead. CAD: cad only.
     const availableViewTypes: string[] = [];
     if (effectiveRole === 'management') {
       // Management role only sees management view
       availableViewTypes.push('management');
     } else if (effectiveRole === 'cad_engineer') {
-      // CAD engineer has a dedicated CAD view
+      // CAD can see only CAD view
       availableViewTypes.push('cad');
     } else if (effectiveRole === 'engineer' || effectiveRole === 'customer') {
       availableViewTypes.push('engineer');
     } else if (effectiveRole === 'lead') {
+      // Lead can see engineer view and lead view of that project
       availableViewTypes.push('engineer', 'lead');
-    } else if (effectiveRole === 'project_manager' || effectiveRole === 'admin') {
-      // Admins (both global and project-specific from Zoho) and PMs can see all views
-      // This includes: engineer, lead, manager, management, and CAD views
+    } else if (effectiveRole === 'project_manager') {
+      // Manager can see only lead view, manager view, and engineer view of that project
+      availableViewTypes.push('engineer', 'lead', 'manager');
+    } else if (effectiveRole === 'admin') {
+      // Admin can see all views
       availableViewTypes.push('engineer', 'lead', 'manager', 'management', 'cad');
     }
     

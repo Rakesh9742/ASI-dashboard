@@ -16,12 +16,18 @@ class ViewScreen extends ConsumerStatefulWidget {
   final String? initialViewType;
   /// When true (e.g. popout), show only the one project and only linked domains from DB.
   final bool isStandalone;
+  /// When provided (e.g. from popout), auto-select this block in engineer view after data loads.
+  final String? initialBlock;
+  /// When provided (e.g. from popout), auto-select this experiment in engineer view after data loads.
+  final String? initialExperiment;
 
   const ViewScreen({
     super.key,
     this.initialProject,
     this.initialDomain,
     this.initialViewType,
+    this.initialBlock,
+    this.initialExperiment,
     this.isStandalone = false,
   });
 
@@ -167,6 +173,17 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     super.dispose();
   }
 
+  /// Normalize API response to List<dynamic>. Backend may return List or Map (e.g. { all, local, zoho }).
+  List<dynamic> _projectsListFromResponse(dynamic response) {
+    if (response == null) return [];
+    if (response is List) return List<dynamic>.from(response);
+    if (response is Map) {
+      final raw = response['all'] ?? response['local'] ?? response['zoho'];
+      return raw is List ? List<dynamic>.from(raw) : [];
+    }
+    return [];
+  }
+
   Future<void> _loadProjectsAndDomains() async {
     setState(() {
       _isLoading = true;
@@ -180,17 +197,20 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       // Standalone (popout): DB only, one project. Else: load with Zoho option.
       Map<String, dynamic> projectsData;
       if (widget.isStandalone && widget.initialProject != null && widget.initialProject!.isNotEmpty) {
-        final projects = await _apiService.getProjects(token: token);
-        final all = projects is List ? projects : [];
+        final projectsRaw = await _apiService.getProjects(token: token);
+        final all = _projectsListFromResponse(projectsRaw);
         final matchName = widget.initialProject!.trim().toLowerCase();
-        final filtered = all.where((p) => (p['name']?.toString().trim().toLowerCase() ?? '') == matchName).toList();
+        final filtered = all.where((p) => p is Map && (p['name']?.toString().trim().toLowerCase() ?? '') == matchName).toList();
         projectsData = {'all': filtered.isNotEmpty ? filtered : all, 'local': filtered.isNotEmpty ? filtered : all, 'zoho': []};
       } else {
         try {
-          projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
+          final raw = await _apiService.getProjectsWithZoho(token: token, includeZoho: true);
+          final allList = _projectsListFromResponse(raw['all'] ?? raw['local']);
+          projectsData = {'all': allList, 'local': allList, 'zoho': raw['zoho'] is List ? raw['zoho'] : []};
         } catch (e) {
-          final projects = await _apiService.getProjects(token: token);
-          projectsData = {'all': projects, 'local': projects, 'zoho': []};
+          final projectsRaw = await _apiService.getProjects(token: token);
+          final list = _projectsListFromResponse(projectsRaw);
+          projectsData = {'all': list, 'local': list, 'zoho': []};
         }
       }
 
@@ -209,18 +229,54 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       }
 
       setState(() {
-        _projects = projectsData['all'] ?? projectsData['local'] ?? [];
+        _projects = _projectsListFromResponse(projectsData['all'] ?? projectsData['local']);
         _isLoading = false;
       });
       
       // If project is pre-selected (from widget or provider), load domains for it
       final params = ref.read(viewScreenParamsProvider);
       final projectToLoad = widget.initialProject ?? params?.project ?? _selectedProject;
+      final domainToLoad = widget.initialDomain ?? params?.domain ?? _selectedDomain;
       
-      // If project is already selected, fetch its role
+      // Set project immediately if provided (important for customer view)
+      if (projectToLoad != null && _selectedProject != projectToLoad) {
+        setState(() {
+          _selectedProject = projectToLoad;
+        });
+      }
+      
+      // Popout with initial domain: skip domain-list API and set domain from initial (faster load)
+      final isPopoutWithDomain = widget.isStandalone && domainToLoad != null && domainToLoad.isNotEmpty;
+      if (projectToLoad != null && isPopoutWithDomain) {
+        final normalizedDomain = _normalizeDomainName(domainToLoad);
+        if (normalizedDomain.isNotEmpty) {
+          setState(() {
+            _availableDomainsForProject = [normalizedDomain];
+            _selectedDomain = normalizedDomain;
+            _isLoadingDomains = false;
+          });
+        }
+      }
+      
+      // Fetch role and (when needed) domain list in parallel to reduce popout load time
       if (projectToLoad != null) {
-        await _fetchProjectRole(projectToLoad);
-        // Set view type based on available views if not explicitly set
+        try {
+          if (isPopoutWithDomain) {
+            await _fetchProjectRole(projectToLoad);
+          } else {
+            await Future.wait([
+              _fetchProjectRole(projectToLoad),
+              _loadDomainsForProject(projectToLoad),
+            ]);
+          }
+        } catch (_) {
+          if (mounted) {
+            setState(() {
+              _availableViewTypes = ['engineer', 'lead', 'manager', 'management', 'cad'];
+              if (widget.initialViewType == null) _viewType = defaultViewType;
+            });
+          }
+        }
         if (widget.initialViewType == null) {
           String defaultViewType = 'engineer';
           if (_availableViewTypes.contains('management')) {
@@ -239,73 +295,45 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           });
         }
       } else {
-        // No project selected, use global role default
         if (widget.initialViewType == null) {
           setState(() {
             _viewType = defaultViewType;
           });
         }
       }
-      final domainToLoad = widget.initialDomain ?? params?.domain ?? _selectedDomain;
-      
-      // Set project immediately if provided (important for customer view)
-      if (projectToLoad != null && _selectedProject != projectToLoad) {
-        setState(() {
-          _selectedProject = projectToLoad;
-        });
-      }
       
       if (projectToLoad != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          // Load domains first, then select domain and load data
-          _loadDomainsForProject(projectToLoad).then((_) {
-            // After domains are loaded, select domain if provided
-            if (mounted) {
-              if (domainToLoad != null && domainToLoad.isNotEmpty) {
-                // Domain was provided - try to select it
-                if (_availableDomainsForProject.contains(domainToLoad)) {
-                  setState(() {
-                    _selectedDomain = domainToLoad;
-                  });
+          if (!isPopoutWithDomain) {
+            if (domainToLoad != null && domainToLoad.isNotEmpty) {
+              if (_availableDomainsForProject.contains(domainToLoad)) {
+                setState(() => _selectedDomain = domainToLoad);
+                _loadInitialData();
+              } else {
+                final matchingDomain = _availableDomainsForProject.cast<String?>().firstWhere(
+                  (d) => d != null && d.toLowerCase() == domainToLoad.toLowerCase(),
+                  orElse: () => null,
+                );
+                if (matchingDomain != null) {
+                  setState(() => _selectedDomain = matchingDomain);
                   _loadInitialData();
-                } else {
-                  // Try case-insensitive match
-                  final lowerDomainToLoad = domainToLoad.toLowerCase();
-                  final matchingDomain = _availableDomainsForProject.firstWhere(
-                    (d) => d.toLowerCase() == lowerDomainToLoad,
-                    orElse: () => '',
-                  );
-                  if (matchingDomain.isNotEmpty) {
-                    setState(() {
-                      _selectedDomain = matchingDomain;
-                    });
-                    _loadInitialData();
-                  } else if (_availableDomainsForProject.isNotEmpty) {
-                    // Use first available domain if provided domain not found
-                    setState(() {
-                      _selectedDomain = _availableDomainsForProject.first;
-                    });
-                    _loadInitialData();
-                  }
+                } else if (_availableDomainsForProject.isNotEmpty) {
+                  setState(() => _selectedDomain = _availableDomainsForProject.first);
+                  _loadInitialData();
                 }
-              } else if (userRole == 'customer' && _availableDomainsForProject.isNotEmpty) {
-                // For customers, auto-select first domain
-                setState(() {
-                  _selectedDomain = _availableDomainsForProject.first;
-                });
-                _loadInitialData();
-              } else if (_availableDomainsForProject.length == 1) {
-                // Only one domain available
-                setState(() {
-                  _selectedDomain = _availableDomainsForProject.first;
-                });
-                _loadInitialData();
               }
+            } else if (userRole == 'customer' && _availableDomainsForProject.isNotEmpty) {
+              setState(() => _selectedDomain = _availableDomainsForProject.first);
+              _loadInitialData();
+            } else if (_availableDomainsForProject.length == 1) {
+              setState(() => _selectedDomain = _availableDomainsForProject.first);
+              _loadInitialData();
             }
-          });
+          } else {
+            _loadInitialData();
+          }
         });
       } else if (_selectedProject != null && _selectedDomain != null) {
-        // If project and domain are already selected, load data automatically
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _loadInitialData();
         });
@@ -467,7 +495,34 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
           }
         }
         
-        // Don't auto-select - user must select project manually
+        // Popout: auto-select block (and experiment) if provided and present in data
+        final p = _selectedProject;
+        if (p != null && grouped[p] is Map) {
+          final projectValue = grouped[p] as Map;
+          if (widget.initialBlock != null && widget.initialBlock!.isNotEmpty && projectValue.containsKey(widget.initialBlock)) {
+            _selectedBlock = widget.initialBlock;
+            final blockValue = projectValue[_selectedBlock];
+            if (blockValue is Map && blockValue.isNotEmpty) {
+              if (widget.initialExperiment != null && widget.initialExperiment!.isNotEmpty) {
+                for (var tagKey in blockValue.keys) {
+                  final tagValue = blockValue[tagKey];
+                  if (tagValue is Map && tagValue.containsKey(widget.initialExperiment)) {
+                    _selectedTag = tagKey;
+                    _selectedExperiment = widget.initialExperiment;
+                    break;
+                  }
+                }
+              }
+              if (_selectedTag == null || _selectedExperiment == null) {
+                _selectedTag = blockValue.keys.first;
+                final tagValue = blockValue[_selectedTag];
+                if (tagValue is Map && tagValue.isNotEmpty) {
+                  _selectedExperiment = tagValue.keys.first;
+                }
+              }
+            }
+          }
+        }
         _isLoading = false;
       });
     } catch (e) {
@@ -855,17 +910,25 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   }
 
   Widget _buildHeader() {
-    // Get project names and domains
+    // Get project names (deduplicate so DropdownButton has exactly one item per value)
     final projectNames = <String>[];
     try {
       if (_projects.isNotEmpty) {
-        projectNames.addAll(
-          _projects.map((p) => p['name']?.toString() ?? 'Unknown').toList().cast<String>()
-        );
+        final names = _projects.map((p) => p['name']?.toString().trim() ?? 'Unknown').where((s) => s.isNotEmpty).toList();
+        for (final name in names) {
+          if (!projectNames.contains(name)) projectNames.add(name);
+        }
+      }
+      // Standalone/popout: ensure initial project is in list so dropdown value matches an item
+      if (widget.isStandalone && _selectedProject != null && _selectedProject!.isNotEmpty && !projectNames.contains(_selectedProject)) {
+        projectNames.insert(0, _selectedProject!);
       }
     } catch (e) {
       // Handle error
     }
+
+    // Value must be in items or null (DropdownButton assertion)
+    final projectValue = _selectedProject != null && projectNames.contains(_selectedProject) ? _selectedProject! : null;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -889,10 +952,10 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                   border: Border.all(color: const Color(0xFFE2E8F0)),
                 ),
                 child: DropdownButton<String>(
-                  value: _selectedProject,
-                  hint: const Text(
-                    'Select Project',
-                    style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+                  value: projectValue,
+                  hint: Text(
+                    _selectedProject ?? 'Select Project',
+                    style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
                   ),
                   underline: const SizedBox(),
                   isDense: true,
@@ -932,10 +995,10 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                       border: Border.all(color: const Color(0xFFE2E8F0)),
                     ),
                     child: DropdownButton<String>(
-                      value: _selectedDomain,
-                      hint: const Text(
-                        'Select Domain',
-                        style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+                      value: _selectedDomain != null && _availableDomainsForProject.contains(_selectedDomain) ? _selectedDomain! : null,
+                      hint: Text(
+                        _selectedDomain ?? 'Select Domain',
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
                       ),
                       underline: const SizedBox(),
                       isDense: true,
@@ -1040,44 +1103,60 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       _isLoadingDomains = true;
     });
 
-    // Get domains for this project from multiple sources
+    // Get domains for this project
     try {
       final authState = ref.read(authProvider);
       final token = authState.token;
       
       final domainSet = <String>{};
-      
-      // Get domains from project data only (project_domains table, DB). No Zoho, no EDA files.
-      try {
-        final allProjects = widget.isStandalone
-            ? _projects
-            : (await _apiService.getProjectsWithZoho(token: token, includeZoho: true))['all'] ?? [];
-        final matchName = projectName.trim().toLowerCase();
-        for (var p in allProjects) {
-          if (p is! Map) continue;
-          final pName = (p['name']?.toString() ?? '').trim().toLowerCase();
-          if (pName != matchName) continue;
-          final projectDomains = p['domains'];
-          if (projectDomains is List && projectDomains.isNotEmpty) {
-            for (var domain in projectDomains) {
-              if (domain is Map) {
-                final domainName = domain['name']?.toString();
-                if (domainName != null && domainName.isNotEmpty) {
-                  final normalized = _normalizeDomainName(domainName);
-                  if (normalized.isNotEmpty) domainSet.add(normalized);
+
+      if (widget.isStandalone) {
+        // Popout: only show domains that have EDA data (from runs/stages)
+        try {
+          final filesResponse = await _apiService.getEdaFiles(
+            token: token,
+            projectName: projectName,
+            limit: 500,
+          );
+          final files = filesResponse['files'] as List<dynamic>? ?? [];
+          for (var f in files) {
+            if (f is! Map) continue;
+            final domainName = f['domain_name']?.toString();
+            if (domainName != null && domainName.trim().isNotEmpty) {
+              final normalized = _normalizeDomainName(domainName);
+              if (normalized.isNotEmpty) domainSet.add(normalized);
+            }
+          }
+        } catch (e) {
+          print('Error loading domains from EDA files (popout): $e');
+        }
+      } else {
+        // Main app: get domains from project data (project_domains table)
+        try {
+          final allProjects = (await _apiService.getProjectsWithZoho(token: token, includeZoho: true))['all'] ?? [];
+          final matchName = projectName.trim().toLowerCase();
+          for (var p in allProjects) {
+            if (p is! Map) continue;
+            final pName = (p['name']?.toString() ?? '').trim().toLowerCase();
+            if (pName != matchName) continue;
+            final projectDomains = p['domains'];
+            if (projectDomains is List && projectDomains.isNotEmpty) {
+              for (var domain in projectDomains) {
+                if (domain is Map) {
+                  final domainName = domain['name']?.toString();
+                  if (domainName != null && domainName.isNotEmpty) {
+                    final normalized = _normalizeDomainName(domainName);
+                    if (normalized.isNotEmpty) domainSet.add(normalized);
+                  }
                 }
               }
             }
+            break;
           }
-          break;
+        } catch (e) {
+          print('Error loading domains from project data: $e');
         }
-      } catch (e) {
-        print('Error loading domains from project data: $e');
       }
-
-      // Only show domains that are linked to this project (project_domains).
-      // Do NOT add initialDomain from URL/link if it's not linked — that would show
-      // two domains (e.g. DV + PD) when the project only has one (e.g. PD).
       
       final availableDomains = domainSet.toList()..sort();
       
@@ -1158,9 +1237,17 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       );
       
       if (roleResponse['success'] == true) {
-        final availableViewTypes = List<String>.from(roleResponse['availableViewTypes'] ?? ['engineer']);
-        final effectiveRole = roleResponse['effectiveRole'] ?? 'engineer';
-        final projectRole = roleResponse['projectRole'];
+        // Parse availableViewTypes defensively (API may return List or other; avoid JSON map/type errors)
+        final rawViews = roleResponse['availableViewTypes'];
+        List<String> availableViewTypes = ['engineer'];
+        if (rawViews is List) {
+          final list = List<String>.from(
+            rawViews.map((e) => (e?.toString() ?? '').trim()).where((s) => s.isNotEmpty),
+          );
+          if (list.isNotEmpty) availableViewTypes = list;
+        }
+        final effectiveRole = (roleResponse['effectiveRole']?.toString() ?? 'engineer').trim();
+        final projectRole = roleResponse['projectRole']?.toString();
         
         // Set default view type to the highest available view
         // For admins (global or project-specific), default to manager view

@@ -61,7 +61,8 @@ class DashboardNotifier extends StateNotifier<AsyncValue<Map<String, dynamic>>> 
           : (projectsRaw is Map)
               ? _projectsFromMap(projectsRaw as Map)
               : <dynamic>[];
-      final domains = results[1] as List<dynamic>;
+      final domainsRaw = results[1];
+      final domains = domainsRaw is List ? List<dynamic>.from(domainsRaw) : <dynamic>[];
       final designs = results[2] as List<dynamic>;
       final chips = results[3] as List<dynamic>;
       final users = results[4] as List<dynamic>;
@@ -215,7 +216,8 @@ final dashboardChartDataProvider = FutureProvider<Map<String, dynamic>>((ref) as
         : (projectsRaw is Map)
             ? _projectsFromMap(projectsRaw as Map)
             : <dynamic>[];
-    final domains = results[1] as List<dynamic>;
+    final domainsRaw = results[1];
+    final domains = domainsRaw is List ? List<dynamic>.from(domainsRaw) : <dynamic>[];
     
     // Only fetch EDA files if domain distribution from projects is empty
     // This significantly reduces load time by avoiding unnecessary large fetches

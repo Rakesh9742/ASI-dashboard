@@ -136,7 +136,7 @@ router.get('/', authenticate, async (req, res) => {
 
     // Query new Physical Design schema
     // Join: projects -> blocks -> runs -> stages -> timing_metrics -> constraint_metrics
-    // Also get domain from project_domains
+    // Domain from run's actual domain (r.domain_id), not project_domains, so each stage appears once with its real domain
     let query = `
       SELECT DISTINCT
         p.name as project_name,
@@ -210,8 +210,7 @@ router.get('/', authenticate, async (req, res) => {
       INNER JOIN public.runs r ON s.run_id = r.id
       INNER JOIN public.blocks b ON r.block_id = b.id
       INNER JOIN public.projects p ON b.project_id = p.id
-      LEFT JOIN public.project_domains pd ON p.id = pd.project_id
-      LEFT JOIN public.domains d ON pd.domain_id = d.id
+      LEFT JOIN public.domains d ON r.domain_id = d.id
       LEFT JOIN public.stage_timing_metrics stm ON s.id = stm.stage_id
       LEFT JOIN public.stage_constraint_metrics scm ON s.id = scm.stage_id
       LEFT JOIN public.power_ir_em_checks pirem ON s.id = pirem.stage_id
@@ -336,8 +335,7 @@ router.get('/', authenticate, async (req, res) => {
       // Build regex pattern to match any of the domain codes
       const domainPattern = domainCodes.join('|');
       
-      // Check both domain name from project_domains AND run_directory path
-      // This handles both cases: linked domains and Zoho projects without domain linking
+      // Check domain from run (r.domain_id) and run_directory path for runs without domain_id
       query += ` AND (
         LOWER(d.name) LIKE LOWER($${paramCount}) OR
         (r.run_directory IS NOT NULL AND r.run_directory ~* $${paramCount + 1})
@@ -370,15 +368,14 @@ router.get('/', authenticate, async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    // Get total count for pagination
+    // Get total count for pagination (same domain source as main query: run's domain_id)
     let countQuery = `
       SELECT COUNT(DISTINCT s.id)
       FROM public.stages s
       INNER JOIN public.runs r ON s.run_id = r.id
       INNER JOIN public.blocks b ON r.block_id = b.id
       INNER JOIN public.projects p ON b.project_id = p.id
-      LEFT JOIN public.project_domains pd ON p.id = pd.project_id
-      LEFT JOIN public.domains d ON pd.domain_id = d.id
+      LEFT JOIN public.domains d ON r.domain_id = d.id
       WHERE 1=1
     `;
     const countParams: any[] = [];
@@ -460,9 +457,32 @@ router.get('/', authenticate, async (req, res) => {
     }
 
     if (domain_name) {
+      const domainNameStrCount = Array.isArray(domain_name) ? domain_name[0] : domain_name;
+      const domainNameLowerCount = String(domainNameStrCount).toLowerCase().trim();
+      let domainCodesCount: string[] = [];
+      if (domainNameLowerCount === 'pd' || domainNameLowerCount.includes('physical')) {
+        domainCodesCount = ['pd', 'physical.?design'];
+      } else if (domainNameLowerCount === 'dv' || (domainNameLowerCount.includes('design') && domainNameLowerCount.includes('verification'))) {
+        domainCodesCount = ['dv', 'design.?verification'];
+      } else if (domainNameLowerCount === 'rtl' || domainNameLowerCount.includes('register')) {
+        domainCodesCount = ['rtl', 'register.?transfer'];
+      } else if (domainNameLowerCount === 'dft' || domainNameLowerCount.includes('testability')) {
+        domainCodesCount = ['dft', 'design.?for.?testability'];
+      } else if (domainNameLowerCount === 'al' || (domainNameLowerCount.includes('analog') && domainNameLowerCount.includes('layout'))) {
+        domainCodesCount = ['al', 'analog.?layout'];
+      } else {
+        domainCodesCount = [domainNameLowerCount];
+      }
+      const domainPatternCount = domainCodesCount.join('|');
+      const runDirPatternCount = `(?i)/CX_RUN_NEW/[^/]+/(${domainPatternCount})/`;
       countParamCount++;
-      countQuery += ` AND LOWER(d.name) LIKE LOWER($${countParamCount})`;
-      countParams.push(`%${domain_name}%`);
+      countQuery += ` AND (
+        LOWER(d.name) LIKE LOWER($${countParamCount}) OR
+        (r.run_directory IS NOT NULL AND r.run_directory ~* $${countParamCount + 1})
+      )`;
+      countParams.push(`%${domainNameStrCount}%`);
+      countParams.push(runDirPatternCount);
+      countParamCount++;
     }
 
     if (project_id) {

@@ -16,6 +16,8 @@ class _StandaloneViewScreenState extends ConsumerState<StandaloneViewScreen> {
   String? _projectName;
   String? _domainName;
   String? _viewType;
+  String? _blockName;
+  String? _experimentName;
   bool _isLoading = true;
 
   @override
@@ -46,10 +48,14 @@ class _StandaloneViewScreenState extends ConsumerState<StandaloneViewScreen> {
         _projectName = data['project']?.toString();
         _domainName = data['domain']?.toString();
         _viewType = data['viewType']?.toString();
+        _blockName = data['block']?.toString();
+        _experimentName = data['experiment']?.toString();
       } else if (params != null) {
         _projectName = params['project'] != null ? Uri.decodeComponent(params['project']!) : null;
         _domainName = params['domain'] != null ? Uri.decodeComponent(params['domain']!) : null;
         _viewType = params['viewType'] != null ? Uri.decodeComponent(params['viewType']!) : 'engineer';
+        _blockName = params['block'] != null ? Uri.decodeComponent(params['block']!) : null;
+        _experimentName = params['experiment'] != null ? Uri.decodeComponent(params['experiment']!) : null;
       }
 
       setState(() {
@@ -185,6 +191,8 @@ class _StandaloneViewScreenState extends ConsumerState<StandaloneViewScreen> {
               initialProject: _projectName,
               initialDomain: _domainName,
               initialViewType: _viewType ?? 'engineer',
+              initialBlock: _blockName,
+              initialExperiment: _experimentName,
               isStandalone: true,
             ),
           ),

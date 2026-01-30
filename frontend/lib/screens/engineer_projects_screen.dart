@@ -194,11 +194,17 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
         }
       }
 
+      // Default view type by role: admin -> manager, customer -> customer, else engineer
+      final userRole = ref.read(authProvider).user?['role']?.toString();
+      final viewType = userRole == 'admin'
+          ? 'manager'
+          : (userRole == 'customer' ? 'customer' : 'engineer');
+
       // Store data in localStorage for the new window
       final viewData = {
         'project': projectName,
         if (domainName != null && domainName.isNotEmpty) 'domain': domainName,
-        'viewType': 'engineer', // Default to engineer view
+        'viewType': viewType,
       };
       html.window.localStorage['standalone_view'] = jsonEncode(viewData);
       
@@ -215,7 +221,7 @@ class _EngineerProjectsScreenState extends ConsumerState<EngineerProjectsScreen>
       if (domainNameEncoded.isNotEmpty) {
         newWindowUrl += '&domain=$domainNameEncoded';
       }
-      newWindowUrl += '&viewType=engineer';
+      newWindowUrl += '&viewType=${Uri.encodeComponent(viewType)}';
       
       html.window.open(
         newWindowUrl,

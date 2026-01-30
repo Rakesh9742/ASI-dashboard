@@ -163,7 +163,13 @@ class ApiService {
     );
 
     if (response.statusCode == 200) {
-      return json.decode(response.body);
+      final data = json.decode(response.body);
+      if (data is List) return List<dynamic>.from(data);
+      if (data is Map) {
+        final raw = data['all'] ?? data['local'] ?? data['zoho'];
+        return raw is List ? List<dynamic>.from(raw) : <dynamic>[];
+      }
+      return <dynamic>[];
     } else {
       final error = json.decode(response.body);
       throw Exception(error['error'] ?? 'Failed to load projects');

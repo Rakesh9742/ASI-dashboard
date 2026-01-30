@@ -733,15 +733,27 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         }
       }
 
-      // Determine view type based on user role
-      final userRole = ref.read(authProvider).user?['role'];
-      final viewType = userRole == 'customer' ? 'customer' : 'engineer';
+      // Default view type by role: admin -> manager, customer -> customer, else engineer
+      final userRole = ref.read(authProvider).user?['role']?.toString();
+      final viewType = userRole == 'admin'
+          ? 'manager'
+          : (userRole == 'customer' ? 'customer' : 'engineer');
+
+      // Pass selected block and experiment so popout auto-selects them in engineer view
+      final blockName = (_selectedBlock != null && _selectedBlock != 'Select a block' && _selectedBlock.isNotEmpty)
+          ? _selectedBlock
+          : null;
+      final experimentName = (_selectedExperiment != null && _selectedExperiment != 'Select an experiment' && _selectedExperiment.isNotEmpty)
+          ? _selectedExperiment
+          : null;
 
       // Store data in localStorage for the new window
       final viewData = {
         'project': projectName,
         if (domainName != null && domainName.isNotEmpty) 'domain': domainName,
         'viewType': viewType,
+        if (blockName != null) 'block': blockName,
+        if (experimentName != null) 'experiment': experimentName,
       };
       html.window.localStorage['standalone_view'] = jsonEncode(viewData);
       
@@ -759,6 +771,12 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         newWindowUrl += '&domain=$domainNameEncoded';
       }
       newWindowUrl += '&viewType=$viewType';
+      if (blockName != null) {
+        newWindowUrl += '&block=${Uri.encodeComponent(blockName)}';
+      }
+      if (experimentName != null) {
+        newWindowUrl += '&experiment=${Uri.encodeComponent(experimentName)}';
+      }
       
       html.window.open(
         newWindowUrl,
@@ -1671,156 +1689,256 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       crossAxisCount: 3,
-      crossAxisSpacing: 16,
-      mainAxisSpacing: 16,
-      childAspectRatio: 1.4,
+      crossAxisSpacing: 20,
+      mainAxisSpacing: 20,
+      childAspectRatio: 1.35,
       children: [
         _buildMetricCard(
           'Gate Count',
           gateCount,
           Icons.memory,
           subtitle: tech,
+          accentColor: _metricCardColors[0],
         ),
         _buildMetricCard(
           'Area',
           area,
           Icons.square_foot,
           subtitle: utilization != null ? 'Utilization: ${utilization.toStringAsFixed(1)}%' : 'Utilization: N/A',
+          accentColor: _metricCardColors[1],
         ),
         _buildMetricCard(
           'Power',
           power,
           Icons.power,
           subtitle: frequency != 'N/A' ? '@ $frequency' : 'N/A',
+          accentColor: _metricCardColors[2],
         ),
         _buildMetricCard(
           'Frequency',
           frequency,
           Icons.speed,
           subtitle: timingSlack != 'N/A' ? 'Timing: $timingSlack' : 'Timing: N/A',
+          accentColor: _metricCardColors[3],
         ),
         _buildMetricCardWithProgress(
           'Utilization',
           utilization != null ? '${utilization.toStringAsFixed(1)}%' : 'N/A',
           Icons.pie_chart,
           utilization != null ? (utilization / 100).clamp(0.0, 1.0) : 0.0,
+          accentColor: _metricCardColors[4],
         ),
         _buildMetricCard(
           'Timing Slack',
           timingSlack,
           Icons.timer,
           subtitle: 'WNS (Worst Negative Slack)',
+          accentColor: _metricCardColors[5],
         ),
         _buildMetricCard(
           'Interface Timing',
           interfaceTiming,
           Icons.swap_horiz,
           subtitle: 'I2R / R2O WNS',
+          accentColor: _metricCardColors[6],
         ),
       ],
     );
   }
 
-  Widget _buildMetricCard(String title, String value, IconData icon, {String? subtitle}) {
+  static const List<Color> _metricCardColors = [
+    Color(0xFF2563EB), // Gate Count - blue
+    Color(0xFF0D9488), // Area - teal
+    Color(0xFFD97706), // Power - amber
+    Color(0xFF7C3AED), // Frequency - violet
+    Color(0xFF059669), // Utilization - emerald
+    Color(0xFFEA580C), // Timing Slack - orange
+    Color(0xFF0891B2), // Interface Timing - cyan
+  ];
+
+  Widget _buildMetricCard(String title, String value, IconData icon, {String? subtitle, Color? accentColor}) {
+    final color = accentColor ?? Theme.of(context).colorScheme.primary;
+    final dividerColor = Theme.of(context).dividerColor.withOpacity(0.5);
     return Container(
-      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Theme.of(context).dividerColor),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: dividerColor),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
+            color: color.withOpacity(0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 8,
             offset: const Offset(0, 2),
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                ),
-              ),
-              Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
-            ],
-          ),
-          const Spacer(),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: Theme.of(context).colorScheme.onSurface,
-            ),
-          ),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(
-              subtitle,
-              style: TextStyle(
-                fontSize: 11,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+          Container(
+            width: 4,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(16),
+                bottomLeft: Radius.circular(16),
               ),
             ),
-          ],
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: color.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(icon, size: 20, color: color),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    value,
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.onSurface,
+                      letterSpacing: -0.5,
+                      height: 1.2,
+                    ),
+                  ),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.55),
+                        height: 1.3,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildMetricCardWithProgress(String title, String value, IconData icon, double progress) {
+  Widget _buildMetricCardWithProgress(String title, String value, IconData icon, double progress, {Color? accentColor}) {
+    final color = accentColor ?? Theme.of(context).colorScheme.primary;
+    final dividerColor = Theme.of(context).dividerColor.withOpacity(0.5);
     return Container(
-      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Theme.of(context).dividerColor),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: dividerColor),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
+            color: color.withOpacity(0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 8,
             offset: const Offset(0, 2),
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                ),
+          Container(
+            width: 4,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(16),
+                bottomLeft: Radius.circular(16),
               ),
-              Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
-            ],
-          ),
-          const Spacer(),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: Theme.of(context).colorScheme.onSurface,
             ),
           ),
-          const SizedBox(height: 8),
-          LinearProgressIndicator(
-            value: progress,
-            backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-            valueColor: AlwaysStoppedAnimation<Color>(Theme.of(context).colorScheme.primary),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: color.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(icon, size: 20, color: color),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    value,
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.onSurface,
+                      letterSpacing: -0.5,
+                      height: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: LinearProgressIndicator(
+                      value: progress,
+                      minHeight: 8,
+                      backgroundColor: color.withOpacity(0.15),
+                      valueColor: AlwaysStoppedAnimation<Color>(color),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ],
       ),
