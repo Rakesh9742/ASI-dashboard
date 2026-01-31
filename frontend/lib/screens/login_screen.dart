@@ -10,6 +10,10 @@ import '../services/api_service.dart';
 import '../widgets/error_dialog.dart';
 import 'main_navigation_screen.dart';
 
+// Semicon OS brand colors (match main nav and project cards)
+const Color _kLoginBrandPrimary = Color(0xFF6366F1);
+const Color _kLoginBrandSecondary = Color(0xFF4F46E5);
+
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
 
@@ -304,8 +308,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     final theme = Theme.of(context);
     final size = MediaQuery.of(context).size;
     
+    final isDark = theme.brightness == Brightness.dark;
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: isDark ? theme.scaffoldBackgroundColor : Colors.grey.shade50,
       body: SafeArea(
           child: Center(
             child: SingleChildScrollView(
@@ -348,48 +353,59 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
   Widget _buildLogoSection(ThemeData theme) {
     return Column(
       children: [
-        // Logo - Teal square with microchip icon
+        // Logo - Indigo gradient, developer_board icon (match main nav)
         Container(
-          width: 64,
-          height: 64,
+          width: 72,
+          height: 72,
           decoration: BoxDecoration(
-            color: const Color(0xFF14B8A6), // Teal color
-            borderRadius: BorderRadius.circular(12),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [_kLoginBrandPrimary, _kLoginBrandSecondary],
+            ),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: _kLoginBrandPrimary.withOpacity(0.35),
+                blurRadius: 16,
+                offset: const Offset(0, 4),
+              ),
+            ],
           ),
           child: const Icon(
-            Icons.memory, // Microchip icon
+            Icons.developer_board,
             color: Colors.white,
-            size: 32,
+            size: 36,
           ),
         ),
-        const SizedBox(height: 16),
-        // Brand name - "Semicon" in black, "OS" in teal
+        const SizedBox(height: 20),
+        // Brand name - "Semicon" in surface color, " OS" in indigo
         RichText(
           text: TextSpan(
             style: const TextStyle(
-              fontSize: 36,
-            fontWeight: FontWeight.bold,
+              fontSize: 38,
+              fontWeight: FontWeight.bold,
               letterSpacing: -0.5,
             ),
             children: [
-              const TextSpan(
+              TextSpan(
                 text: 'Semicon',
-                style: TextStyle(color: Colors.black),
+                style: TextStyle(color: theme.colorScheme.onSurface),
               ),
               TextSpan(
-                text: 'OS',
-                style: TextStyle(color: const Color(0xFF14B8A6)), // Teal
+                text: ' OS',
+                style: TextStyle(color: _kLoginBrandPrimary, fontWeight: FontWeight.w800),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 10),
         // Tagline
         Text(
           'AI-Driven RTL-to-GDS Orchestration',
           style: TextStyle(
             fontSize: 14,
-            color: Colors.grey.shade600,
+            color: theme.colorScheme.onSurface.withOpacity(0.6),
             fontWeight: FontWeight.w400,
           ),
         ),
@@ -398,16 +414,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
   }
 
   Widget _buildLoginCard(ThemeData theme, Size size) {
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
-      constraints: BoxConstraints(maxWidth: 450),
+      constraints: const BoxConstraints(maxWidth: 450),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        color: theme.cardColor,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 20,
-            offset: const Offset(0, 4),
+            color: Colors.black.withOpacity(isDark ? 0.25 : 0.08),
+            blurRadius: 24,
+            offset: const Offset(0, 6),
             spreadRadius: 0,
           ),
         ],
@@ -419,21 +437,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-                  Text(
+              Text(
                 'Sign in',
-                    style: TextStyle(
+                style: TextStyle(
                   fontSize: 28,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.grey.shade900,
-                      letterSpacing: -0.5,
-                    ),
+                  fontWeight: FontWeight.bold,
+                  color: theme.colorScheme.onSurface,
+                  letterSpacing: -0.5,
+                ),
               ),
               const SizedBox(height: 8),
               Text(
                 'Enter your credentials to access your RTL2GDS projects',
                 style: TextStyle(
                   fontSize: 14,
-                  color: Colors.grey.shade600,
+                  color: theme.colorScheme.onSurface.withOpacity(0.65),
                 ),
               ),
               const SizedBox(height: 32),
@@ -470,7 +488,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                     _obscurePassword
                         ? Icons.visibility_outlined
                         : Icons.visibility_off_outlined,
-                    color: Colors.grey.shade600,
+                    color: theme.colorScheme.onSurface.withOpacity(0.6),
                   ),
                   onPressed: () {
                     setState(() {
@@ -489,16 +507,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
               ),
               const SizedBox(height: 24),
 
-              // Sign In Button (Teal with padlock icon)
+              // Sign In Button (Indigo brand)
               Container(
                 height: 56,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF14B8A6), // Teal
-                  borderRadius: BorderRadius.circular(12),
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [_kLoginBrandPrimary, _kLoginBrandSecondary],
+                  ),
+                  borderRadius: BorderRadius.circular(14),
                   boxShadow: [
                     BoxShadow(
-                      color: const Color(0xFF14B8A6).withOpacity(0.3),
-                      blurRadius: 12,
+                      color: _kLoginBrandPrimary.withOpacity(0.4),
+                      blurRadius: 14,
                       offset: const Offset(0, 4),
                     ),
                   ],
@@ -527,8 +549,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.transparent,
                     shadowColor: Colors.transparent,
+                    foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(14),
                     ),
                   ),
                 ),
@@ -539,19 +562,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
               // Divider with "OR"
               Row(
                 children: [
-                  Expanded(child: Divider(color: Colors.grey.shade300)),
+                  Expanded(child: Divider(color: theme.dividerColor)),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: Text(
                       'OR',
                       style: TextStyle(
-                        color: Colors.grey.shade600,
+                        color: theme.colorScheme.onSurface.withOpacity(0.6),
                         fontWeight: FontWeight.w500,
                         fontSize: 14,
                       ),
                     ),
                   ),
-                  Expanded(child: Divider(color: Colors.grey.shade300)),
+                  Expanded(child: Divider(color: theme.dividerColor)),
                 ],
               ),
 
@@ -561,10 +584,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
               Container(
                 height: 56,
                 decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
+                  color: theme.colorScheme.surface,
+                  borderRadius: BorderRadius.circular(14),
                   border: Border.all(
-                    color: Colors.grey.shade300,
+                    color: theme.dividerColor,
                     width: 1.5,
                   ),
                 ),
@@ -576,12 +599,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                           height: 20,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.grey.shade900),
+                            valueColor: AlwaysStoppedAnimation<Color>(theme.colorScheme.onSurface),
                           ),
                         )
                       : Icon(
-                          Icons.cloud,
-                          color: Colors.grey.shade900,
+                          Icons.cloud_rounded,
+                          color: theme.colorScheme.onSurface,
                           size: 20,
                         ),
                   label: Text(
@@ -590,7 +613,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                       letterSpacing: 0.5,
-                      color: Colors.grey.shade900,
+                      color: theme.colorScheme.onSurface,
                     ),
                   ),
                   style: ElevatedButton.styleFrom(
@@ -630,33 +653,33 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
       onFieldSubmitted: onFieldSubmitted,
       validator: validator,
       style: TextStyle(
-        color: Colors.grey.shade900,
+        color: theme.colorScheme.onSurface,
         fontSize: 15,
       ),
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,
-        hintStyle: TextStyle(color: Colors.grey.shade400),
-        prefixIcon: Icon(icon, color: Colors.grey.shade600),
+        hintStyle: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.45)),
+        prefixIcon: Icon(icon, color: theme.colorScheme.onSurface.withOpacity(0.6)),
         suffixIcon: suffixIcon,
         filled: true,
-        fillColor: Colors.grey.shade50,
+        fillColor: theme.colorScheme.surfaceContainerHighest.withOpacity(0.4),
         contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.grey.shade300, width: 1.5),
+          borderSide: BorderSide(color: theme.dividerColor, width: 1.5),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.grey.shade300, width: 1.5),
+          borderSide: BorderSide(color: theme.dividerColor, width: 1.5),
         ),
                               focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide(
-            color: const Color(0xFF14B8A6), // Teal
-                                  width: 2,
-                                ),
-                              ),
+          borderSide: const BorderSide(
+            color: _kLoginBrandPrimary,
+            width: 2,
+          ),
+        ),
         errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(color: Colors.red.shade400, width: 1.5),
@@ -666,11 +689,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
           borderSide: BorderSide(color: Colors.red.shade400, width: 2),
         ),
         labelStyle: TextStyle(
-          color: Colors.grey.shade600,
+          color: theme.colorScheme.onSurface.withOpacity(0.65),
           fontSize: 15,
         ),
-        floatingLabelStyle: TextStyle(
-          color: const Color(0xFF14B8A6), // Teal
+        floatingLabelStyle: const TextStyle(
+          color: _kLoginBrandPrimary,
           fontSize: 15,
           fontWeight: FontWeight.w500,
         ),
