@@ -163,6 +163,22 @@ class QmsService {
     }
 
     const report = await this.parseJSONFile(reportPath);
+    return this.applyExternalSynReportData(report, userId, reportPath);
+  }
+
+  /**
+   * Apply external JSON report data to a checklist (report already parsed).
+   */
+  async applyExternalSynReportData(
+    report: any,
+    userId: number,
+    reportPath: string | null = null
+  ): Promise<{
+    checklist_id: number;
+    updated: number;
+    missing_check_ids: string[];
+    extra_check_ids: string[];
+  }> {
     if (!report || typeof report !== 'object') {
       throw new Error('Invalid JSON report');
     }
