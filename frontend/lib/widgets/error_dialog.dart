@@ -214,8 +214,8 @@ class _ErrorDialogState extends State<ErrorDialog> with TickerProviderStateMixin
                 constraints: const BoxConstraints(maxWidth: 440, minWidth: 300),
                 decoration: BoxDecoration(
                   color: isDark
-                      ? theme.colorScheme.surface.withValues(alpha: 0.95)
-                      : Colors.white.withValues(alpha: 0.98),
+                      ? theme.colorScheme.surface.withOpacity(0.95)
+                      : Colors.white.withOpacity(0.98),
                   borderRadius: BorderRadius.circular(24),
                   border: Border.all(
                     color: accentBorderColor,
@@ -223,14 +223,14 @@ class _ErrorDialogState extends State<ErrorDialog> with TickerProviderStateMixin
                   ),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withValues(alpha: isDark ? 0.4 : 0.12),
+                      color: Colors.black.withOpacity(isDark ? 0.4 : 0.12),
                       blurRadius: 32,
                       offset: const Offset(0, 12),
                       spreadRadius: 0,
                     ),
                     if (!isDark)
                       BoxShadow(
-                        color: shadowTint.withValues(alpha: 0.3),
+                        color: shadowTint.withOpacity(0.3),
                         blurRadius: 24,
                         offset: const Offset(0, 4),
                         spreadRadius: -4,
@@ -324,7 +324,7 @@ class _ErrorDialogState extends State<ErrorDialog> with TickerProviderStateMixin
                               child: Text(
                                 widget.message,
                                 style: theme.textTheme.bodyLarge?.copyWith(
-                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.85),
+                                  color: theme.colorScheme.onSurface.withOpacity(0.85),
                                   height: 1.5,
                                   letterSpacing: 0.1,
                                 ),
