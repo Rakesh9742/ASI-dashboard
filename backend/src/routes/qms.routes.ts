@@ -658,7 +658,7 @@ router.post(
  * POST /api/qms/external/checklists/:checklistId/items/upload-report
  * External API endpoint for uploading JSON reports to a checklist
  * Requires API key authentication via X-API-Key header
- * Accepts file upload or report_path
+ * Accepts JSON file upload or JSON body (report content)
  */
 router.post(
   '/external/checklists/:checklistId/items/upload-report',
@@ -666,7 +666,7 @@ router.post(
   async (req, res) => {
     res.status(410).json({
       error: 'Endpoint moved',
-      message: 'Use /api/qms/external-checklists/upload-report with report_path (JSON).'
+      message: 'Use /api/qms/external-checklists/upload-report with JSON file or JSON body.'
     });
   }
 );
@@ -675,37 +675,70 @@ router.post(
  * POST /api/qms/external-checklists/upload-report
  * External API endpoint for uploading JSON reports without checklist id in URL
  * Requires API key authentication via X-API-Key header
- * Accepts report_path only (JSON file path)
+ * Accepts JSON file upload or JSON body
  */
 router.post(
   '/external-checklists/upload-report',
   authenticateApiKey,
+  csvUpload.single('file'),
   async (req, res) => {
     try {
-      const { report_path } = req.body;
-      if (!report_path) {
+      const file = (req as any).file as Express.Multer.File | undefined;
+      const { report_path, report, report_json } = req.body || {};
+      let reportData: any = null;
+      let reportSourcePath: string | null = null;
+
+      if (file) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        if (ext !== '.json') {
+          try {
+            fs.unlinkSync(file.path);
+          } catch (e) {
+            // ignore
+          }
+          return res.status(400).json({
+            error: 'Invalid report file type',
+            message: 'Only JSON report files are supported',
+            received: ext
+          });
+        }
+
+        const fileContent = fs.readFileSync(file.path, 'utf8');
+        reportData = JSON.parse(fileContent);
+        reportSourcePath = file.path;
+      } else if (report_path) {
+        if (!fs.existsSync(report_path)) {
+          return res.status(400).json({
+            error: 'Report file not found',
+            message: `The file at ${report_path} does not exist on the server`
+          });
+        }
+        if (!report_path.toLowerCase().endsWith('.json')) {
+          return res.status(400).json({
+            error: 'Invalid report file type',
+            message: 'Only JSON report files are supported'
+          });
+        }
+        const fileContent = fs.readFileSync(report_path, 'utf8');
+        reportData = JSON.parse(fileContent);
+        reportSourcePath = report_path;
+      } else if (report || report_json) {
+        reportData = report || report_json;
+      } else if (req.body && Object.keys(req.body).length > 0) {
+        reportData = req.body;
+      } else {
         return res.status(400).json({
-          error: 'report_path is required',
-          message: 'Provide JSON report_path in request body'
+          error: 'Report content is required',
+          message: 'Provide a JSON file (multipart form field "file") or JSON body'
         });
       }
 
-      if (!fs.existsSync(report_path)) {
-        return res.status(400).json({
-          error: 'Report file not found',
-          message: `The file at ${report_path} does not exist on the server`
-        });
-      }
-
-      if (!report_path.toLowerCase().endsWith('.json')) {
-        return res.status(400).json({
-          error: 'Invalid report file type',
-          message: 'Only JSON report files are supported'
-        });
+      if (typeof reportData === 'string') {
+        reportData = JSON.parse(reportData);
       }
 
       const systemUserId = 1;
-      const result = await qmsService.applyExternalSynReport(report_path, systemUserId);
+      const result = await qmsService.applyExternalSynReportData(reportData, systemUserId, reportSourcePath);
       console.log(
         `✅ [QMS EXTERNAL] checklist_id=${result.checklist_id} updated=${result.updated} ` +
         `missing_check_ids=${result.missing_check_ids.join(', ')} ` +
@@ -715,13 +748,22 @@ router.post(
       res.json({
         success: true,
         message: 'Report uploaded and processed successfully',
-        report_path,
+        report_path: reportSourcePath,
         processed_at: new Date().toISOString(),
         ...result
       });
     } catch (error: any) {
       console.error('Error uploading report:', error);
       res.status(500).json({ error: error.message });
+    } finally {
+      const file = (req as any).file as Express.Multer.File | undefined;
+      if (file && fs.existsSync(file.path)) {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (e) {
+          // ignore cleanup errors
+        }
+      }
     }
   }
 );

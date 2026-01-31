@@ -114,12 +114,33 @@ Synthesis QMS - <experimentName>
 ```
 
 ## External JSON QMS Upload (Staging)
-New endpoint (no checklist id in URL):
+New endpoint (no checklist id in URL). Send JSON **content** directly (same pattern as EDA external upload):
+
+Example (upload JSON file via multipart form):
+```bash
+curl -X POST "http://<backend-host>/api/qms/external-checklists/upload-report" \
+  -H "X-API-Key: <API_KEY>" \
+  -F "file=@/path/to/syn_qms.json"
+```
+
+Example (send JSON body directly):
 ```bash
 curl -X POST "http://<backend-host>/api/qms/external-checklists/upload-report" \
   -H "X-API-Key: <API_KEY>" \
   -H "Content-Type: application/json" \
-  -d "{\"report_path\":\"/app/templates/syn_qms.json\"}"
+  --data-binary "@/path/to/syn_qms.json"
+```
+
+Staging test commands (file upload + raw JSON body):
+```bash
+curl -X POST "http://15.207.235.35:3000/api/qms/external-checklists/upload-report" \
+  -H "X-API-Key: sitedafilesdata" \
+  -F "file=@backend/templates/syn_qms.json"
+
+curl -X POST "http://15.207.235.35:3000/api/qms/external-checklists/upload-report" \
+  -H "X-API-Key: sitedafilesdata" \
+  -H "Content-Type: application/json" \
+  --data-binary "@backend/templates/syn_qms.json"
 ```
 
 Behavior:
@@ -135,10 +156,3 @@ Behavior:
 - Checklist auto‑creation is triggered only when a **new** run is created in `/api/projects/save-run-directory`.
 - Backfill can be run multiple times safely; it uses existing checklist names per block.
 
-
-```
-curl -X POST "http://localhost:3000/api/qms/external-checklists/upload-report" \
-  -H "X-API-Key: sitedafilesdata" \
-  -H "Content-Type: application/json" \
-  -d "{\"report_path\":\"/app/templates/syn_qms.json\"}"
-```

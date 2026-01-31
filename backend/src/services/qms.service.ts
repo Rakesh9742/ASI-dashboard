@@ -163,6 +163,22 @@ class QmsService {
     }
 
     const report = await this.parseJSONFile(reportPath);
+    return this.applyExternalSynReportData(report, userId, reportPath);
+  }
+
+  /**
+   * Apply external JSON report data to a checklist (report already parsed).
+   */
+  async applyExternalSynReportData(
+    report: any,
+    userId: number,
+    reportPath: string | null = null
+  ): Promise<{
+    checklist_id: number;
+    updated: number;
+    missing_check_ids: string[];
+    extra_check_ids: string[];
+  }> {
     if (!report || typeof report !== 'object') {
       throw new Error('Invalid JSON report');
     }
@@ -208,13 +224,19 @@ class QmsService {
 
       const checklistName = this.getDefaultChecklistName(String(experimentName).trim());
       const checklistResult = await client.query(
-        'SELECT id FROM checklists WHERE block_id = $1 AND name = $2',
+        'SELECT id, status FROM checklists WHERE block_id = $1 AND name = $2',
         [blockId, checklistName]
       );
       if (checklistResult.rows.length === 0) {
         throw new Error(`Checklist "${checklistName}" not found for block "${blockName}"`);
       }
       const checklistId = checklistResult.rows[0].id;
+      const checklistStatus = checklistResult.rows[0].status as string | null;
+      if (checklistStatus !== 'rejected') {
+        throw new Error(
+          `Checklist "${checklistName}" is in "${checklistStatus ?? 'unknown'}" state; external updates are only allowed when status is "rejected".`
+        );
+      }
 
       const checklistItems = await client.query(
         'SELECT id, name FROM check_items WHERE checklist_id = $1',
