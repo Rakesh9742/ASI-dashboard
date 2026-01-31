@@ -5,8 +5,6 @@ import { pool } from '../config/database';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import { authenticateApiKey } from '../middleware/apiKey.middleware';
 import { decryptNumber, encrypt } from '../utils/encryption';
-import { getSSHConnection } from '../services/ssh.service';
-
 const router = express.Router();
 
 // Register new user (admin only for creating users with domain)
@@ -219,15 +217,6 @@ router.post('/login', async (req, res) => {
       jwtSecret,
       { expiresIn: jwtExpiresIn } as SignOptions
     );
-
-    // Establish SSH connection in background (non-blocking) to avoid login delay
-    // Connection will be ready when user needs it, but login completes immediately
-    getSSHConnection(user.id).then(() => {
-      console.log(`SSH connection established for user ${user.id} (background)`);
-    }).catch((err: any) => {
-      console.error(`Failed to establish SSH connection for user ${user.id} (background):`, err);
-      // Connection will be retried when user actually needs SSH functionality
-    });
 
     res.json({
       message: 'Login successful',

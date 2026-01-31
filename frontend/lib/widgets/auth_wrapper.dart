@@ -2,6 +2,7 @@ import 'dart:html' as html;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
+import '../providers/error_handler_provider.dart';
 import '../screens/login_screen.dart';
 import '../screens/main_navigation_screen.dart';
 import '../screens/standalone_project_screen.dart';
@@ -21,12 +22,9 @@ class AuthWrapper extends ConsumerWidget {
     apiService.onSessionExpired = () {
       ref.read(authProvider.notifier).logout();
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Session expired. You have been logged out. Please log in again.'),
-            backgroundColor: Colors.orange,
-            duration: Duration(seconds: 4),
-          ),
+        ref.read(errorHandlerProvider.notifier).show(
+          'Session expired',
+          'You have been logged out. Please log in again.',
         );
       }
     };
@@ -39,19 +37,18 @@ class AuthWrapper extends ConsumerWidget {
     final isTerminal = url.contains('#/terminal');
     final isVnc = url.contains('#/vnc');
 
-    // Show login if not authenticated
-    if (!authState.isAuthenticated) {
-      return const LoginScreen();
-    }
-    
-    // If terminal window, show terminal screen
+    // Terminal/VNC windows: show their screen first so they can load auth from localStorage
+    // (opened via "Open full terminal" which writes token to localStorage before window.open)
     if (isTerminal) {
       return const TerminalScreen();
     }
-    
-    // If VNC window, show VNC screen
     if (isVnc) {
       return const VncScreen();
+    }
+
+    // Show login if not authenticated (for main app and other standalone windows)
+    if (!authState.isAuthenticated) {
+      return const LoginScreen();
     }
     
     // If standalone project window, show project screen

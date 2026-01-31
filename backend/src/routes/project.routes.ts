@@ -42,14 +42,14 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     const userId = (req as any).user?.id;
     const userRole = (req as any).user?.role;
     
-    // Admin prefers Zoho projects when connected; when Zoho not connected, admin sees local projects too.
-    const adminZohoOnly = userRole === 'admin';
-    const effectiveIncludeZoho = userRole === 'admin' && (includeZoho === 'true' || includeZoho === '1' || adminZohoOnly);
-    
+    // Only fetch Zoho when frontend explicitly requests it (includeZoho=true).
+    // Admin sees Zoho only when they have connected Zoho and frontend sends includeZoho=true.
+    const effectiveIncludeZoho = includeZoho === 'true' || includeZoho === '1';
+
     // Log logged-in user info
     console.log(`\n🔵 ========== GET /api/projects ==========`);
     console.log(`🔵 Logged-in user: user_id=${userId}, role=${userRole}`);
-    console.log(`🔵 includeZoho=${includeZoho}, adminZohoOnly=${adminZohoOnly}, effectiveIncludeZoho=${effectiveIncludeZoho}`);
+    console.log(`🔵 includeZoho=${includeZoho}, effectiveIncludeZoho=${effectiveIncludeZoho}`);
 
     // Build query based on user role (skip local projects entirely for admin)
     // Engineers see projects they created
@@ -143,7 +143,24 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
             WHERE b.project_id = p.id
             ORDER BY s.timestamp DESC
             LIMIT 1
-          ) as latest_run_status
+          ) as latest_run_status,
+          (
+            SELECT COALESCE(
+              (SELECT s.timestamp
+               FROM stages s
+               INNER JOIN runs r ON s.run_id = r.id
+               INNER JOIN blocks b ON r.block_id = b.id
+               WHERE b.project_id = p.id
+               ORDER BY s.timestamp DESC NULLS LAST
+               LIMIT 1),
+              (SELECT r.last_updated
+               FROM runs r
+               INNER JOIN blocks b ON r.block_id = b.id
+               WHERE b.project_id = p.id
+               ORDER BY r.last_updated DESC NULLS LAST, r.created_at DESC NULLS LAST
+               LIMIT 1)
+            )
+          ) as last_run_at
         FROM projects p
         ${joinClause}
         LEFT JOIN project_domains pd ON pd.project_id = p.id
@@ -157,7 +174,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
 
     // Build local projects — exported_to_linux from projects table only (no other tables)
     const localProjects = result.rows.map((p: any) => {
-      let projectStatus = 'RUNNING';
+      let projectStatus = 'IDLE'; // Default when no run status (was RUNNING — caused all projects to show as running)
       if (p.latest_run_status) {
         const statusLower = p.latest_run_status.toLowerCase();
         if (statusLower === 'pass' || statusLower === 'completed' || statusLower === 'done') projectStatus = 'COMPLETED';
@@ -329,7 +346,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
           }
           
           // Batch 5: Get all run directories from zoho_project_run_directories table
-          const zohoProjectRunDirs = new Map<string, { directory: string; directories: string[] }>(); // zoho_project_id -> { directory, directories }
+          const zohoProjectRunDirs = new Map<string, { directory: string; directories: string[]; last_run_at?: string | null }>(); // zoho_project_id -> { directory, directories, last_run_at }
           try {
             if (zohoProjectIds.length > 0 && userId) {
               const zohoRunDirResult = await pool.query(
@@ -409,7 +426,18 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
           }
           
           console.log(`🔵 Batch fetch complete. Processing ${filteredZohoProjects.length} projects...`);
-          
+          console.log('═══ [Zoho projects] Status from projects table when mapped (name | source | exported_to_linux | projectStatus) ═══');
+
+          // Map: local project id -> { status, exported_to_linux } from projects table (single source of truth)
+          const localProjectStatusById = new Map<number, { status: string; exported_to_linux: boolean; last_run_at?: string | null }>();
+          filteredLocalProjects.forEach((p: any) => {
+            localProjectStatusById.set(p.id, {
+              status: p.status,
+              exported_to_linux: p.exported_to_linux,
+              last_run_at: p.last_run_at ?? null
+            });
+          });
+
           // Now process each project using the batched data
           const formattedZohoProjects = filteredZohoProjects.map((zp: any) => {
               const projectNameLower = zp.name.toLowerCase();
@@ -423,14 +451,17 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
                 asiProjectId = nameToProjectId.get(projectNameLower) || null;
               }
               
-              // Get run directory from batched data
+              // Get run directory and last_run_at from batched data
               let zohoRunDirectory: string | null = null;
               let zohoRunDirectories: string[] = [];
+              let lastRunAt: string | null = null;
               
               // Check mapped local project first
               if (asiProjectId && mappedProjectRunDirs.has(asiProjectId)) {
                 zohoRunDirectory = mappedProjectRunDirs.get(asiProjectId)!;
                 zohoRunDirectories = [zohoRunDirectory];
+                const fromLocal = localProjectStatusById.get(asiProjectId);
+                if (fromLocal?.last_run_at) lastRunAt = fromLocal.last_run_at;
               } else {
                 // Check unmapped Zoho project table
                 const projectKey = zp.id.toString();
@@ -439,23 +470,37 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
                 if (runDirData) {
                   zohoRunDirectory = runDirData.directory;
                   zohoRunDirectories = runDirData.directories;
+                  if (runDirData.last_run_at) lastRunAt = runDirData.last_run_at;
                 }
               }
               
-              // Get export status from batched data
-              const exportedToLinux = exportStatuses.get(zp.id.toString()) || false;
-              
-              // Map Zoho status to standard status format
-              let projectStatus = 'RUNNING'; // Default to RUNNING
-              const zohoStatus = (zp.status || zp.custom_status_name || '').toLowerCase();
-              if (zohoStatus.includes('completed') || zohoStatus.includes('closed') || zohoStatus.includes('done')) {
-                projectStatus = 'COMPLETED';
-              } else if (zohoStatus.includes('failed') || zohoStatus.includes('cancelled') || zohoStatus.includes('error')) {
-                projectStatus = 'FAILED';
-              } else if (zohoStatus.includes('running') || zohoStatus.includes('in progress') || zohoStatus.includes('active') || zohoStatus.includes('open')) {
-                projectStatus = 'RUNNING';
+              // Status and exported_to_linux: prefer projects table when Zoho project is linked to local (in DB)
+              let exportedToLinux: boolean;
+              let projectStatus: string;
+              const fromProjectsTable = asiProjectId != null ? localProjectStatusById.get(asiProjectId) : null;
+              if (fromProjectsTable) {
+                exportedToLinux = fromProjectsTable.exported_to_linux;
+                projectStatus = fromProjectsTable.status;
+                console.log(`  [Zoho project] name=${zp.name} | from projects table (id=${asiProjectId}) | exported_to_linux=${exportedToLinux} | projectStatus=>${projectStatus}`);
+              } else {
+                // Not in projects table yet: use zoho_project_exports and Zoho API
+                exportedToLinux = exportStatuses.get(zp.id.toString()) || false;
+                projectStatus = 'IDLE';
+                const zohoStatus = (zp.status || zp.custom_status_name || '').toLowerCase();
+                if (zohoStatus.includes('completed') || zohoStatus.includes('closed') || zohoStatus.includes('done')) {
+                  projectStatus = 'COMPLETED';
+                } else if (zohoStatus.includes('failed') || zohoStatus.includes('cancelled') || zohoStatus.includes('error')) {
+                  projectStatus = 'FAILED';
+                } else if (exportedToLinux) {
+                  projectStatus = 'RUNNING';
+                } else if (zohoStatus.includes('running') || zohoStatus.includes('in progress')) {
+                  projectStatus = 'RUNNING';
+                }
+                console.log(`  [Zoho project] name=${zp.name} | not in projects table | zohoStatus="${zohoStatus}" | exported_to_linux=${exportedToLinux} | projectStatus=>${projectStatus}`);
               }
-              
+              // Use local project last_run_at for mapped projects when not set from run dirs
+              if (lastRunAt == null && fromProjectsTable?.last_run_at) lastRunAt = fromProjectsTable.last_run_at;
+
               // Extract technology_node from Zoho project data
               // Check multiple possible field names and locations
               let technologyNode: string | null = null;
@@ -553,7 +598,8 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
                 portal_id: currentPortalId, // Also store at top level for easy access
                 exported_to_linux: exportedToLinux, // Add export status flag
                 run_directory: zohoRunDirectory, // Latest run directory (for backward compatibility)
-                run_directories: zohoRunDirectories // All run directories for the logged-in user
+                run_directories: zohoRunDirectories, // All run directories for the logged-in user
+                last_run_at: lastRunAt || zp.created_time || null // Latest run timestamp for project card
               };
           });
 
@@ -598,7 +644,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
               zoho: 0,
               total: filteredLocalProjects.length
             },
-            message: adminZohoOnly
+            message: userRole === 'admin'
               ? 'Zoho not connected. Showing local projects. Connect Zoho to see Zoho projects.'
               : 'Zoho Projects not connected. Use /api/zoho/auth to connect.'
           });
@@ -620,8 +666,17 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       }
     }
 
-    // Default: return only local projects with technology_node (never reached for admin)
-    res.json(filteredLocalProjects);
+    // No Zoho requested: return local projects only (same shape as Zoho response)
+    return res.json({
+      local: filteredLocalProjects,
+      zoho: [],
+      all: filteredLocalProjects,
+      counts: {
+        local: filteredLocalProjects.length,
+        zoho: 0,
+        total: filteredLocalProjects.length
+      }
+    });
   } catch (error: any) {
     console.error('Error fetching projects:', error);
     res.status(500).json({ error: error.message });
@@ -1339,15 +1394,11 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
       availableViewTypes.push('customer');
     }
     
-    // Special case: If user has admin role from project profile (even if global role is not admin),
-    // ensure they have access to all views like a global admin
+    // Special case: If user has admin role from project profile only (global role is not admin),
+    // they see only the management view for that project (no block selection, no setup)
     if (projectRole === 'admin' && globalRole !== 'admin') {
-      // User is admin in this project but not globally - give them all views
-      if (!availableViewTypes.includes('engineer')) availableViewTypes.push('engineer');
-      if (!availableViewTypes.includes('lead')) availableViewTypes.push('lead');
-      if (!availableViewTypes.includes('manager')) availableViewTypes.push('manager');
-      if (!availableViewTypes.includes('management')) availableViewTypes.push('management');
-      if (!availableViewTypes.includes('cad')) availableViewTypes.push('cad');
+      availableViewTypes.length = 0;
+      availableViewTypes.push('management');
     }
     
     return res.json({
@@ -1478,8 +1529,18 @@ router.get('/management/status', authenticate, async (req: Request, res: Respons
     const userRole = (req as any).user?.role;
     const userId = (req as any).user?.id;
     
-    // Only management role and admin can access this endpoint
-    if (userRole !== 'management' && userRole !== 'admin') {
+    // Global admin/management, or user with project-role "admin" in at least one project, can access
+    if (userRole === 'management' || userRole === 'admin') {
+      // Allow
+    } else if (userId) {
+      const projectAdminCheck = await pool.query(
+        'SELECT 1 FROM user_projects WHERE user_id = $1 AND role = $2 LIMIT 1',
+        [userId, 'admin']
+      );
+      if (projectAdminCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'Access denied. Management or admin role required.' });
+      }
+    } else {
       return res.status(403).json({ error: 'Access denied. Management or admin role required.' });
     }
 

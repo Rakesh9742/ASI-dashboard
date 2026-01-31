@@ -1,6 +1,6 @@
-import 'dart:html' as html;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'providers/error_handler_provider.dart';
 import 'widgets/auth_wrapper.dart';
 import 'screens/standalone_project_screen.dart';
 import 'screens/standalone_view_screen.dart';
@@ -8,6 +8,9 @@ import 'screens/standalone_qms_dashboard_screen.dart';
 import 'screens/terminal_screen.dart';
 import 'screens/vnc_screen.dart';
 import 'providers/theme_provider.dart';
+
+/// Root navigator key so error dialog can show from any screen (e.g. login when backend is down).
+final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
   runApp(const ProviderScope(child: MyApp()));
@@ -21,6 +24,7 @@ class MyApp extends ConsumerWidget {
     final themeMode = ref.watch(themeModeProvider);
     
     return MaterialApp(
+      navigatorKey: rootNavigatorKey,
       title: 'SemiconOS',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
@@ -96,7 +100,7 @@ class MyApp extends ConsumerWidget {
         ),
       ),
       themeMode: themeMode,
-      home: const AuthWrapper(),
+      home: ErrorHandlerScope(navigatorKey: rootNavigatorKey, child: const AuthWrapper()),
       onGenerateRoute: (settings) {
         if (settings.name == '/project' || settings.name?.contains('/project') == true) {
           return MaterialPageRoute(

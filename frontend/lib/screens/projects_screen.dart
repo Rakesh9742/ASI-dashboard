@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'dart:html' as html;
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
+import '../providers/error_handler_provider.dart';
 import '../providers/tab_provider.dart';
 import '../providers/view_screen_provider.dart';
 import 'main_navigation_screen.dart';
 import 'view_screen.dart';
+
+// Brand accent for project cards (matches main nav)
+const Color _kCardAccent = Color(0xFF6366F1);
+const Color _kCardAccentSecondary = Color(0xFF4F46E5);
 
 class ProjectsScreen extends ConsumerStatefulWidget {
   const ProjectsScreen({super.key});
@@ -62,11 +68,21 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         throw Exception('No authentication token');
       }
 
-      // Non-admin (including CAD engineer): use DB only. Request Zoho projects only for admin.
+      // Only request Zoho projects when user has actually connected Zoho (avoids showing Zoho projects from stale token).
       final isAdmin = ref.read(authProvider).user?['role'] == 'admin';
+      bool includeZoho = false;
+      if (isAdmin) {
+        try {
+          final status = await _apiService.getZohoStatus(token: token);
+          includeZoho = status['connected'] == true;
+        } catch (_) {
+          includeZoho = false;
+        }
+      }
+
       Map<String, dynamic> projectsData;
       try {
-        projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: isAdmin);
+        projectsData = await _apiService.getProjectsWithZoho(token: token, includeZoho: includeZoho);
       } catch (e) {
         // If that fails, fallback to regular projects
         final projects = await _apiService.getProjects(token: token);
@@ -84,18 +100,30 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
           }
           _isLoading = false;
         });
+        // Log what UI will show after Zoho auth / refresh (for debugging project card status)
+        try {
+          print('═══ [Projects UI] After load: ${_projects.length} projects ═══');
+          for (int i = 0; i < _projects.length && i < 20; i++) {
+            final p = _projects[i];
+            final name = p['name'] ?? '?';
+            final apiStatus = p['status'] ?? '';
+            final exported = p['exported_to_linux'];
+            final source = p['source'] ?? '?';
+            final displayStatus = _getProjectStatus(p);
+            print('  [$i] name=$name | source=$source | API status=$apiStatus | exported_to_linux=$exported | _getProjectStatus=>$displayStatus');
+          }
+          if (_projects.length > 20) print('  ... and ${_projects.length - 20} more');
+          print('═══ [Projects UI] End ═══');
+        } catch (e) {
+          print('Projects UI log error: $e');
+        }
       }
     } catch (e) {
       if (mounted) {
         setState(() {
           _isLoading = false;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to load projects: $e'),
-            backgroundColor: Colors.red.shade600,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to load projects');
       }
     }
   }
@@ -133,6 +161,23 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     };
   }
 
+  void _onZohoConnectMessage(html.Event event) {
+    final messageEvent = event as html.MessageEvent;
+    final data = messageEvent.data;
+    if (data is Map && data['type'] == 'ZOHO_CONNECT_SUCCESS') {
+      html.window.removeEventListener('message', _onZohoConnectMessage);
+      if (mounted) {
+        _loadProjects();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Zoho connected successfully. Projects refreshed.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _connectZoho() async {
     final token = ref.read(authProvider).token;
     if (token == null) return;
@@ -148,25 +193,44 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         }
         return;
       }
-      final uri = Uri.parse(authUrl);
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      // Open Zoho auth in a popup window (same tab, not new tab)
+      try {
+        html.window.addEventListener('message', _onZohoConnectMessage);
+        html.window.open(
+          authUrl,
+          'zoho_connect',
+          'width=600,height=700,scrollbars=yes,resizable=yes,location=yes',
+        );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Complete authorization in the browser, then return here. Projects will refresh automatically.'),
-              duration: Duration(seconds: 5),
+              content: Text('Complete authorization in the popup window'),
+              duration: Duration(seconds: 4),
             ),
           );
-          Future.delayed(const Duration(seconds: 4), () {
-            if (mounted) _loadProjects();
-          });
         }
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Could not open browser'), backgroundColor: Colors.red),
-          );
+      } catch (e) {
+        // Fallback: open in new tab if popup blocked or not web
+        final uri = Uri.parse(authUrl);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Complete authorization in the browser, then return here.'),
+                duration: Duration(seconds: 5),
+              ),
+            );
+            Future.delayed(const Duration(seconds: 4), () {
+              if (mounted) _loadProjects();
+            });
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Could not open authorization window'), backgroundColor: Colors.red),
+            );
+          }
         }
       }
     } catch (e) {
@@ -182,6 +246,11 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Refresh projects when user navigates back to Projects screen (e.g. after closing popout)
+    ref.listen(currentNavTabProvider, (prev, next) {
+      if (next == 'Projects' && mounted) _loadProjects();
+    });
+
     final stats = _projectStats;
     final filteredProjects = _filteredProjects;
     final isAdmin = ref.watch(authProvider).user?['role'] == 'admin';
@@ -191,9 +260,12 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       color: Colors.transparent,
       child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
-                  : SingleChildScrollView(
-                      padding: const EdgeInsets.all(24.0),
-                      child: Column(
+                  : RefreshIndicator(
+                      onRefresh: _loadProjects,
+                      child: SingleChildScrollView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.all(24.0),
+                        child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           // Header with Zoho Connect (admin only)
@@ -257,6 +329,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                         ],
                       ),
                     ),
+                  ),
     );
   }
 
@@ -402,7 +475,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
             crossAxisCount: crossAxisCount,
             crossAxisSpacing: 16,
             mainAxisSpacing: 16,
-            childAspectRatio: 1.15, // Reduced from 1.35 to make cards taller
+            childAspectRatio: 1.35, // Tighter ratio = less empty space; card fills cell
           ),
           itemCount: projects.length,
           itemBuilder: (context, index) {
@@ -414,26 +487,26 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
   }
 
   String _getProjectStatus(Map<String, dynamic> project) {
-    final status = (project['status'] ?? '').toString().toUpperCase();
-    
-    // Check if project is exported to Linux - ONLY show RUNNING if exported
-    // Handle both boolean true and string "true" values
+    // If exported to Linux, show RUNNING (exported = ready to run / running) — takes precedence
     final exportedValue = project['exported_to_linux'];
-    final isExported = exportedValue == true || 
-                       exportedValue == 'true' || 
-                       exportedValue == 1 ||
-                       exportedValue == '1';
+    final isExported = exportedValue == true ||
+        exportedValue == 'true' ||
+        exportedValue == 1 ||
+        exportedValue == '1';
     if (isExported) {
       return 'RUNNING';
     }
-    
-    // If not exported, show other statuses or default to IDLE
+    // Else use API status (COMPLETED, FAILED, RUNNING, IDLE)
+    final status = (project['status'] ?? '').toString().toUpperCase();
     if (status == 'COMPLETED' || status == 'COMPLETE') {
       return 'COMPLETED';
-    } else if (status == 'FAILED' || status == 'ERROR') {
+    }
+    if (status == 'FAILED' || status == 'ERROR') {
       return 'FAILED';
     }
-    // Default to IDLE for all other cases (including RUNNING/IN_PROGRESS if not exported)
+    if (status == 'RUNNING' || status == 'IN PROGRESS' || status == 'IN_PROGRESS' || status == 'ACTIVE') {
+      return 'RUNNING';
+    }
     return 'IDLE';
   }
 
@@ -465,6 +538,21 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     }
   }
 
+  /// Format last run timestamp for display (e.g. "Jan 15, 2025, 3:00 PM").
+  String? _formatLastRunDate(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return null;
+    try {
+      final date = DateTime.parse(dateString);
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      final hour = date.hour > 12 ? date.hour - 12 : (date.hour == 0 ? 12 : date.hour);
+      final ampm = date.hour >= 12 ? 'PM' : 'AM';
+      final min = date.minute.toString().padLeft(2, '0');
+      return '${months[date.month - 1]} ${date.day}, ${date.year}, $hour:$min $ampm';
+    } catch (e) {
+      return null;
+    }
+  }
+
   String _stripHtmlTags(String? htmlString) {
     if (htmlString == null || htmlString.isEmpty) return '';
     // Remove HTML tags using regex
@@ -482,7 +570,8 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     final status = _getProjectStatus(project);
     final statusConfig = _getStatusConfig(status);
     final projectName = project['name'] ?? 'Unnamed Project';
-    final rawDescription = project['description'] ?? project['client'] ?? 'Hardware design project';
+    // Use only project description; do not show owner/client name on the card
+    final rawDescription = project['description'] ?? 'Hardware design project';
     final description = _stripHtmlTags(rawDescription.toString());
     final gateCount = project['gate_count'] ?? project['gateCount'] ?? 'N/A';
     // Get technology node from project details - check multiple possible locations
@@ -493,7 +582,12 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                        projectDetails?['technology_node'] ?? 
                        zohoData?['technology_node'] ?? 
                        'N/A';
-    final lastRun = _formatTimeAgo(project['last_run']?.toString() ?? project['updated_at']?.toString());
+    // Prefer last_run_at (from stages) for last run; fallback to last_run / updated_at
+    final lastRunAtRaw = project['last_run_at']?.toString() ?? project['last_run']?.toString() ?? project['updated_at']?.toString();
+    final lastRun = _formatTimeAgo(lastRunAtRaw);
+    final lastRunDateFormatted = lastRunAtRaw != null && lastRunAtRaw.isNotEmpty
+        ? _formatLastRunDate(lastRunAtRaw)
+        : null;
     // Get run directories - check for array first, then fallback to single
     final runDirectoriesList = project['run_directories'];
     final List<String> runDirectories = runDirectoriesList != null && runDirectoriesList is List
@@ -544,6 +638,20 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       }
     }
 
+    void handleProjectAdminClick() {
+      if (projectName == null) return;
+      ref.read(viewScreenParamsProvider.notifier).state = ViewScreenParams(
+        project: projectName!,
+        viewType: 'management',
+      );
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const ViewScreen(),
+        ),
+      );
+    }
+
     final userRole = ref.read(authProvider).user?['role'];
     
     // Determine project identifier - prefer Zoho project ID for Zoho projects
@@ -551,23 +659,27 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                              project['id']?.toString() ?? 
                              projectName;
     
-    // Check project-specific CAD engineer role
+    // Check project-specific role (CAD, admin, etc.)
     return FutureBuilder<Map<String, dynamic>>(
       future: _checkProjectCadRole(projectIdentifier),
       builder: (context, snapshot) {
-        // Get effective role (project-specific if available, otherwise global)
+        // Get effective role and project-only role (project-specific if available, otherwise global)
         final effectiveRole = snapshot.hasData ? snapshot.data!['effectiveRole'] : userRole;
+        final projectRole = snapshot.hasData ? snapshot.data!['projectRole'] : null;
+        // Project-role admin: only management view, no Setup button, open directly to management
+        final isProjectAdminOnly = projectRole == 'admin' && userRole != 'admin';
         
         // Check if user is CAD engineer (global or project-specific)
         // Only CAD engineers should see Export to Linux button
         final isCadEngineerForProject = effectiveRole == 'cad_engineer' || 
                                         userRole == 'cad_engineer';
         
-        // Check if user is NOT a CAD engineer
-        // Setup button is for non-CAD roles except admin (admin only sees Sync Projects on cards)
+        // Check if user is NOT a CAD engineer and NOT project-role admin (project admin has no Setup)
+        // Setup button is for non-CAD roles except global admin and project-role admin
         final isEngineerForProject = effectiveRole != 'cad_engineer' && 
                                      userRole != 'cad_engineer' &&
-                                     userRole != 'admin';
+                                     userRole != 'admin' &&
+                                     !isProjectAdminOnly;
         
         // Check export status from project data (from API) - handle both boolean and string values
         final exportedValue = project['exported_to_linux'];
@@ -602,11 +714,13 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
           startDate: startDate?.isNotEmpty == true ? startDate : null,
           targetDate: targetDate?.isNotEmpty == true ? targetDate : null,
           lastRun: lastRun,
+          lastRunDateFormatted: lastRunDateFormatted,
+          latestRunStatus: project['latest_run_status']?.toString(),
           progress: progress,
           isRunning: isRunning,
           runDirectory: runDirectory,
           runDirectories: runDirectories,
-          onTap: handleProjectClick,
+          onTap: isProjectAdminOnly ? handleProjectAdminClick : handleProjectClick,
           canExportToLinux: isCadEngineerForProject,
           isExported: isExported,
           isSetupCompleted: isSetupCompleted,
@@ -633,9 +747,9 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     switch (status) {
       case 'IDLE':
         return {
-          'color': isDark ? Colors.grey.shade700 : Colors.grey.shade300,
-          'icon': Icons.access_time,
-          'textColor': Colors.white,
+          'color': isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+          'icon': Icons.access_time_rounded,
+          'textColor': isDark ? Colors.grey.shade200 : Colors.grey.shade800,
         };
       case 'RUNNING':
         return {
@@ -657,9 +771,9 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         };
       default:
         return {
-          'color': isDark ? Colors.grey.shade700 : Colors.grey.shade300,
-          'icon': Icons.access_time,
-          'textColor': Colors.white,
+          'color': isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+          'icon': Icons.access_time_rounded,
+          'textColor': isDark ? Colors.grey.shade200 : Colors.grey.shade800,
         };
     }
   }
@@ -1056,6 +1170,8 @@ class _ProjectCardWidget extends StatefulWidget {
   final String? startDate;
   final String? targetDate;
   final String lastRun;
+  final String? lastRunDateFormatted;
+  final String? latestRunStatus;
   final double progress;
   final bool isRunning;
   final String? runDirectory;
@@ -1081,6 +1197,8 @@ class _ProjectCardWidget extends StatefulWidget {
     this.startDate,
     this.targetDate,
     required this.lastRun,
+    this.lastRunDateFormatted,
+    this.latestRunStatus,
     required this.progress,
     required this.isRunning,
     this.runDirectory,
@@ -1105,404 +1223,474 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final statusColor = widget.statusConfig['color'] as Color;
+
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
       child: InkWell(
         onTap: widget.onTap,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(16),
         child: Container(
-          padding: const EdgeInsets.all(20),
+          height: double.infinity,
           decoration: BoxDecoration(
-            color: Theme.of(context).cardColor,
-            borderRadius: BorderRadius.circular(12),
+            color: theme.cardColor,
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: _isHovered 
-                  ? Theme.of(context).colorScheme.primary.withOpacity(0.5)
-                  : Theme.of(context).dividerColor, 
-              width: 1,
+              color: _isHovered ? _kCardAccent.withOpacity(0.4) : theme.dividerColor.withOpacity(0.6),
+              width: _isHovered ? 1.5 : 1,
             ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(isDark ? 0.2 : 0.06),
+                blurRadius: _isHovered ? 16 : 8,
+                offset: Offset(0, _isHovered ? 4 : 2),
+              ),
+            ],
           ),
-          child: SingleChildScrollView(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(16),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.max,
               children: [
-              // Header with Icon and Status Badge
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Icon with gradient background
-                  Container(
-                    width: 64,
-                    height: 64,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          Theme.of(context).colorScheme.primary,
-                          Theme.of(context).colorScheme.secondary,
-                        ],
-                      ),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Icon(
-                      Icons.memory,
-                      color: Colors.white,
-                      size: 32,
-                    ),
-                  ),
-                  // Status Badge
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: widget.statusConfig['color'] as Color,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          widget.statusConfig['icon'] as IconData,
-                          size: 12,
-                          color: widget.statusConfig['textColor'] as Color? ?? Colors.white,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          widget.status,
-                          style: TextStyle(
-                            color: widget.statusConfig['textColor'] as Color? ?? Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              
-              // Project Name
-              Text(
-                widget.projectName,
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: Theme.of(context).colorScheme.onSurface,
+                // Top accent bar by status
+                Container(
+                  height: 4,
+                  color: statusColor,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 16),
-              
-              // Details Grid - Gate Count and Technology
-              Row(
-                children: [
-                  if (widget.gateCount != 'N/A')
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Gate Count',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            widget.gateCount,
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: Theme.of(context).colorScheme.onSurface,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  Expanded(
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          'Technology',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          widget.technology,
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              if (widget.startDate != null || widget.targetDate != null) ...[
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    if (widget.startDate != null)
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        // Header: icon + status pill
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            Text(
-                              'Start',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                            Container(
+                              width: 52,
+                              height: 52,
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [_kCardAccent, _kCardAccentSecondary],
+                                ),
+                                borderRadius: BorderRadius.circular(14),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: _kCardAccent.withOpacity(0.25),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.developer_board,
+                                color: Colors.white,
+                                size: 26,
                               ),
                             ),
-                            const SizedBox(height: 2),
-                            Text(
-                              widget.startDate!,
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Theme.of(context).colorScheme.onSurface,
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    widget.projectName,
+                                    style: theme.textTheme.titleLarge?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                      color: theme.colorScheme.onSurface,
+                                      letterSpacing: -0.3,
+                                    ) ?? TextStyle(
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.w700,
+                                      color: theme.colorScheme.onSurface,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                    decoration: BoxDecoration(
+                                      color: statusColor.withOpacity(0.15),
+                                      borderRadius: BorderRadius.circular(20),
+                                      border: Border.all(color: statusColor.withOpacity(0.4), width: 1),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          widget.statusConfig['icon'] as IconData,
+                                          size: 12,
+                                          color: statusColor,
+                                        ),
+                                        const SizedBox(width: 5),
+                                        Text(
+                                          widget.status,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: statusColor,
+                                            letterSpacing: 0.3,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
                         ),
-                      ),
-                    if (widget.targetDate != null)
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Target',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              widget.targetDate!,
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Theme.of(context).colorScheme.onSurface,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-              ],
-              const SizedBox(height: 12),
-              
-              // Last Run
-              Text(
-                'Last run: ${widget.lastRun}',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                ),
-              ),
-              
-              // Run Directories (if available) - show only latest
-              if (widget.runDirectories.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: Theme.of(context).colorScheme.primary.withOpacity(0.2),
-                        width: 1,
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.folder,
-                          size: 16,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            widget.runDirectories.last, // Show only the latest directory
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: Theme.of(context).colorScheme.primary,
-                              fontFamily: 'monospace',
+                        if (widget.description.isNotEmpty && widget.description != 'Hardware design project') ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            widget.description,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurface.withOpacity(0.65),
+                              height: 1.35,
+                            ) ?? TextStyle(
+                              fontSize: 13,
+                              color: theme.colorScheme.onSurface.withOpacity(0.65),
                             ),
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           ),
+                        ],
+                        const SizedBox(height: 16),
+                        // Meta row: gate count, technology
+                        Wrap(
+                          spacing: 16,
+                          runSpacing: 10,
+                          children: [
+                            if (widget.gateCount != 'N/A')
+                              _metaChip(
+                                context,
+                                Icons.grid_view_rounded,
+                                widget.gateCount,
+                                'Gates',
+                              ),
+                            _metaChip(
+                              context,
+                              Icons.memory,
+                              widget.technology,
+                              'Tech',
+                              valueFontSize: 20,
+                            ),
+                          ],
+                        ),
+                        // Last run history: date, relative time, and status
+                        const SizedBox(height: 12),
+                        _buildLastRunSection(context, theme, statusColor),
+                        if (widget.startDate != null || widget.targetDate != null) ...[
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              if (widget.startDate != null)
+                                Expanded(
+                                  child: _dateRow(context, Icons.play_circle_outline_rounded, 'Start', widget.startDate!),
+                                ),
+                              if (widget.targetDate != null)
+                                Expanded(
+                                  child: _dateRow(context, Icons.flag_outlined, 'Target', widget.targetDate!),
+                                ),
+                            ],
+                          ),
+                        ],
+                        if (widget.runDirectories.isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: _kCardAccent.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: _kCardAccent.withOpacity(0.2)),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(Icons.folder_rounded, size: 16, color: _kCardAccent),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    widget.runDirectories.last,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontFamily: 'monospace',
+                                      color: theme.colorScheme.onSurface.withOpacity(0.8),
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                        if (widget.isRunning) ...[
+                          const SizedBox(height: 14),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                'Progress',
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: theme.colorScheme.onSurface.withOpacity(0.6),
+                                ),
+                              ),
+                              Text(
+                                '${widget.progress.toInt()}%',
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: statusColor,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(999),
+                            child: LinearProgressIndicator(
+                              value: (widget.progress / 100).clamp(0.0, 1.0),
+                              backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                              valueColor: AlwaysStoppedAnimation<Color>(statusColor),
+                              minHeight: 6,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        Divider(height: 1, color: theme.dividerColor.withOpacity(0.6)),
+                        const SizedBox(height: 14),
+                        // Footer: Open + actions
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'Open project',
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                    color: _kCardAccent,
+                                  ) ?? TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: _kCardAccent,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Icon(Icons.arrow_forward_rounded, size: 18, color: _kCardAccent),
+                              ],
+                            ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (widget.canSyncProjects) _actionChip(context, Icons.sync_rounded, 'Sync', widget.onSyncProjects!, accent: _kCardAccent),
+                                if (widget.canSetup) _actionChip(context, Icons.settings_rounded, 'Setup', widget.onSetup!),
+                                if (widget.canExportToLinux)
+                                  (widget.isExported || widget.isSetupCompleted)
+                                      ? Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF10B981).withOpacity(0.15),
+                                            borderRadius: BorderRadius.circular(8),
+                                            border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5)),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(Icons.check_circle_rounded, size: 14, color: Colors.green.shade700),
+                                              const SizedBox(width: 5),
+                                              Text('Exported', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.green.shade700)),
+                                            ],
+                                          ),
+                                        )
+                                      : _actionChip(context, Icons.file_download_rounded, 'Setup', widget.onExportToLinux!, accent: _kCardAccent),
+                              ],
+                            ),
+                          ],
                         ),
                       ],
                     ),
                   ),
                 ),
               ],
-              
-              const SizedBox(height: 12),
-              
-              // Progress Bar (if running)
-              if (widget.isRunning) ...[
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Progress',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                      ),
-                    ),
-                    Text(
-                      '${widget.progress.toInt()}%',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                      ),
-                    ),
-                  ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLastRunSection(BuildContext context, ThemeData theme, Color statusColor) {
+    final hasDate = widget.lastRunDateFormatted != null && widget.lastRunDateFormatted!.isNotEmpty;
+    final hasStatus = widget.latestRunStatus != null && widget.latestRunStatus!.isNotEmpty;
+    final runStatus = widget.latestRunStatus?.toLowerCase() ?? '';
+    Color runStatusColor = theme.colorScheme.onSurface.withOpacity(0.6);
+    String runStatusLabel = widget.latestRunStatus ?? '';
+    if (runStatus == 'pass' || runStatus == 'completed' || runStatus == 'done') {
+      runStatusColor = const Color(0xFF10B981);
+      runStatusLabel = 'Pass';
+    } else if (runStatus == 'fail' || runStatus == 'failed' || runStatus == 'error') {
+      runStatusColor = const Color(0xFFEF4444);
+      runStatusLabel = 'Failed';
+    } else if (runStatus == 'running' || runStatus == 'in progress' || runStatus == 'active') {
+      runStatusColor = theme.colorScheme.secondary;
+      runStatusLabel = 'Running';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.history_rounded, size: 14, color: theme.colorScheme.onSurface.withOpacity(0.6)),
+              const SizedBox(width: 6),
+              Text(
+                'Last run',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withOpacity(0.6),
+                  fontWeight: FontWeight.w600,
                 ),
-                const SizedBox(height: 6),
-                Container(
-                  width: double.infinity,
-                  height: 6,
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: FractionallySizedBox(
-                    alignment: Alignment.centerLeft,
-                    widthFactor: (widget.progress / 100).clamp(0.0, 1.0),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: widget.statusConfig['color'] as Color,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-              ],
-              
-              // Divider
-              Divider(
-                color: Theme.of(context).dividerColor,
-                height: 1,
-              ),
-              const SizedBox(height: 8),
-              
-              // Footer actions
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Click to open',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                    ),
-                  ),
-                  Row(
-                    children: [
-                      if (widget.canSyncProjects)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8.0),
-                          child: OutlinedButton.icon(
-                            onPressed: widget.onSyncProjects,
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                              side: BorderSide(color: const Color(0xFF14B8A6)),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            icon: const Icon(Icons.sync, size: 16),
-                            label: const Text(
-                              'Sync Projects',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ),
-                        ),
-                      if (widget.canSetup)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8.0),
-                          child: OutlinedButton.icon(
-                            onPressed: widget.onSetup,
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                              side: BorderSide(color: Theme.of(context).colorScheme.secondary),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            icon: const Icon(Icons.settings, size: 16),
-                            label: const Text(
-                              'Setup',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ),
-                        ),
-                      if (widget.canExportToLinux)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8.0),
-                          child: (widget.isExported || widget.isSetupCompleted)
-                              ? ElevatedButton.icon(
-                                  onPressed: null, // Disabled when already exported
-                                  style: ElevatedButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                    backgroundColor: Colors.green,
-                                    foregroundColor: Colors.white,
-                                    disabledBackgroundColor: Colors.green.shade700,
-                                    disabledForegroundColor: Colors.white,
-                                    visualDensity: VisualDensity.compact,
-                                  ),
-                                  icon: const Icon(Icons.check_circle, size: 16),
-                                  label: const Text(
-                                    'Exported',
-                                    style: TextStyle(fontSize: 12),
-                                  ),
-                                )
-                              : OutlinedButton.icon(
-                                  onPressed: widget.onExportToLinux,
-                                  style: OutlinedButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                    side: BorderSide(color: Theme.of(context).colorScheme.primary),
-                                    visualDensity: VisualDensity.compact,
-                                  ),
-                                  icon: const Icon(Icons.file_download, size: 16),
-                                  label: const Text(
-                                    'Project Setup',
-                                    style: TextStyle(fontSize: 12),
-                                  ),
-                                ),
-                        ),
-                      Icon(
-                        Icons.arrow_forward,
-                        size: 16,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                    ],
-                  ),
-                ],
               ),
             ],
+          ),
+          const SizedBox(height: 6),
+          if (hasDate || widget.lastRun != 'N/A') ...[
+            Text(
+              hasDate
+                  ? '${widget.lastRunDateFormatted} · ${widget.lastRun}'
+                  : widget.lastRun,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface,
+                fontSize: 12,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            if (hasStatus) const SizedBox(height: 6),
+          ],
+          if (hasStatus)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: runStatusColor.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: runStatusColor.withOpacity(0.4)),
+              ),
+              child: Text(
+                runStatusLabel,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: runStatusColor,
+                ),
+              ),
+            ),
+          if (!hasDate && widget.lastRun == 'N/A' && !hasStatus)
+            Text(
+              'No runs yet',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withOpacity(0.5),
+                fontSize: 12,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _metaChip(BuildContext context, IconData icon, String value, String? label, {double? valueFontSize}) {
+    final theme = Theme.of(context);
+    final fontSize = valueFontSize ?? 13.0;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: fontSize > 13 ? 15 : 14, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+        const SizedBox(width: 5),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: fontSize,
+            fontWeight: FontWeight.w600,
+            color: theme.colorScheme.onSurface,
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+        if (label != null) ...[
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: valueFontSize != null ? 12 : 11,
+              color: theme.colorScheme.onSurface.withOpacity(0.5),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _dateRow(BuildContext context, IconData icon, String label, String value) {
+    final theme = Theme.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+        const SizedBox(width: 6),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label, style: TextStyle(fontSize: 10, color: theme.colorScheme.onSurface.withOpacity(0.5), fontWeight: FontWeight.w500)),
+            Text(value, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: theme.colorScheme.onSurface)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _actionChip(BuildContext context, IconData icon, String label, VoidCallback onTap, {Color? accent}) {
+    final theme = Theme.of(context);
+    final color = accent ?? theme.colorScheme.primary;
+    return Padding(
+      padding: const EdgeInsets.only(left: 6.0),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              border: Border.all(color: color.withOpacity(0.6)),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 14, color: color),
+                const SizedBox(width: 5),
+                Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+              ],
             ),
           ),
         ),

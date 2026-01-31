@@ -250,15 +250,6 @@ router.get('/callback', async (req, res) => {
           { expiresIn: jwtExpiresIn } as SignOptions
         );
 
-        // Establish SSH connection in background (non-blocking) to avoid login delay
-        const { getSSHConnection } = await import('../services/ssh.service');
-        getSSHConnection(user.id).then(() => {
-          // SSH connection established in background
-        }).catch((err: any) => {
-          console.error(`Failed to establish SSH connection for user ${user.id} (background, Zoho login):`, err);
-          // Connection will be retried when user actually needs SSH functionality
-        });
-
         // Return success page with token (for frontend to capture)
         return res.send(`
           <html>
@@ -389,18 +380,21 @@ router.get('/callback', async (req, res) => {
         throw saveError;
       }
 
-      // Redirect to success page or return success response
+      // Success page: notify opener (popup) so it can refresh, then close
       return res.send(`
         <html>
           <head><title>Zoho Authorization Success</title></head>
           <body>
             <h1>✅ Authorization Successful!</h1>
             <p>You have successfully connected your Zoho Projects account.</p>
-            <p>You can close this window and return to the application.</p>
+            <p>This window will close automatically.</p>
             <script>
-              setTimeout(() => {
-                window.close();
-              }, 3000);
+              if (window.opener) {
+                try {
+                  window.opener.postMessage({ type: 'ZOHO_CONNECT_SUCCESS' }, '*');
+                } catch (e) {}
+              }
+              setTimeout(function() { window.close(); }, 1500);
             </script>
           </body>
         </html>
@@ -557,18 +551,18 @@ router.get('/projects', authenticate, authorize('admin'), async (req, res) => {
       portalId as string | undefined
     );
     
-    // Get SSH username for run directory lookup
+    // Get SSH username for run directory lookup from database only (do not open SSH on this route)
     let userUsername: string | null = null;
     if (userId) {
       try {
-        const { executeSSHCommand } = await import('../services/ssh.service');
-        const whoamiResult = await executeSSHCommand(userId, 'whoami', 1);
-        if (whoamiResult.stdout && whoamiResult.stdout.trim()) {
-          userUsername = whoamiResult.stdout.trim();
+        const userRow = await pool.query(
+          'SELECT ssh_user FROM users WHERE id = $1',
+          [userId]
+        );
+        if (userRow.rows.length > 0 && userRow.rows[0].ssh_user) {
+          userUsername = userRow.rows[0].ssh_user;
         }
-      } catch (e) {
-        // If SSH command fails, try to get from database
-        try {
+        if (!userUsername) {
           const zohoRunResult = await pool.query(
             `SELECT DISTINCT user_name 
              FROM zoho_project_run_directories 
@@ -580,12 +574,12 @@ router.get('/projects', authenticate, authorize('admin'), async (req, res) => {
           if (zohoRunResult.rows.length > 0 && zohoRunResult.rows[0].user_name) {
             userUsername = zohoRunResult.rows[0].user_name;
           }
-        } catch (dbError) {
-          // Silent fallback
         }
+      } catch (dbError) {
+        // Silent fallback
       }
     }
-    
+
     // Get portal ID for export status check
     let currentPortalId = portalId as string | undefined;
     if (!currentPortalId) {

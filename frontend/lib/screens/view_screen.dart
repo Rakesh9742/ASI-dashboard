@@ -184,6 +184,27 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
     return [];
   }
 
+  /// Convert Map (possibly JS interop on web) to Dart Map<String, dynamic> to avoid LegacyJavaScriptObject in widget tree.
+  Map<String, dynamic> _mapToDartMap(Map<dynamic, dynamic> map) {
+    final result = <String, dynamic>{};
+    map.forEach((key, value) {
+      final k = key?.toString();
+      if (k == null || k.isEmpty) return;
+      if (value is Map) {
+        result[k] = _mapToDartMap(Map<dynamic, dynamic>.from(value));
+      } else if (value is List) {
+        result[k] = (value as List).map((e) {
+          if (e is Map) return _mapToDartMap(Map<dynamic, dynamic>.from(e));
+          if (e is List) return (e as List).map((e2) => e2 is Map ? _mapToDartMap(Map<dynamic, dynamic>.from(e2)) : e2).toList();
+          return e;
+        }).toList();
+      } else {
+        result[k] = value;
+      }
+    });
+    return result;
+  }
+
   Future<void> _loadProjectsAndDomains() async {
     setState(() {
       _isLoading = true;
@@ -646,8 +667,9 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       );
     }
     
-    // Show project and domain selection if not selected (for non-customers)
-    if (_selectedProject == null || _selectedDomain == null) {
+    // Show project and domain selection if not selected (for non-customers). Management view does not require domain.
+    final needDomain = _viewType != 'management';
+    if (_selectedProject == null || (needDomain && _selectedDomain == null)) {
       return Scaffold(
         backgroundColor: const Color(0xFFF8FAFC),
         body: SingleChildScrollView(
@@ -683,7 +705,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       );
     }
 
-    if (_groupedData.isEmpty) {
+    // Management view uses its own API (all projects); others need EDA/grouped data
+    if (_groupedData.isEmpty && _viewType != 'management') {
       return Scaffold(
         backgroundColor: const Color(0xFFF8FAFC),
         body: SingleChildScrollView(
@@ -972,8 +995,8 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                 ),
               ),
               const SizedBox(width: 16),
-              // Domain Dropdown
-              if (_selectedProject != null) ...[
+              // Domain Dropdown (hidden for management view - domain not required)
+              if (_viewType != 'management' && _selectedProject != null) ...[
                 if (_isLoadingDomains)
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1017,13 +1040,23 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
               ],
             ],
           ),
-          // Right side: View Type Selector (only show when project and domain are selected, and not customer)
-          if (_selectedProject != null && _selectedDomain != null)
+          // Right side: View Type Selector (management view doesn't require domain)
+          if (_selectedProject != null && (_selectedDomain != null || _viewType == 'management'))
             Builder(
               builder: (context) {
                 final userRole = ref.read(authProvider).user?['role'];
                 if (userRole == 'customer') {
                   return const SizedBox.shrink();
+                }
+                // Project-role admin only has management view: show label only, no selector
+                if (_projectRole == 'admin' && userRole != 'admin' && _availableViewTypes.length == 1 && _availableViewTypes.contains('management')) {
+                  return const Padding(
+                    padding: EdgeInsets.only(left: 16),
+                    child: Text(
+                      'Management View',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF1E293B)),
+                    ),
+                  );
                 }
                 // Only show view types that are available for the current project
                 final viewTypeChipsInline = <Widget>[];
@@ -7135,6 +7168,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   // Management view state
   bool _isLoadingManagementData = false;
   List<dynamic> _managementProjects = [];
+  String? _managementLoadError; // Persistent error message (shown in box, not flickering SnackBar)
 
   // CAD engineer view state
   bool _isLoadingCadStatus = false;
@@ -7145,6 +7179,7 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
   Future<void> _loadManagementData() async {
     setState(() {
       _isLoadingManagementData = true;
+      _managementLoadError = null;
     });
 
     try {
@@ -7154,9 +7189,17 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
       final response = await _apiService.getManagementStatus(token: token);
       
       if (response['success'] == true) {
+        final raw = response['projects'];
+        final list = raw is List ? List<dynamic>.from(raw) : <dynamic>[];
+        // Convert each item to Dart Map to avoid LegacyJavaScriptObject on web (Flutter inspector expects DiagnosticsNode)
+        final projects = list.map<Map<String, dynamic>>((e) {
+          if (e is Map) return _mapToDartMap(Map<dynamic, dynamic>.from(e));
+          return <String, dynamic>{};
+        }).toList();
         setState(() {
-          _managementProjects = List<dynamic>.from(response['projects'] ?? []);
+          _managementProjects = projects;
           _isLoadingManagementData = false;
+          _managementLoadError = null;
         });
       } else {
         setState(() {
@@ -7164,17 +7207,11 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         });
       }
     } catch (e) {
+      final message = e is Exception ? e.toString().replaceFirst('Exception: ', '') : e.toString();
       setState(() {
         _isLoadingManagementData = false;
+        _managementLoadError = message;
       });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error loading management data: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
     }
   }
 
@@ -7199,6 +7236,49 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
                 style: TextStyle(color: Colors.grey, fontSize: 16),
               ),
             ],
+          ),
+        ),
+      );
+    }
+
+    if (_managementLoadError != null && _managementLoadError!.isNotEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Card(
+            elevation: 2,
+            color: Colors.red.shade50,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: Colors.red.shade300, width: 1),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Unable to load Management View',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.red.shade900,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _managementLoadError!,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.red.shade800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       );
@@ -10277,14 +10357,6 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
         ? ((daysElapsed / totalDays) * 100).clamp(0, 100)
         : 0.0;
     
-    // Mock budget data (would come from actual budget system)
-    final budgetData = {
-      'allocated': 1000000.0,
-      'spent': 750000.0,
-      'remaining': 250000.0,
-      'utilization': 75.0,
-    };
-    
     return Row(
       children: [
         Expanded(
@@ -10365,126 +10437,6 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             ),
           ),
         ),
-        const SizedBox(width: 24),
-        Expanded(
-          child: _buildManagerCard(
-            'Budget Tracking',
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    _buildBudgetItem('Allocated', '\$${(budgetData['allocated']! / 1000).toStringAsFixed(0)}K', const Color(0xFF3B82F6)),
-                    _buildBudgetItem('Spent', '\$${(budgetData['spent']! / 1000).toStringAsFixed(0)}K', const Color(0xFFF59E0B)),
-                    _buildBudgetItem('Remaining', '\$${(budgetData['remaining']! / 1000).toStringAsFixed(0)}K', const Color(0xFF10B981)),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Budget Utilization',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF1E293B),
-                          ),
-                        ),
-                        Text(
-                          '${budgetData['utilization']!.toStringAsFixed(1)}%',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: budgetData['utilization']! >= 90
-                                ? const Color(0xFFEF4444)
-                                : budgetData['utilization']! >= 75
-                                    ? const Color(0xFFF59E0B)
-                                    : const Color(0xFF10B981),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    LinearProgressIndicator(
-                      value: budgetData['utilization']! / 100,
-                      backgroundColor: Colors.grey[200],
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        budgetData['utilization']! >= 90
-                            ? const Color(0xFFEF4444)
-                            : budgetData['utilization']! >= 75
-                                ? const Color(0xFFF59E0B)
-                                : const Color(0xFF10B981),
-                      ),
-                      minHeight: 8,
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: [
-                          Column(
-                            children: [
-                              Text(
-                                '\$${(budgetData['spent']! / budgetData['allocated']! * 100).toStringAsFixed(1)}%',
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w900,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
-                              const Text(
-                                'Spent',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Color(0xFF94A3B8),
-                                ),
-                              ),
-                            ],
-                          ),
-                          Container(
-                            width: 1,
-                            height: 40,
-                            color: const Color(0xFFE2E8F0),
-                          ),
-                          Column(
-                            children: [
-                              Text(
-                                '\$${(budgetData['remaining']! / budgetData['allocated']! * 100).toStringAsFixed(1)}%',
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w900,
-                                  color: Color(0xFF1E293B),
-                                ),
-                              ),
-                              const Text(
-                                'Remaining',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Color(0xFF94A3B8),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
       ],
     );
   }
@@ -10509,32 +10461,6 @@ class _ViewScreenState extends ConsumerState<ViewScreen> {
             fontSize: 16,
             fontWeight: FontWeight.w700,
             color: Color(0xFF1E293B),
-          ),
-        ),
-      ],
-    );
-  }
-
-  // Build Budget Item
-  Widget _buildBudgetItem(String label, String value, Color color) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: Color(0xFF94A3B8),
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w900,
-            color: color,
           ),
         ),
       ],

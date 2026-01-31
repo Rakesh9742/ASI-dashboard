@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'dart:html' as html;
 import '../providers/auth_provider.dart';
+import '../providers/error_handler_provider.dart';
 import '../services/api_service.dart';
 
 class ZohoIntegrationScreen extends ConsumerStatefulWidget {
@@ -71,45 +73,75 @@ class _ZohoIntegrationScreenState extends ConsumerState<ZohoIntegrationScreen> {
     }
   }
 
+  void _onZohoConnectMessage(html.Event event) {
+    final messageEvent = event as html.MessageEvent;
+    final data = messageEvent.data;
+    if (data is Map && data['type'] == 'ZOHO_CONNECT_SUCCESS') {
+      html.window.removeEventListener('message', _onZohoConnectMessage);
+      if (mounted) {
+        _checkStatus();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Zoho connected successfully.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _connectZoho() async {
     setState(() => _isLoading = true);
     try {
       final authState = ref.read(authProvider);
       final token = authState.token;
-      
+
       if (token == null) {
         _showError('Please log in first');
         return;
       }
 
-      // Get authorization URL
       final response = await _apiService.getZohoAuthUrl(token: token);
       final authUrl = response['authUrl'] as String;
 
-      // Open browser for OAuth
-      final uri = Uri.parse(authUrl);
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-        
-        // Show success message and check status after a delay
+      // Open Zoho auth in a popup window (same tab, not new tab)
+      try {
+        html.window.addEventListener('message', _onZohoConnectMessage);
+        html.window.open(
+          authUrl,
+          'zoho_connect',
+          'width=600,height=700,scrollbars=yes,resizable=yes,location=yes',
+        );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Please complete authorization in the browser, then return here'),
-              duration: Duration(seconds: 5),
+              content: Text('Complete authorization in the popup window'),
+              duration: Duration(seconds: 4),
             ),
           );
-          
-          // Poll for status update
-          Future.delayed(const Duration(seconds: 3), () {
-            _checkStatus();
-          });
         }
-      } else {
-        _showError('Could not open browser');
+      } catch (e) {
+        // Fallback: open in browser
+        final uri = Uri.parse(authUrl);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Please complete authorization in the browser, then return here'),
+                duration: Duration(seconds: 5),
+              ),
+            );
+            Future.delayed(const Duration(seconds: 3), () {
+              _checkStatus();
+            });
+          }
+        } else {
+          ref.read(errorHandlerProvider.notifier).showError('Could not open authorization window');
+        }
       }
     } catch (e) {
-      _showError('Failed to connect: $e');
+      ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to connect');
     } finally {
       setState(() => _isLoading = false);
     }
@@ -156,20 +188,9 @@ class _ZohoIntegrationScreenState extends ConsumerState<ZohoIntegrationScreen> {
         );
       }
     } catch (e) {
-      _showError('Failed to disconnect: $e');
+      ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to disconnect');
     } finally {
       setState(() => _isLoading = false);
-    }
-  }
-
-  void _showError(String message) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          backgroundColor: Colors.red,
-        ),
-      );
     }
   }
 

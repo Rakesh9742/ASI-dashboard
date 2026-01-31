@@ -95,15 +95,26 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   Future<void> logout() async {
+    final token = state.token;
+
     // Close SSH connection before logging out
     try {
-      final token = state.token;
       if (token != null) {
         await _apiService.disconnectSSH(token: token);
       }
     } catch (e) {
       // Log error but don't prevent logout
       print('Error disconnecting SSH during logout: $e');
+    }
+
+    // Remove Zoho tokens from DB on logout (all roles) so user gets fresh state on next login
+    try {
+      if (token != null) {
+        await _apiService.disconnectZoho(token: token);
+      }
+    } catch (e) {
+      // Ignore errors (e.g. 401 if token already invalid) so logout always completes
+      print('Error disconnecting Zoho during logout: $e');
     }
 
     // Clear local storage

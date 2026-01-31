@@ -62,13 +62,13 @@
 - **Logout action** (e.g. Logout in main nav) calls `AuthNotifier.logout()` (`auth_provider.dart`).
 - **In `logout()`:**
   1. **SSH:** `ApiService.disconnectSSH(token)` is called so the backend closes the SSH connection and any terminal sessions for that user.
-  2. **Local auth state:** Token and user are removed from `SharedPreferences` (`_tokenKey`, `_userKey`).
-  3. **State:** `AuthState` is set to `isAuthenticated: false`.
-- **Zoho:** `disconnectZoho` is **not** called on logout. Zoho tokens stay in `zoho_tokens` for that user. Next time they log in (same user), Zoho can still be “connected” if the stored tokens are valid or refreshable.
+  2. **Zoho:** `ApiService.disconnectZoho(token)` is called so the backend removes Zoho tokens from `zoho_tokens` for that user (all roles). Errors are ignored so logout always completes.
+  3. **Local auth state:** Token and user are removed from `SharedPreferences` (`_tokenKey`, `_userKey`).
+  4. **State:** `AuthState` is set to `isAuthenticated: false`.
 
 So:
 - **Session** = JWT in app (and optionally Zoho tokens in DB).
-- **Logout** = clear JWT and user from app + disconnect SSH. It does **not** remove Zoho tokens.
+- **Logout** = clear JWT and user from app + disconnect SSH + remove Zoho tokens from DB. Next login is fresh (no Zoho until user connects again).
 
 ### Backend
 
@@ -76,15 +76,4 @@ So:
 - **JWT expiration:** Configured by `JWT_EXPIRES_IN` (e.g. `7d`). If the client sends an expired JWT, `auth.middleware` returns **401** with `error: 'Token expired'`.
 - **Zoho:**  
   - **POST /api/zoho/disconnect** (authenticated): calls `zoho.service.revokeTokens(userId)`, which **deletes** the row in `zoho_tokens` for that user.  
-  - This is used when the user explicitly “disconnects” Zoho (e.g. in Zoho integration screen), not automatically on app logout.
-
----
-
-## 4. Optional: clear Zoho on logout
-
-If you want **logout to also disconnect Zoho** (remove tokens from DB):
-
-1. In `AuthNotifier.logout()` (frontend), after `disconnectSSH`, call `_apiService.disconnectZoho(token: token)` (and ignore errors, e.g. 401 if token already invalid).
-2. Then clear token/user and set `isAuthenticated: false` as now.
-
-That way, when the user logs out, both app session and Zoho connection are cleared.
+  - This is called automatically on app logout (all roles) so the user gets a fresh state on next login. It is also used when the user explicitly “disconnects” Zoho in the UI.

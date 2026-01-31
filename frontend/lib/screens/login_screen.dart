@@ -5,7 +5,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:html' as html;
 import '../providers/auth_provider.dart';
+import '../providers/error_handler_provider.dart';
 import '../services/api_service.dart';
+import '../widgets/error_dialog.dart';
 import 'main_navigation_screen.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -145,23 +147,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
       }
     } catch (e) {
       if (mounted) {
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'Login failed');
+        // Fallback so user always sees something (e.g. when dialog context isn't ready)
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.error_outline, color: Colors.white),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text('Login failed: ${e.toString()}'),
-                ),
-              ],
-            ),
+            content: Text(ErrorDialog.messageFromError(e)),
             backgroundColor: Colors.red.shade600,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            margin: const EdgeInsets.all(16),
+            duration: const Duration(seconds: 5),
           ),
         );
       }
@@ -216,11 +209,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
             );
           }
         } else {
-          _showError('Could not open browser for Zoho login');
+          ref.read(errorHandlerProvider.notifier).showError('Could not open browser for Zoho login');
         }
       }
     } catch (e) {
-      _showError('Failed to start Zoho login: $e');
+      ref.read(errorHandlerProvider.notifier).showError(e, title: 'Zoho login failed');
     } finally {
       if (mounted) {
         setState(() {
@@ -289,7 +282,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
           print('Navigation completed');
         } else {
           print('ERROR: Auth state not updated properly!');
-          _showError('Authentication state not updated. Please try again.');
+          ref.read(errorHandlerProvider.notifier).showError(
+            'Authentication state not updated. Please try again.',
+            title: 'Error',
+          );
         }
       } else {
         print('Widget not mounted, cannot navigate');
@@ -298,19 +294,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
       print('Error in _handleZohoLoginSuccess: $e');
       print('Stack trace: $stackTrace');
       if (mounted) {
-        _showError('Failed to complete Zoho login: $e');
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'Zoho login failed');
       }
-    }
-  }
-
-  void _showError(String message) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          backgroundColor: Colors.red.shade600,
-        ),
-      );
     }
   }
 

@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
+import '../providers/error_handler_provider.dart';
 import '../services/qms_service.dart';
 import '../widgets/qms_history_dialog.dart';
 import '../widgets/qms_status_badge.dart';
@@ -67,6 +68,10 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
 
   // Run directory: loading state so we show "Loading..." only while fetching, not when result is null
   bool _isLoadingRunDirectory = false;
+  
+  /// Persistent working directory in Command Console (so cd persists across commands like real SSH).
+  /// When null, use _currentRunDirectory when block/experiment selected; else home on server.
+  String? _consoleWorkingDirectory;
   
   // Development Tools expansion state
   bool _isDevelopmentToolsExpanded = false;
@@ -170,12 +175,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         _isLoadingBlocks = false;
       });
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to load blocks and experiments: $e'),
-            backgroundColor: Colors.red.shade600,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to load blocks and experiments');
       }
     }
   }
@@ -305,6 +305,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       _isLoadingRunDirectory = false;
       _qmsChecklists = [];
       _qmsBlockStatus = null;
+      _consoleWorkingDirectory = null; // Reset so next commands use new run directory
     });
     
     // Show experiments for the selected block (from DB cache; no extra API call)
@@ -334,6 +335,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       _selectedExperiment = value ?? 'Select an experiment';
       _currentRunDirectory = null;
       _isLoadingRunDirectory = false; // Will be set true when _loadRunDirectory runs
+      _consoleWorkingDirectory = null; // Reset so next commands use new run directory
     });
     
     // Load metrics and run directory when experiment is selected
@@ -498,12 +500,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         _isLoadingMetrics = false;
       });
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to load metrics: $e'),
-            backgroundColor: Colors.red.shade600,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to load metrics');
       }
     }
   }
@@ -583,12 +580,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       final blockId = _blockNameToId[_selectedBlock];
       if (blockId == null || _selectedBlock == null || _selectedBlock == 'Select a block') {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Please select a block to view QMS dashboard'),
-              backgroundColor: Colors.orange,
-            ),
-          );
+          ref.read(errorHandlerProvider.notifier).showInfo('Please select a block to view QMS dashboard');
         }
         return;
       }
@@ -610,12 +602,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to open QMS dashboard: $e'),
-            backgroundColor: Colors.red.shade600,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to open QMS dashboard');
       }
     }
   }
@@ -627,42 +614,33 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       
       if (token == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Not authenticated. Please login again.'),
-              backgroundColor: Colors.red,
-            ),
+          ref.read(errorHandlerProvider.notifier).showInfo(
+            'Not authenticated. Please login again.',
+            title: 'Login required',
           );
         }
         return;
       }
 
-      // Store auth data in localStorage for the new window
+      // Store auth data in localStorage so the new window can read it (must happen before open)
       html.window.localStorage['terminal_auth_token'] = token;
       if (user != null) {
         html.window.localStorage['terminal_auth_user'] = jsonEncode(user);
       }
       
-      // Get current URL and construct new window URL
       final currentUrl = html.window.location.href;
       final baseUrl = currentUrl.split('?')[0].split('#')[0];
+      final terminalUrl = '$baseUrl#/terminal';
       
-      // Open new window with terminal route
-      String newWindowUrl = '$baseUrl#/terminal';
-      
+      // Reuse existing terminal window if already open (same name 'terminal')
       html.window.open(
-        newWindowUrl,
+        terminalUrl,
         'terminal',
         'width=1200,height=800,scrollbars=no,resizable=yes',
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to open terminal: $e'),
-            backgroundColor: Colors.red.shade600,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to open terminal');
       }
     }
   }
@@ -674,11 +652,9 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       
       if (token == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Not authenticated. Please login again.'),
-              backgroundColor: Colors.red,
-            ),
+          ref.read(errorHandlerProvider.notifier).showInfo(
+            'Not authenticated. Please login again.',
+            title: 'Login required',
           );
         }
         return;
@@ -704,12 +680,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to open VNC viewer: $e'),
-            backgroundColor: Colors.red.shade600,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to open VNC viewer');
       }
     }
   }
@@ -720,23 +691,55 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       final projectName = widget.project['name'] ?? '';
       if (projectName.isEmpty) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Project name not available'),
-              backgroundColor: Colors.red,
-            ),
+          ref.read(errorHandlerProvider.notifier).showInfo(
+            'Project name not available.',
+            title: 'Info',
           );
         }
         return;
       }
 
-      // Get first domain from project's domains (project_domains table, DB only)
+      // Use domain of the selected block/run when available (e.g. from metrics/EDA), else first project domain.
+      // Passing wrong domain (e.g. first project domain) would show wrong domain in popout until user changes it.
       String? domainName;
-      final domains = widget.project['domains'];
-      if (domains is List && domains.isNotEmpty) {
-        final firstDomain = domains.first;
-        if (firstDomain is Map) {
-          domainName = firstDomain['name']?.toString();
+      if (_selectedBlock != 'Select a block' &&
+          _metricsData != null &&
+          _metricsData!['domain_name'] != null &&
+          _metricsData!['domain_name'].toString().trim().isNotEmpty) {
+        domainName = _metricsData!['domain_name']?.toString();
+      }
+      if ((domainName == null || domainName.isEmpty) &&
+          _selectedBlock != 'Select a block' &&
+          _selectedExperiment != 'Select an experiment') {
+        try {
+          final token = ref.read(authProvider).token;
+          if (token != null) {
+            final filesResponse = await _apiService.getEdaFiles(
+              token: token,
+              projectName: projectName,
+              limit: 100,
+            );
+            final files = filesResponse['files'] ?? [];
+            for (var file in files) {
+              if (file['block_name']?.toString() == _selectedBlock &&
+                  file['experiment']?.toString() == _selectedExperiment) {
+                final d = file['domain_name']?.toString();
+                if (d != null && d.trim().isNotEmpty) {
+                  domainName = d;
+                  break;
+                }
+              }
+            }
+          }
+        } catch (_) {}
+      }
+      if (domainName == null || domainName.isEmpty) {
+        final domains = widget.project['domains'];
+        if (domains is List && domains.isNotEmpty) {
+          final firstDomain = domains.first;
+          if (firstDomain is Map) {
+            domainName = firstDomain['name']?.toString();
+          }
         }
       }
 
@@ -792,192 +795,287 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to open view window: $e'),
-            backgroundColor: Colors.red.shade600,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to open view window');
       }
     }
   }
 
+  /// Fixed ratio: 50% left, 50% right.
+  static const int _kLeftPanelFlex = 50;
+  static const int _kRightPanelFlex = 50;
+  /// Max width for the whole two-panel layout so it stays centered on very wide screens.
+  static const double _kLayoutMaxWidth = 1600.0;
+  /// Minimum width for each panel so content stays usable.
+  static const double _kPanelMinWidth = 320.0;
+  /// Horizontal margin so both sections sit in the middle with visible space on left and right.
+  static const double _kHorizontalPadding = 32.0;
+
   @override
   Widget build(BuildContext context) {
-    // Show Project Dashboard (navigation and tabs are handled by MainNavigationScreen)
-    return Row(
-          children: [
-            // Left Panel - Command Console + Activity Log (45%)
-        Expanded(
-          flex: 45,
-          child: Container(
-              decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
-                border: Border(
-                right: BorderSide(color: Theme.of(context).dividerColor, width: 1),
-                ),
-              ),
-                    child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(24),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      // Block and Experiment Selectors
-                          _buildSelectionSection(),
-                      _buildRunDirectoryInfo(),
-                          const SizedBox(height: 24),
-                          // Command Console (ChatGPT-like interface)
-                          _buildCommandConsole(),
-                        ],
+    final theme = Theme.of(context);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth = constraints.maxWidth - (_kHorizontalPadding * 2);
+        final layoutWidth = availableWidth > _kLayoutMaxWidth
+            ? _kLayoutMaxWidth
+            : availableWidth;
+
+        // Use flex ratio so left and right share space 50/50
+        final totalFlex = _kLeftPanelFlex + _kRightPanelFlex;
+        var leftWidth = layoutWidth * (_kLeftPanelFlex / totalFlex);
+        var rightWidth = layoutWidth * (_kRightPanelFlex / totalFlex);
+        if (leftWidth < _kPanelMinWidth) {
+          leftWidth = _kPanelMinWidth;
+          rightWidth = layoutWidth - leftWidth;
+        } else if (rightWidth < _kPanelMinWidth) {
+          rightWidth = _kPanelMinWidth;
+          leftWidth = layoutWidth - rightWidth;
+        }
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: _kHorizontalPadding),
+          child: Center(
+            child: SizedBox(
+              width: layoutWidth,
+              child: Row(
+                mainAxisSize: MainAxisSize.max,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Left Panel — Context & Command Console (50%)
+                  SizedBox(
+                    width: leftWidth,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerLowest,
+                      border: Border(
+                        right: BorderSide(
+                          color: theme.dividerColor.withOpacity(0.8),
+                          width: 1.5,
+                        ),
                       ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.04),
+                          blurRadius: 8,
+                          offset: const Offset(2, 0),
+                        ),
+                      ],
                     ),
-                      ),
+                    child: Column(
+                      children: [
+                        // Section header for left panel
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.tune,
+                                size: 20,
+                                color: theme.colorScheme.primary,
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                'Context & Console',
+                                style: theme.textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: theme.colorScheme.onSurface.withOpacity(0.85),
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _buildSelectionSection(),
+                                _buildRunDirectoryInfo(),
+                                const SizedBox(height: 20),
+                                _buildCommandConsole(),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-            // Right Panel - Dashboard Tabs (55%)
-            Expanded(
-              flex: 55,
-              child: Container(
-                color: Theme.of(context).scaffoldBackgroundColor,
-                child: Column(
-                  children: [
-                    // Fixed Tabs Header
-                    Container(
-                      width: double.infinity,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        border: Border(bottom: BorderSide(color: Theme.of(context).dividerColor, width: 1)),
-                      ),
-                      child: Row(
-                        children: [
-                          _buildDashboardTab('Dashboard', Icons.grid_view, isSelected: _selectedTab == 'Dashboard'),
-                          const SizedBox(width: 0),
-                          _buildDashboardTab('QMS', Icons.check_circle_outline, isSelected: _selectedTab == 'QMS'),
-                          const SizedBox(width: 0),
-                          _buildDashboardTab('<> Dev', Icons.code, isSelected: _selectedTab == '<> Dev'),
-                ],
-              ),
-              ),
-                    
-                    // Main Content (Scrollable)
-                  Expanded(
-                    child: _buildMainContent(),
                   ),
-                ],
                 ),
-              ),
+                // Right Panel — Dashboard / QMS / Dev (50%)
+                SizedBox(
+                  width: rightWidth,
+                  child: Container(
+                    color: theme.scaffoldBackgroundColor,
+                    child: Column(
+                      children: [
+                        // Tabs bar with clear separation
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surface,
+                            border: Border(
+                              bottom: BorderSide(
+                                color: theme.dividerColor,
+                                width: 1,
+                              ),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              _buildDashboardTab('Dashboard', Icons.grid_view, isSelected: _selectedTab == 'Dashboard'),
+                              _buildDashboardTab('QMS', Icons.check_circle_outline, isSelected: _selectedTab == 'QMS'),
+                              _buildDashboardTab('<> Dev', Icons.code, isSelected: _selectedTab == '<> Dev'),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: _buildMainContent(),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
+        ),
+        );
+      },
     );
   }
 
   Widget _buildSelectionSection() {
-    return Row(
-      children: [
-        // Block Selector
-        Expanded(
-          child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Block',
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.dividerColor.withOpacity(0.6)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           ),
-        ),
-              const SizedBox(height: 4),
-        Container(
-          width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardColor,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Theme.of(context).dividerColor),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Block & Experiment',
+            style: theme.textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w600,
+              color: theme.colorScheme.onSurface.withOpacity(0.75),
+              letterSpacing: 0.3,
+            ),
           ),
-          child: _isLoadingBlocks
-              ? const Center(
-                  child: Padding(
-                          padding: EdgeInsets.all(4.0),
-                    child: SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  ),
-                )
-                    : DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-            value: _selectedBlock,
-            isExpanded: true,
-                          isDense: true,
-                          style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface),
-                  dropdownColor: Theme.of(context).cardColor,
-                  items: [
-                    DropdownMenuItem(
-                      value: 'Select a block',
-                      child: Text('Select a block', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6))),
-                    ),
-                    ..._availableBlocks.map((block) => DropdownMenuItem(
-                      value: block,
-                          child: Text(block, style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                        )),
-                  ],
-                  onChanged: _onBlockChanged,
-          ),
-        ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 16),
-        // Experiment Selector
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          const SizedBox(height: 12),
+          Row(
             children: [
-        Text(
-          'Experiment',
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-          ),
-        ),
-              const SizedBox(height: 4),
-        Container(
-          width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardColor,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Theme.of(context).dividerColor),
-          ),
-                child: DropdownButtonHideUnderline(
-          child: DropdownButton<String>(
-            value: _selectedExperiment,
-            isExpanded: true,
-                    isDense: true,
-                    style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface),
-            dropdownColor: Theme.of(context).cardColor,
-            items: [
-              DropdownMenuItem(
-                value: 'Select an experiment',
-                child: Text('Select an experiment', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6))),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Block',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.onSurface.withOpacity(0.6),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surface,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: theme.dividerColor),
+                      ),
+                      child: _isLoadingBlocks
+                          ? const Center(
+                              child: SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            )
+                          : DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _selectedBlock,
+                                isExpanded: true,
+                                isDense: true,
+                                style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface),
+                                dropdownColor: theme.cardColor,
+                                items: [
+                                  DropdownMenuItem(
+                                    value: 'Select a block',
+                                    child: Text('Select a block', style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.6))),
+                                  ),
+                                  ..._availableBlocks.map((block) => DropdownMenuItem(
+                                        value: block,
+                                        child: Text(block, style: TextStyle(color: theme.colorScheme.onSurface)),
+                                      )),
+                                ],
+                                onChanged: _onBlockChanged,
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
               ),
-              ..._availableExperiments.map((exp) => DropdownMenuItem(
-                      value: exp,
-                    child: Text(exp, style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                  )),
-            ],
-            onChanged: _onExperimentChanged,
-                  ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Experiment',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.onSurface.withOpacity(0.6),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surface,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: theme.dividerColor),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: _selectedExperiment,
+                          isExpanded: true,
+                          isDense: true,
+                          style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface),
+                          dropdownColor: theme.cardColor,
+                          items: [
+                            DropdownMenuItem(
+                              value: 'Select an experiment',
+                              child: Text('Select an experiment', style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.6))),
+                            ),
+                            ..._availableExperiments.map((exp) => DropdownMenuItem(
+                                  value: exp,
+                                  child: Text(exp, style: TextStyle(color: theme.colorScheme.onSurface)),
+                                )),
+                          ],
+                          onChanged: _onExperimentChanged,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -986,34 +1084,48 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       return const SizedBox.shrink();
     }
 
+    final theme = Theme.of(context);
     return Container(
       margin: const EdgeInsets.only(top: 16),
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Theme.of(context).dividerColor),
+        color: theme.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.dividerColor.withOpacity(0.6)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Row(
         children: [
-          Icon(
-            Icons.folder_open,
-            size: 18,
-            color: Theme.of(context).colorScheme.primary,
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              Icons.folder_open,
+              size: 18,
+              color: theme.colorScheme.primary,
+            ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
                   'Run Directory',
-          style: TextStyle(
-                    fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-          ),
-        ),
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface.withOpacity(0.75),
+                  ),
+                ),
                 const SizedBox(height: 4),
                 SelectableText(
                   _isLoadingRunDirectory
@@ -1021,7 +1133,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                       : (_currentRunDirectory ?? 'No run directory set'),
                   style: TextStyle(
                     fontSize: 12,
-                    color: Theme.of(context).colorScheme.onSurface,
+                    color: theme.colorScheme.onSurface,
                     fontFamily: 'monospace',
                   ),
                 ),
@@ -1032,7 +1144,6 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             IconButton(
               icon: const Icon(Icons.copy, size: 18),
               onPressed: () {
-                // Copy to clipboard
                 Clipboard.setData(ClipboardData(text: _currentRunDirectory!));
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
@@ -1044,421 +1155,436 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
               tooltip: 'Copy path',
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(),
+              style: IconButton.styleFrom(
+                foregroundColor: theme.colorScheme.primary,
+              ),
             ),
         ],
       ),
     );
   }
 
+  // Mac terminal / block UI colors for Command Console
+  static const Color _kConsoleBg = Color(0xFF1E1E2E);
+  static const Color _kConsoleHeader = Color(0xFF2D2D3A);
+  static const Color _kConsoleText = Color(0xFFE6EDF3);
+  static const Color _kConsoleTextMuted = Color(0xFF8B949E);
+  static const Color _kConsoleAccent = Color(0xFF7EE787);
+  static const Color _kConsoleError = Color(0xFFF85149);
+  static const Color _kConsoleBubbleBot = Color(0xFF2D2D3A);
+  static const Color _kConsoleInputBg = Color(0xFF252526);
+
   Widget _buildCommandConsole() {
+    final theme = Theme.of(context);
     return Container(
-      height: 600,
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardColor,
+      height: 560,
+      margin: const EdgeInsets.only(top: 4),
+      decoration: BoxDecoration(
+        color: _kConsoleBg,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Theme.of(context).dividerColor),
+        border: Border.all(color: _kConsoleTextMuted.withOpacity(0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.25),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
-          // Header
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              border: Border(
-                bottom: BorderSide(color: Theme.of(context).dividerColor),
-          ),
-        ),
-            child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.terminal,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                      'Command Console',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      color: Theme.of(context).colorScheme.onSurface,
+          _buildChatHeader(theme),
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              color: _kConsoleBg,
+              child: _chatMessages.isEmpty
+                  ? _buildChatEmptyState(theme)
+                  : ListView.builder(
+                      controller: _chatScrollController,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      itemCount: _chatMessages.length,
+                      itemBuilder: (context, index) {
+                        return _buildChatMessage(context, theme, _chatMessages[index]);
+                      },
                     ),
-                  ),
-                ],
-              ),
-                Row(
-                  children: [
-                    if (_currentRunDirectory != null && 
-                        _selectedBlock != 'Select a block' && 
-                        _selectedExperiment != 'Select an experiment')
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        margin: const EdgeInsets.only(right: 8),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.folder,
-                              size: 12,
-                              color: Theme.of(context).colorScheme.primary,
-                            ),
-                            const SizedBox(width: 4),
-                            Flexible(
-                              child: Text(
-                                _currentRunDirectory!.length > 30 
-                                  ? '...${_currentRunDirectory!.substring(_currentRunDirectory!.length - 30)}'
-                                  : _currentRunDirectory!,
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: Theme.of(context).colorScheme.primary,
-                                  fontFamily: 'monospace',
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    if (_chatMessages.isNotEmpty)
-                TextButton.icon(
-                        icon: const Icon(Icons.delete_outline, size: 16),
-                  label: const Text('Clear'),
-                  onPressed: () {
-                    setState(() {
-                            _chatMessages.clear();
-                    });
-                  },
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    minimumSize: Size.zero,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+          _buildChatInput(theme),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChatHeader(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: const BoxDecoration(
+        color: _kConsoleHeader,
+        border: Border(bottom: BorderSide(color: Color(0xFF3D3D4A), width: 1)),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 18,
+            backgroundColor: _kConsoleAccent.withOpacity(0.2),
+            child: Icon(Icons.terminal, size: 20, color: _kConsoleAccent),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Command Console',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: _kConsoleText,
                   ),
                 ),
-            ],
-          ),
+                Text(
+                  'Remote SSH · Commands run on server',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: _kConsoleTextMuted,
+                  ),
+                ),
               ],
             ),
           ),
-          // Chat messages area
-          Expanded(
-            child: _chatMessages.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                        Icon(
-                          Icons.chat_bubble_outline,
-                          size: 48,
-                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3),
-                        ),
-                        const SizedBox(height: 12),
-                  Text(
-                          'No commands executed yet',
-                    style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                    ),
-                  ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Enter a command below to get started',
-                      style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+          TextButton.icon(
+            icon: Icon(Icons.open_in_new, size: 16, color: _kConsoleAccent),
+            label: Text('Full terminal', style: TextStyle(fontSize: 12, color: _kConsoleAccent)),
+            onPressed: _openTerminalInNewWindow,
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
           ),
-        ),
-      ],
-              ),
-                  )
-                : ListView.builder(
-                    controller: _chatScrollController,
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _chatMessages.length,
-                    itemBuilder: (context, index) {
-                      final message = _chatMessages[index];
-                      final isUser = message['type'] == 'user';
-                      final isExecuting = message['isExecuting'] == true;
-                      
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 16),
-                        child: Column(
-                          crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-                          children: [
-                            // User message (command)
-                            if (isUser)
-            Container(
-                                constraints: BoxConstraints(
-                                  maxWidth: MediaQuery.of(context).size.width * 0.35,
-                                ),
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                                  color: Theme.of(context).colorScheme.primary,
-                                  borderRadius: BorderRadius.circular(12),
-              ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Icon(
-                                          Icons.person,
-                                          size: 14,
-                    color: Colors.white,
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          'You',
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.w600,
-                                            color: Colors.white.withOpacity(0.9),
+          if (_chatMessages.isNotEmpty)
+            IconButton(
+              icon: Icon(Icons.delete_outline, size: 20, color: _kConsoleTextMuted),
+              onPressed: () => setState(() => _chatMessages.clear()),
+              tooltip: 'Clear chat',
+              style: IconButton.styleFrom(
+                padding: const EdgeInsets.all(8),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
             ),
-          ],
-                                    ),
-                                    const SizedBox(height: 6),
-                                    SelectableText(
-                                      message['command'] ?? '',
-                                      style: const TextStyle(
-                                        fontSize: 13,
-                                        color: Colors.white,
-                    fontFamily: 'monospace',
-              ),
-            ),
-                                    if (message['directory'] != null && message['directory'].toString().isNotEmpty) ...[
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        'in: ${message['directory']}',
-                style: TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.white.withOpacity(0.8),
-                                          fontFamily: 'monospace',
-              ),
-            ),
-          ],
         ],
       ),
-                              ),
-                            // Assistant message (output)
-                            if (!isUser)
-                              Container(
-                                constraints: BoxConstraints(
-                                  maxWidth: MediaQuery.of(context).size.width * 0.35,
-                                ),
-                                padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-                                  color: isExecuting
-                                      ? Theme.of(context).scaffoldBackgroundColor
-                                      : message['hasError'] == true
-                                          ? Colors.red.shade50
-                                          : Colors.grey.shade900,
-        borderRadius: BorderRadius.circular(12),
-                                  border: message['hasError'] == true
-                                      ? Border.all(color: Colors.red.shade300, width: 1)
-                                      : null,
-        ),
-                                child: isExecuting
-                                    ? Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          SizedBox(
-                                            width: 14,
-                                            height: 14,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: Theme.of(context).colorScheme.primary,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            'Executing...',
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                                            ),
-          ),
-        ],
-                                      )
-                                    : Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    );
+  }
+
+  Widget _buildChatEmptyState(ThemeData theme) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-              Row(
-                children: [
-                  Icon(
-                                                message['hasError'] == true
-                                                    ? Icons.error_outline
-                                                    : Icons.terminal,
-                                                size: 14,
-                                                color: message['hasError'] == true
-                                                    ? Colors.red.shade700
-                                                    : Colors.green.shade400,
-                  ),
-                                              const SizedBox(width: 6),
+            Icon(
+              Icons.chat_bubble_outline_rounded,
+              size: 56,
+              color: _kConsoleAccent.withOpacity(0.5),
+            ),
+            const SizedBox(height: 16),
             Text(
-                                                message['hasError'] == true ? 'Error' : 'Output',
-              style: TextStyle(
-                                                  fontSize: 11,
-                fontWeight: FontWeight.w600,
-                                                  color: message['hasError'] == true
-                                                      ? Colors.red.shade700
-                                                      : Colors.green.shade400,
-                    ),
+              'Send a command to run on the remote server',
+              style: theme.textTheme.titleSmall?.copyWith(
+                color: _kConsoleText,
+                fontWeight: FontWeight.w500,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Select block & experiment to run in that directory,\nor type a command below (runs in home if not set).',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: _kConsoleTextMuted,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChatMessage(BuildContext context, ThemeData theme, Map<String, dynamic> message) {
+    final isUser = message['type'] == 'user';
+    final isExecuting = message['isExecuting'] == true;
+    if (isUser) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Flexible(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: _kConsoleAccent.withOpacity(0.25),
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(18),
+                    topRight: Radius.circular(18),
+                    bottomLeft: Radius.circular(18),
+                    bottomRight: Radius.circular(4),
+                  ),
+                  border: Border.all(color: _kConsoleAccent.withOpacity(0.4)),
+                ),
+                child: SelectableText(
+                  message['command'] ?? '',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: _kConsoleText,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            CircleAvatar(
+              radius: 14,
+              backgroundColor: _kConsoleAccent.withOpacity(0.3),
+              child: Icon(Icons.person, size: 16, color: _kConsoleAccent),
+            ),
+          ],
+        ),
+      );
+    }
+    if (isExecuting) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            CircleAvatar(
+              radius: 14,
+              backgroundColor: _kConsoleBubbleBot,
+              child: Icon(Icons.terminal, size: 16, color: _kConsoleAccent),
+            ),
+            const SizedBox(width: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: _kConsoleBubbleBot,
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(4),
+                  topRight: Radius.circular(18),
+                  bottomLeft: Radius.circular(18),
+                  bottomRight: Radius.circular(18),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: _kConsoleAccent),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Running on server...',
+                    style: theme.textTheme.bodySmall?.copyWith(color: _kConsoleTextMuted),
                   ),
                 ],
               ),
-                                          if (message['output'] != null && message['output'].toString().isNotEmpty) ...[
-                                            const SizedBox(height: 8),
-                                            SelectableText(
-                                              message['output'],
-                  style: TextStyle(
-                    fontSize: 12,
-                                                color: message['hasError'] == true
-                                                    ? Colors.red.shade900
-                                                    : Colors.white,
-                                                fontFamily: 'monospace',
-                ),
             ),
           ],
-                                          if (message['error'] != null && message['error'].toString().isNotEmpty) ...[
-                                            const SizedBox(height: 8),
-                                            SelectableText(
-                                              message['error'],
-                          style: TextStyle(
-                                                fontSize: 12,
-                                                color: Colors.red.shade900,
-                                                fontFamily: 'monospace',
-                            fontWeight: FontWeight.w500,
-                          ),
-                      ),
-                                          ],
-                                          if ((message['output'] == null || message['output'].toString().isEmpty) &&
-                                              (message['error'] == null || message['error'].toString().isEmpty) &&
-                                              message['hasError'] != true) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                                              'Command executed successfully (no output)',
-                        style: TextStyle(
-                          fontSize: 12,
-                                                color: Colors.grey.shade400,
-                                                fontStyle: FontStyle.italic,
-                        ),
-                      ),
-                                          ],
-                    ],
-                  ),
-                              ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-          ),
-          // Input area (ChatGPT-like)
-          Container(
-            padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-              border: Border(
-                top: BorderSide(color: Theme.of(context).dividerColor),
-                          ),
-                        ),
-            child: Column(
-                        children: [
-                            Container(
-                              decoration: BoxDecoration(
-                    color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Theme.of(context).dividerColor),
-                  ),
-                  child: TextField(
-                    controller: _commandController,
-                    maxLines: 4,
-                    maxLength: 500,
-                    style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
-                    decoration: InputDecoration(
-                      hintText: 'Enter command...',
-                      hintStyle: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
-                      border: InputBorder.none,
-                      contentPadding: const EdgeInsets.all(12),
-                      counterText: '',
-                      suffixIcon: _isExecutingCommand
-                          ? Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Theme.of(context).colorScheme.primary,
-                                ),
-                              ),
-                            )
-                          : IconButton(
-                              icon: Icon(
-                                Icons.send,
-                                color: _commandController.text.isNotEmpty
-                                    ? Theme.of(context).colorScheme.primary
-                                    : Theme.of(context).colorScheme.onSurface.withOpacity(0.3),
-                              ),
-                              onPressed: _isExecutingCommand
-                                  ? null
-                                  : () {
-                                      if (_commandController.text.isNotEmpty) {
-                                        _executeCommand(_commandController.text);
-                                        _commandController.clear();
-                                        setState(() {});
-                                      }
-                                    },
-                            ),
-                    ),
-                    onChanged: (value) {
-                      setState(() {});
-                    },
-                    onSubmitted: (value) {
-                      if (value.isNotEmpty && !_isExecutingCommand) {
-                        _executeCommand(value);
-                        _commandController.clear();
-                        setState(() {});
-                      }
-                    },
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                      '${_commandController.text.length}/500',
-                              style: TextStyle(
-                        fontSize: 11,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
-                                    ),
-                                  ),
-                    if (_currentRunDirectory != null && 
-                        _selectedBlock != 'Select a block' && 
-                        _selectedExperiment != 'Select an experiment')
-                                  Text(
-                        'Working directory: ${_currentRunDirectory!.length > 50 ? '...${_currentRunDirectory!.substring(_currentRunDirectory!.length - 50)}' : _currentRunDirectory!}',
-                                    style: TextStyle(
-                          fontSize: 10,
-                          color: Theme.of(context).colorScheme.primary,
-                          fontFamily: 'monospace',
-                                    ),
-                        overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
-                          ),
-                        ],
-                ),
         ),
-      ],
+      );
+    }
+    final hasError = message['hasError'] == true;
+    final output = message['output']?.toString() ?? '';
+    final error = message['error']?.toString() ?? '';
+    final noOutput = output.isEmpty && error.isEmpty && !hasError;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 14,
+            backgroundColor: _kConsoleBubbleBot,
+            child: Icon(
+              hasError ? Icons.error_outline : Icons.terminal,
+              size: 16,
+              color: hasError ? _kConsoleError : _kConsoleAccent,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: _kConsoleBubbleBot,
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(4),
+                  topRight: Radius.circular(18),
+                  bottomLeft: Radius.circular(18),
+                  bottomRight: Radius.circular(18),
+                ),
+                border: hasError
+                    ? Border.all(color: _kConsoleError.withOpacity(0.6), width: 1)
+                    : null,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (output.isNotEmpty)
+                    SelectableText(
+                      output,
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        color: hasError ? _kConsoleError : _kConsoleText,
+                      ),
+                    ),
+                  if (error.isNotEmpty)
+                    SelectableText(
+                      error,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        color: _kConsoleError,
+                      ),
+                    ),
+                  if (noOutput)
+                    Text(
+                      'Command completed (no output)',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontStyle: FontStyle.italic,
+                        color: _kConsoleTextMuted,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChatInput(ThemeData theme) {
+    final effectiveCwd = _consoleWorkingDirectory ??
+        (_currentRunDirectory != null &&
+                _currentRunDirectory!.isNotEmpty &&
+                _selectedBlock != 'Select a block' &&
+                _selectedExperiment != 'Select an experiment'
+            ? _currentRunDirectory
+            : null);
+    final workingDirLabel = effectiveCwd != null
+        ? (effectiveCwd.length > 45 ? '...${effectiveCwd.substring(effectiveCwd.length - 45)}' : effectiveCwd)
+        : 'Home on server';
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: const BoxDecoration(
+        color: _kConsoleBg,
+        border: Border(top: BorderSide(color: Color(0xFF3D3D4A), width: 1)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              'Working directory: $workingDirLabel',
+              style: theme.textTheme.labelSmall?.copyWith(color: _kConsoleTextMuted),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _commandController,
+                  maxLines: 3,
+                  minLines: 1,
+                  maxLength: 500,
+                  style: const TextStyle(color: _kConsoleText, fontSize: 13),
+                  decoration: InputDecoration(
+                    hintText: 'Message Command Console...',
+                    hintStyle: TextStyle(color: _kConsoleTextMuted.withOpacity(0.8)),
+                    filled: true,
+                    fillColor: _kConsoleInputBg,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: BorderSide(color: _kConsoleTextMuted.withOpacity(0.3)),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: BorderSide(color: _kConsoleTextMuted.withOpacity(0.3)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: const BorderSide(color: _kConsoleAccent, width: 1.5),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    counterText: '',
+                  ),
+                  onChanged: (value) => setState(() {}),
+                  onSubmitted: (value) {
+                    if (value.isNotEmpty && !_isExecutingCommand) {
+                      _executeCommand(value);
+                      _commandController.clear();
+                      setState(() {});
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Material(
+                color: _commandController.text.isNotEmpty && !_isExecutingCommand
+                    ? _kConsoleAccent
+                    : _kConsoleBubbleBot,
+                borderRadius: BorderRadius.circular(20),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(20),
+                  onTap: _isExecutingCommand
+                      ? null
+                      : () {
+                          if (_commandController.text.isNotEmpty) {
+                            _executeCommand(_commandController.text);
+                            _commandController.clear();
+                            setState(() {});
+                          }
+                        },
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: _isExecutingCommand
+                        ? SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: _kConsoleText,
+                            ),
+                          )
+                        : Icon(
+                            Icons.send_rounded,
+                            size: 24,
+                            color: _commandController.text.isNotEmpty
+                                ? _kConsoleBg
+                                : _kConsoleTextMuted,
+                          ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -1493,62 +1619,53 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
 
   Widget _buildMainContent() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.fromLTRB(28, 24, 28, 32),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Title Section
-          Row(
-             mainAxisAlignment: MainAxisAlignment.spaceBetween,
-             children: [
-               Column(
-                 crossAxisAlignment: CrossAxisAlignment.start,
-                 children: [
-          Text(
-            'Design Dashboard',
-            style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-              color: Theme.of(context).colorScheme.onSurface,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Project: ${widget.project['name'] ?? 'Unknown'}',
-            style: TextStyle(
-              fontSize: 14,
-                        color: const Color(0xFF1E96B1), // Cyan-ish color from image
-                        fontWeight: FontWeight.w600,
+          // Pop Out button (no title section)
+          if (_selectedTab != '<> Dev')
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Theme.of(context).dividerColor),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: TextButton.icon(
+                      onPressed: () {
+                        if (_selectedTab == 'Dashboard') {
+                          if (_selectedBlock == 'Select a block' || _selectedExperiment == 'Select an experiment') {
+                            ref.read(errorHandlerProvider.notifier).showInfo(
+                              'Please select a block and experiment to pop out the dashboard',
+                            );
+                            return;
+                          }
+                          if (_metricsData == null && _runHistory.isEmpty) {
+                            ref.read(errorHandlerProvider.notifier).showInfo(
+                              'No data to show. Pop out is only available when there is dashboard data for the selected block and experiment.',
+                            );
+                            return;
+                          }
+                          _openViewScreenInNewWindow();
+                        } else if (_selectedTab == 'QMS') {
+                          _openQMSInNewWindow();
+                        }
+                      },
+                      icon: const Icon(Icons.open_in_new, size: 14),
+                      label: const Text('Pop Out', style: TextStyle(fontSize: 12)),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Theme.of(context).colorScheme.onSurface,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
                     ),
-                 ],
-               ),
-               // Pop Out Button
-               if (_selectedTab != '<> Dev')
-                 Container(
-                   decoration: BoxDecoration(
-                     border: Border.all(color: Theme.of(context).dividerColor),
-                     borderRadius: BorderRadius.circular(4),
-                   ),
-            child: TextButton.icon(
-              onPressed: () {
-                       if (_selectedTab == 'Dashboard') {
-                _openViewScreenInNewWindow();
-                       } else if (_selectedTab == 'QMS') {
-                         _openQMSInNewWindow();
-                       }
-              },
-                     icon: const Icon(Icons.open_in_new, size: 14),
-                     label: const Text('Pop Out', style: TextStyle(fontSize: 12)),
-              style: TextButton.styleFrom(
-                       foregroundColor: Theme.of(context).colorScheme.onSurface,
-                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                ],
               ),
             ),
-          ),
-            ],
-          ),
-          const SizedBox(height: 24),
 
           // Content based on selected tab
           if (_selectedTab == 'Dashboard') ...[
@@ -1600,37 +1717,32 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         _isLoadingQms = false;
       });
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to load QMS data: $e'),
-            backgroundColor: Colors.red.shade600,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to load QMS data');
       }
     }
   }
 
   Widget _buildDashboardTab(String label, IconData icon, {required bool isSelected}) {
+    final theme = Theme.of(context);
+    final primary = theme.colorScheme.primary;
     return InkWell(
       onTap: () {
         setState(() {
           _selectedTab = label;
         });
-        
-        // Load QMS data when QMS tab is selected
         if (label == 'QMS' && _selectedBlock != 'Select a block') {
           _loadQmsData();
         }
       },
+      borderRadius: BorderRadius.circular(8),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        margin: const EdgeInsets.only(right: 4),
         decoration: BoxDecoration(
-          color: isSelected ? Colors.transparent : Colors.transparent,
-          border: isSelected 
-              ? Border(bottom: BorderSide(color: const Color(0xFF1E96B1), width: 2))
-              : null,
-          boxShadow: isSelected 
-              ? [BoxShadow(color: const Color(0xFF1E96B1).withOpacity(0.1), blurRadius: 4, offset: const Offset(0, 2))]
+          color: isSelected ? primary.withOpacity(0.08) : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          border: isSelected
+              ? Border(bottom: BorderSide(color: primary, width: 2.5))
               : null,
         ),
         child: Row(
@@ -1638,17 +1750,16 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
           children: [
             Icon(
               icon,
-              size: 16,
-              color: isSelected ? const Color(0xFF1E96B1) : Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+              size: 18,
+              color: isSelected ? primary : theme.colorScheme.onSurface.withOpacity(0.65),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 10),
             Text(
-          label,
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-                color: isSelected ? const Color(0xFF1E96B1) : Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-          ),
+              label,
+              style: theme.textTheme.labelLarge?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: isSelected ? primary : theme.colorScheme.onSurface.withOpacity(0.75),
+              ),
             ),
           ],
         ),
@@ -2136,55 +2247,64 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         throw Exception('Not authenticated');
       }
 
-      // Check if we have a run directory and block/experiment selected
-      String? workingDirectory;
-      if (_currentRunDirectory != null && 
+      // Effective cwd: console state, or run directory when block/experiment selected (like real SSH)
+      String? effectiveWorkingDir = _consoleWorkingDirectory;
+      if (effectiveWorkingDir == null &&
+          _currentRunDirectory != null &&
           _currentRunDirectory!.isNotEmpty &&
           _selectedBlock != 'Select a block' &&
           _selectedExperiment != 'Select an experiment') {
-        workingDirectory = _currentRunDirectory;
+        effectiveWorkingDir = _currentRunDirectory;
       }
 
+      final trimmedCmd = command.trim();
+      final isCdCommand = trimmedCmd.startsWith('cd ') && trimmedCmd.length > 3;
+      final commandToRun = isCdCommand ? '$trimmedCmd && pwd' : command;
+
       final result = await _apiService.executeSSHCommand(
-        command: command,
+        command: commandToRun,
         token: token,
-        workingDirectory: workingDirectory,
+        workingDirectory: effectiveWorkingDir,
       );
 
       if (mounted) {
         setState(() {
           _isExecutingCommand = false;
-          
-          // Get output for display
           final stdout = result['stdout']?.toString();
           final stderr = result['stderr']?.toString();
-          
-          // Check if error is about directory not existing
+
+          // If user ran "cd ...", persist the new directory (last line of pwd output) so next commands run there
+          if (isCdCommand && stdout != null && stdout.trim().isNotEmpty) {
+            final lines = stdout.trim().split(RegExp(r'\r?\n'));
+            final lastLine = lines.isNotEmpty ? lines.last.trim() : '';
+            if (lastLine.isNotEmpty && lastLine.startsWith('/')) {
+              _consoleWorkingDirectory = lastLine;
+            }
+          }
+
           final errorText = stderr?.toLowerCase() ?? '';
           if (errorText.contains('directory') && errorText.contains('does not exist')) {
-            // Show specific error for missing directory
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Error: Run directory not found on server: $_currentRunDirectory'),
-                backgroundColor: Colors.red.shade600,
-                duration: const Duration(seconds: 5),
-              ),
+            ref.read(errorHandlerProvider.notifier).show(
+              'Run directory not found',
+              'Run directory not found on server: $_currentRunDirectory',
             );
           }
-          
-          // Update the last assistant message with output
+
           final exitCode = result['exitCode'];
           final hasError = exitCode != null && exitCode != 0;
-          
+          final displayOutput = isCdCommand && stdout != null && stdout.trim().isNotEmpty
+              ? stdout.trim().split(RegExp(r'\r?\n')).last
+              : stdout;
+
           if (_chatMessages.isNotEmpty && _chatMessages.last['isExecuting'] == true) {
             _chatMessages[_chatMessages.length - 1] = {
               'type': 'assistant',
               'isExecuting': false,
-              'output': stdout,
+              'output': displayOutput,
               'error': stderr,
               'hasError': hasError,
               'exitCode': exitCode,
-            'timestamp': DateTime.now(),
+              'timestamp': DateTime.now(),
             };
           }
         });
@@ -2204,26 +2324,22 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       if (mounted) {
         setState(() {
           _isExecutingCommand = false;
-          
-          // Check if error mentions directory
           final errorText = e.toString().toLowerCase();
           if (errorText.contains('directory') || errorText.contains('not found')) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Error: ${e.toString()}'),
-                backgroundColor: Colors.red.shade600,
-                duration: const Duration(seconds: 5),
-              ),
-            );
+            ref.read(errorHandlerProvider.notifier).showError(e, title: 'Error');
+          } else if (errorText.contains('ssh') || errorText.contains('connection') || errorText.contains('credentials') || errorText.contains('not configured')) {
+            ref.read(errorHandlerProvider.notifier).showError(e, title: 'Remote SSH — configure server, user, and password in your profile');
           }
-          
-          // Update the last assistant message with error
+          String displayError = e.toString();
+          if (errorText.contains('credentials not configured') || errorText.contains('ssh credentials')) {
+            displayError = '$displayError\n\nConfigure SSH server, user, and password in your profile so commands run on the remote server.';
+          }
           if (_chatMessages.isNotEmpty && _chatMessages.last['isExecuting'] == true) {
             _chatMessages[_chatMessages.length - 1] = {
               'type': 'assistant',
               'isExecuting': false,
               'output': null,
-              'error': e.toString(),
+              'error': displayError,
               'hasError': true,
               'timestamp': DateTime.now(),
             };

@@ -222,6 +222,8 @@ export async function executeSSHCommand(userId: number, command: string, retries
       // Check if command contains sudo - if so, we need to use shell with PTY
       const isSudoCommand = command.trim().toLowerCase().startsWith('sudo');
       
+      // Set DISPLAY= to avoid "DISPLAY: Undefined variable" from remote profile (non-interactive shell)
+      const envPrefix = 'export DISPLAY= 2>/dev/null; ';
       // If working directory is provided, change to it before running the command
       let finalCommand = command;
       if (workingDirectory && workingDirectory.trim().length > 0) {
@@ -235,6 +237,7 @@ export async function executeSSHCommand(userId: number, command: string, retries
       } else {
         console.log(`📁 Executing command in current directory (no working directory specified)`);
       }
+      finalCommand = envPrefix + finalCommand;
 
       const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
         // Add timeout for command execution
@@ -678,6 +681,20 @@ export async function executeSSHCommand(userId: number, command: string, retries
           });
         }
       });
+
+      // Strip harmless profile messages from stderr (remote .bashrc etc. echo DISPLAY before our command runs)
+      if (result.stderr && result.stderr.trim().length > 0) {
+        result.stderr = result.stderr
+          .split(/\r?\n/)
+          .filter((line: string) => {
+            const t = line.trim();
+            if (/^DISPLAY:\s*Undefined variable\.?$/i.test(t)) return false;
+            if (/^DISPLAY:\s*undefined variable\.?$/i.test(t)) return false;
+            return true;
+          })
+          .join('\n')
+          .trim();
+      }
       
       // Success - return result
       return result;

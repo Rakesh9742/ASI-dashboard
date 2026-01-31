@@ -141,10 +141,20 @@ router.post('/execute', authenticate, async (req, res) => {
       const requiresPassword = passwordPromptPatterns.some(pattern => pattern.test(combinedOutput)) || 
                                (result as any).requiresPassword === true;
 
+      // Remove harmless DISPLAY message from stderr so UI doesn't show it
+      let stderr = result.stderr || '';
+      if (stderr.trim()) {
+        stderr = stderr
+          .split(/\r?\n/)
+          .filter((line: string) => !/^DISPLAY:\s*Undefined variable\.?$/i.test(line.trim()))
+          .join('\n')
+          .trim();
+      }
+
       res.json({
         success: true,
         stdout: result.stdout,
-        stderr: result.stderr,
+        stderr: stderr || undefined,
         exitCode: result.code,
         requiresPassword: requiresPassword,
         timestamp: new Date().toISOString()
