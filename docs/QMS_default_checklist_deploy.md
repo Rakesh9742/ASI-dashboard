@@ -131,6 +131,18 @@ curl -X POST "http://<backend-host>/api/qms/external-checklists/upload-report" \
   --data-binary "@/path/to/syn_qms.json"
 ```
 
+Staging test commands (file upload + raw JSON body):
+```bash
+curl -X POST "http://15.207.235.35:3000/api/qms/external-checklists/upload-report" \
+  -H "X-API-Key: sitedafilesdata" \
+  -F "file=@backend/templates/syn_qms.json"
+
+curl -X POST "http://15.207.235.35:3000/api/qms/external-checklists/upload-report" \
+  -H "X-API-Key: sitedafilesdata" \
+  -H "Content-Type: application/json" \
+  --data-binary "@backend/templates/syn_qms.json"
+```
+
 Behavior:
 - Uses JSON fields `project`, `block_name`, and experiment (from `stage_directory` segment after block name).
 - Updates only matching Check IDs.
