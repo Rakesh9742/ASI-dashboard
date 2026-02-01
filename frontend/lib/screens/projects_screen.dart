@@ -1735,7 +1735,6 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
 
     return TooltipTheme(
       data: TooltipThemeData(
-        constraints: const BoxConstraints(maxWidth: 200),
         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
