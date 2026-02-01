@@ -84,6 +84,11 @@ class ErrorDialog extends StatefulWidget {
     if (lower.contains('429') || lower.contains('too many requests')) {
       return 'Too many requests. Please wait a moment and try again.';
     }
+    if (lower.contains('ssh credentials not configured') ||
+        lower.contains('credentials not configured for user') ||
+        lower.contains('ssh credentials')) {
+      return 'SSH is not configured for your account. Please ask an administrator to set your SSH server, username, and password in your profile (User Management).';
+    }
     if (lower.contains('500') || lower.contains('internal server error')) {
       return 'Something went wrong on the server. Please try again later.';
     }

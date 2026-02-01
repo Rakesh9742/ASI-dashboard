@@ -2027,12 +2027,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
       });
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'SSH Error');
       }
     }
   }
@@ -2801,24 +2796,13 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
       } catch (e) {
         onComplete('Error executing command: $e', null);
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error: $e'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          ref.read(errorHandlerProvider.notifier).showError(e, title: 'SSH Error');
         }
       }
     } catch (e) {
       onComplete('Error sending password: $e', null);
-      
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error sending password: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'SSH Error');
       }
     }
   }
@@ -3287,12 +3271,7 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
       });
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        ref.read(errorHandlerProvider.notifier).showError(e, title: 'SSH Error');
       }
     }
   }

@@ -46,7 +46,10 @@ router.post('/execute', authenticate, async (req, res) => {
 
     // Start command execution
     const commandPromise = executeSSHCommand(userId, command.trim(), 1, workingDirectory);
-    
+
+    // Ensure rejection is always handled so it never crashes the Node process (e.g. SSH credentials not configured)
+    commandPromise.catch(() => {});
+
     // Set up mechanism to handle password prompts
     // If password prompt is detected, return requiresPassword quickly so UI can show password dialog
     const passwordCheckPromise = new Promise<{ stdout: string; stderr: string; code: number | null; requiresPassword: boolean } | null>((resolve) => {
@@ -161,17 +164,19 @@ router.post('/execute', authenticate, async (req, res) => {
       });
     } catch (error: any) {
       console.error('Error executing SSH command:', error);
-      res.status(500).json({ 
+      res.status(500).json({
         error: error.message || 'Failed to execute command',
         details: error.code || 'SSH_ERROR'
       });
+      return;
     }
   } catch (error: any) {
     console.error('Error in SSH execute route:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: error.message || 'Failed to execute command',
       details: error.code || 'SSH_ERROR'
     });
+    return;
   }
 });
 

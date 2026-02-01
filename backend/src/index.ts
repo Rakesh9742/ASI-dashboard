@@ -20,6 +20,12 @@ import { createServer } from 'http';
 
 dotenv.config();
 
+// Prevent unhandled promise rejections from crashing the process (e.g. SSH credentials not configured)
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // Do not exit - keep server running; the request may have already returned 500
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
