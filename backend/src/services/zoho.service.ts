@@ -865,6 +865,16 @@ class ZohoService {
       const client = await this.getAuthenticatedClient(userId);
       let portal = portalId;
       let portalName: string | undefined;
+
+      // When portalId is provided, try direct URL first (one call) – avoids getPortals and full projects list
+      if (portal) {
+        try {
+          const res = await client.get(`/restapi/portal/${portal}/projects/${projectId}/`);
+          const project = res.data?.response?.result || res.data;
+          if (project) return project;
+        } catch (_) {}
+      }
+
       if (!portal) {
         const portals = await this.getPortals(userId);
         if (portals.length === 0) return null;
@@ -928,13 +938,12 @@ class ZohoService {
           if (match) portalName = match.name || match.portal_name || match.id_string;
         } catch (_) {}
       }
-      let project: any;
-      try {
-        project = await this.getProject(userId, projectId, portal);
-      } catch (e) {
-        throw new Error(`Failed to fetch project for tasklists: ${(e as Error).message}`);
+      // Use getProjectWithFallback so we succeed when direct URL 404s (Zoho may require id_string or portal name in path)
+      const project = await this.getProjectWithFallback(userId, projectId, portal);
+      if (!project) {
+        throw new Error('Project not found in Zoho. The direct project URL may return 404; try syncing from a project that appears in your Zoho project list.');
       }
-      const correctProjectId = (project?.id_string || project?.id || projectId).toString();
+      const correctProjectId = (project.id_string || project.id || projectId).toString();
       const endpointVariations: { name: string; url: string }[] = [];
       if (project?.link?.tasklist?.url) {
         const path = (project.link.tasklist.url as string).replace(/https?:\/\/[^/]+/, '');

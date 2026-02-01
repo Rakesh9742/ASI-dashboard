@@ -242,10 +242,10 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _buildNavTab('Projects', isSelected: currentNav == 'Projects'),
+                  Tooltip(message: 'Go to Projects. View and manage your chip design projects.', child: _buildNavTab('Projects', isSelected: currentNav == 'Projects')),
                   if (isAdmin) ...[
                     const SizedBox(width: 6),
-                    _buildNavTab('Users', isSelected: currentNav == 'Users'),
+                    Tooltip(message: 'Go to User management. Add users and assign them to projects (admin only).', child: _buildNavTab('Users', isSelected: currentNav == 'Users')),
                   ],
                 ],
               ),
@@ -273,7 +273,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _buildNavTab('Projects', isSelected: currentNav == 'Projects'),
+                  Tooltip(message: 'Go to Projects. View and manage your chip design projects.', child: _buildNavTab('Projects', isSelected: currentNav == 'Projects')),
                 ],
               ),
             ),
@@ -282,39 +282,42 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
           Row(
             children: [
               // Theme Toggle Button
-              Container(
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? Colors.grey.shade800
-                      : Colors.white,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: Theme.of(context).dividerColor.withOpacity(0.3),
-                    width: 1,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 4,
-                      offset: const Offset(0, 1),
-                    ),
-                  ],
-                ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: () {
-                      ref.read(themeModeProvider.notifier).toggleTheme();
-                    },
+              Tooltip(
+                message: 'Switch between light and dark mode.',
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? Colors.grey.shade800
+                        : Colors.white,
                     borderRadius: BorderRadius.circular(10),
-                    child: Padding(
-                      padding: const EdgeInsets.all(10),
-                      child: Icon(
-                        ref.watch(themeModeProvider) == ThemeMode.dark
-                            ? Icons.light_mode_rounded
-                            : Icons.dark_mode_rounded,
-                        size: 20,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.8),
+                    border: Border.all(
+                      color: Theme.of(context).dividerColor.withOpacity(0.3),
+                      width: 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 4,
+                        offset: const Offset(0, 1),
+                      ),
+                    ],
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () {
+                        ref.read(themeModeProvider.notifier).toggleTheme();
+                      },
+                      borderRadius: BorderRadius.circular(10),
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Icon(
+                          ref.watch(themeModeProvider) == ThemeMode.dark
+                              ? Icons.light_mode_rounded
+                              : Icons.dark_mode_rounded,
+                          size: 20,
+                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.8),
+                        ),
                       ),
                     ),
                   ),
@@ -322,7 +325,10 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
               ),
               const SizedBox(width: 12),
               // User menu – professional dropdown
-              _buildUserMenuButton(user, isDark),
+              Tooltip(
+                message: 'Open account menu. View your profile or sign out.',
+                child: _buildUserMenuButton(user, isDark),
+              ),
             ],
           ),
         ],
@@ -357,10 +363,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
           padding: EdgeInsets.zero,
           child: Container(
             width: 272,
-            padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
               color: isDark ? Colors.grey.shade900 : Colors.white,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+              borderRadius: BorderRadius.circular(16),
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withOpacity(isDark ? 0.4 : 0.12),
@@ -371,158 +376,145 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [_kBrandPrimary, _kBrandSecondary],
-                        ),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Icon(
-                        Icons.person_rounded,
-                        color: Colors.white,
-                        size: 26,
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            name ?? email,
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurface,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [_kBrandPrimary, _kBrandSecondary],
                           ),
-                          if (name != null && name != email) ...[
-                            const SizedBox(height: 2),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.person_rounded,
+                          color: Colors.white,
+                          size: 26,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
                             Text(
-                              email,
+                              name ?? email,
                               style: TextStyle(
-                                fontSize: 13,
-                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.65),
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context).colorScheme.onSurface,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
-                          ] else if (role != null) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              role.toUpperCase(),
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                color: _kBrandPrimary,
-                                letterSpacing: 0.8,
+                            if (name != null && name != email) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                email,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.65),
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
+                            ] else if (role != null) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                role.toUpperCase(),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: _kBrandPrimary,
+                                  letterSpacing: 0.8,
+                                ),
+                              ),
+                            ],
                           ],
-                        ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ],
-            ),
-          ),
-        ),
-        PopupMenuItem(
-          enabled: false,
-          padding: EdgeInsets.zero,
-          child: Container(
-            width: 272,
-            height: 1,
-            color: Theme.of(context).dividerColor.withOpacity(0.5),
-          ),
-        ),
-        PopupMenuItem(
-          padding: EdgeInsets.zero,
-          child: InkWell(
-            onTap: () async {
-              Navigator.of(context).pop();
-              await ref.read(authProvider.notifier).logout();
-              if (context.mounted) {
-                Navigator.of(context).pushAndRemoveUntil(
-                  MaterialPageRoute(builder: (_) => const AuthWrapper()),
-                  (route) => false,
-                );
-              }
-            },
-            borderRadius: BorderRadius.circular(12),
-            child: Container(
-              width: 272,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              decoration: BoxDecoration(
-                color: isDark ? Colors.grey.shade900 : Colors.white,
-                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(isDark ? 0.4 : 0.12),
-                    blurRadius: 24,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.red.shade50.withOpacity(isDark ? 0.5 : 1),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Icon(
-                      Icons.logout_rounded,
-                      size: 20,
-                      color: Colors.red.shade600,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
+                Container(
+                  height: 1,
+                  margin: const EdgeInsets.symmetric(horizontal: 20),
+                  color: Theme.of(context).dividerColor.withOpacity(0.5),
+                ),
+                InkWell(
+                  onTap: () async {
+                    Navigator.of(context).pop();
+                    await ref.read(authProvider.notifier).logout();
+                    // Reset project tabs and nav so next login shows Projects list, not a previously opened project
+                    ref.read(tabProvider.notifier).closeAllTabs();
+                    ref.read(currentNavTabProvider.notifier).state = 'Projects';
+                    if (context.mounted) {
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute(builder: (_) => const AuthWrapper()),
+                        (route) => false,
+                      );
+                    }
+                  },
+                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                    child: Row(
                       children: [
-                        Text(
-                          'Sign out',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(context).colorScheme.onSurface,
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.red.shade50.withOpacity(isDark ? 0.5 : 1),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(
+                            Icons.logout_rounded,
+                            size: 20,
+                            color: Colors.red.shade600,
                           ),
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Exit your account',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                'Sign out',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                  color: Theme.of(context).colorScheme.onSurface,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Exit your account',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                ),
+                              ),
+                            ],
                           ),
+                        ),
+                        Icon(
+                          Icons.arrow_forward_ios_rounded,
+                          size: 12,
+                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
                         ),
                       ],
                     ),
                   ),
-                  Icon(
-                    Icons.arrow_forward_ios_rounded,
-                    size: 12,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

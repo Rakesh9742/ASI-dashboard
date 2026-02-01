@@ -51,10 +51,8 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     console.log(`🔵 Logged-in user: user_id=${userId}, role=${userRole}`);
     console.log(`🔵 includeZoho=${includeZoho}, effectiveIncludeZoho=${effectiveIncludeZoho}`);
 
-    // Build query based on user role (skip local projects entirely for admin)
-    // Engineers see projects they created
-    // Customers see projects assigned via user_projects table
-    // Admin, project_manager, and lead see all projects
+    // Build query based on user role: only show projects where user is in user_projects table.
+    // Admin sees all projects (to manage and assign users). Others see only projects they are part of.
     let projectFilter = '';
     let joinClause = '';
     const queryParams: any[] = [];
@@ -62,14 +60,13 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
     console.log('Project filtering - User ID:', userId, 'Role:', userRole);
     
     if (userRole === 'customer') {
-      // Customers see projects assigned to them via user_projects table
+      // Customers: only projects assigned via user_projects
       joinClause = 'INNER JOIN user_projects up ON p.id = up.project_id';
       projectFilter = 'WHERE up.user_id = $1';
       queryParams.push(userId);
-      console.log('Filtering projects for customer - only projects assigned via user_projects:', userId);
+      console.log('Filtering projects for customer - only projects in user_projects:', userId);
     } else if (userRole === 'engineer') {
-      // Engineers see projects they created OR projects assigned via user_projects
-      // Check if user_projects table exists first
+      // Engineers: only projects where user is in user_projects (not by created_by alone)
       const tableExistsResult = await pool.query(`
         SELECT EXISTS (
           SELECT FROM information_schema.tables 
@@ -77,23 +74,28 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
           AND table_name = 'user_projects'
         );
       `);
-      
       const tableExists = tableExistsResult.rows[0]?.exists || false;
-      
       if (tableExists) {
-        joinClause = 'LEFT JOIN user_projects up ON p.id = up.project_id';
-        projectFilter = 'WHERE (p.created_by = $1 AND p.created_by IS NOT NULL) OR up.user_id = $1';
+        joinClause = 'INNER JOIN user_projects up ON p.id = up.project_id';
+        projectFilter = 'WHERE up.user_id = $1';
+        queryParams.push(userId);
+        console.log('Filtering projects for engineer - only projects in user_projects:', userId);
       } else {
-        // If user_projects table doesn't exist, only filter by created_by
         joinClause = '';
         projectFilter = 'WHERE p.created_by = $1 AND p.created_by IS NOT NULL';
+        queryParams.push(userId);
+        console.log('user_projects table missing - engineer filter by created_by only:', userId);
       }
+    } else if (userRole === 'project_manager' || userRole === 'lead' || userRole === 'cad_engineer') {
+      // project_manager, lead, cad_engineer: only projects where user is in user_projects
+      joinClause = 'INNER JOIN user_projects up ON p.id = up.project_id';
+      projectFilter = 'WHERE up.user_id = $1';
       queryParams.push(userId);
-      console.log('Filtering projects for engineer - projects created by user or assigned via user_projects:', userId);
+      console.log('Filtering projects for', userRole, '- only projects in user_projects:', userId);
     } else {
-      console.log('No filter applied - showing all projects for role:', userRole);
+      // Admin: no filter - see all projects (to manage and assign users to projects)
+      console.log('No filter applied - admin sees all projects');
     }
-    // Admin, project_manager, and lead see all projects (no filter)
 
     // SSH username not used for GET /api/projects - skip to avoid slow SSH timeouts for all roles
     const userUsername: string | null = null;

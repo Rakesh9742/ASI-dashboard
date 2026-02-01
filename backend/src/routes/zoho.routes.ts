@@ -813,24 +813,21 @@ async function resolveDomainIdsFromRequest(opts: {
 }
 
 /**
- * Fetch domains from Zoho the same way as project plan: get tasks via getTasks (which has fallback to projects list), extract tasklist_name from each task, map to our domain ids.
+ * Fetch domains from Zoho using getTasklists only (lightweight). Maps tasklist names to our domain ids.
+ * Previously used getTasks (fetched ALL tasks) - now fetches only tasklists for much faster preview.
  */
 async function getDomainIdsFromZohoTasklists(userId: number, zohoProjectId: string, portalId?: string): Promise<number[]> {
   try {
-    const tasks = await zohoService.getTasks(userId, zohoProjectId, portalId || undefined);
-    const tasklistNames = new Set<string>();
-    for (const task of tasks) {
-      const name = (task.tasklist_name ?? task.tasklistName ?? '').toString().trim();
-      if (name) tasklistNames.add(name);
-    }
-    if (tasklistNames.size === 0) {
-      console.log('[Sync Projects] No tasklist names from Zoho tasks for project', zohoProjectId);
+    const tasklists = await zohoService.getTasklists(userId, zohoProjectId, portalId || undefined);
+    const tasklistNames = tasklists.map((t) => (t.name || '').trim()).filter((n) => n);
+    if (tasklistNames.length === 0) {
+      console.log('[Sync Projects] No tasklists from Zoho for project', zohoProjectId);
       return [];
     }
-    console.log('[Sync Projects] Zoho tasklists (domains) from tasks:', [...tasklistNames].join(', '));
+    console.log('[Sync Projects] Zoho tasklists (domains) from getTasklists:', [...new Set(tasklistNames)].join(', '));
     const domainIds: number[] = [];
     const seen = new Set<number>();
-    for (const tasklistName of tasklistNames) {
+    for (const tasklistName of [...new Set(tasklistNames)]) {
       const did = await domainIdFromTasklistName(tasklistName);
       if (did != null && !seen.has(did)) {
         seen.add(did);
@@ -841,7 +838,7 @@ async function getDomainIdsFromZohoTasklists(userId: number, zohoProjectId: stri
     }
     return domainIds;
   } catch (e: any) {
-    console.warn('[Sync Projects] Failed to get domains from Zoho tasks (project plan logic):', e.message);
+    console.warn('[Sync Projects] Failed to get domains from Zoho tasklists:', e.message);
     return [];
   }
 }
@@ -1221,7 +1218,11 @@ router.get(
         }
       }
 
-      const domainIds = await getDomainIdsFromZohoTasklists(userId, zohoIdStr, portalId);
+      // Fetch domains (tasklists) and project details in parallel – only required data, no full tasks
+      const [domainIds, zohoProjectPreview] = await Promise.all([
+        getDomainIdsFromZohoTasklists(userId, zohoIdStr, portalId),
+        zohoService.getProjectWithFallback(userId, zohoIdStr, portalId || undefined),
+      ]);
       const domains: { id: number; name: string; code: string }[] = [];
       for (const did of domainIds) {
         const row = await pool.query('SELECT id, name, code FROM domains WHERE id = $1', [did]);
@@ -1234,7 +1235,6 @@ router.get(
         }
       }
 
-      const zohoProjectPreview = await zohoService.getProjectWithFallback(userId, zohoIdStr, portalId || undefined);
       const { technology_node: technologyNode, start_date: startDate, target_date: targetDate } = zohoProjectPreview
         ? extractZohoProjectDetails(zohoProjectPreview)
         : { technology_node: null, start_date: null, target_date: null };

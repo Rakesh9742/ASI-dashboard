@@ -27,6 +27,8 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
   bool _isLoading = true;
   String _searchQuery = '';
   bool _isZohoConnectLoading = false;
+  /// Zoho connection status for admin: true = connected, false = not connected, null = not checked yet
+  bool? _isZohoConnected;
 
   @override
   void initState() {
@@ -74,7 +76,8 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
       if (isAdmin) {
         try {
           final status = await _apiService.getZohoStatus(token: token);
-          includeZoho = status['connected'] == true;
+          final connected = status['connected'];
+          includeZoho = connected == true || connected == 'true' || connected == 1;
         } catch (_) {
           includeZoho = false;
         }
@@ -99,6 +102,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
             _projects = [];
           }
           _isLoading = false;
+          if (isAdmin) _isZohoConnected = includeZoho;
         });
         // Log what UI will show after Zoho auth / refresh (for debugging project card status)
         try {
@@ -297,16 +301,30 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                               ),
                               if (isAdmin) ...[
                                 const SizedBox(width: 16),
-                                FilledButton.icon(
-                                  onPressed: _isZohoConnectLoading ? null : _connectZoho,
+                                Tooltip(
+                                  message: 'Connect your Zoho Projects account to sync projects and members. Click to open the connection page.',
+                                  child: FilledButton.icon(
+                                    onPressed: _isZohoConnectLoading ? null : _connectZoho,
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: _isZohoConnected == true
+                                        ? Colors.green.shade600
+                                        : (_isZohoConnected == false
+                                            ? Colors.red.shade700
+                                            : Theme.of(context).colorScheme.primary),
+                                    foregroundColor: Colors.white,
+                                  ),
                                   icon: _isZohoConnectLoading
                                       ? SizedBox(
                                           width: 20,
                                           height: 20,
                                           child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                                         )
-                                      : const Icon(Icons.link, size: 20),
-                                  label: Text(_isZohoConnectLoading ? 'Connecting...' : 'Zoho Connect'),
+                                      : Icon(
+                                          _isZohoConnected == true ? Icons.check_circle_outline : Icons.link,
+                                          size: 20,
+                                        ),
+                                    label: Text(_isZohoConnectLoading ? 'Connecting...' : 'Zoho Connect'),
+                                  ),
                                 ),
                               ],
                             ],
@@ -318,9 +336,12 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                           const SizedBox(height: 32),
 
                           // Search Bar
-                          SizedBox(
-                            width: double.infinity,
-                            child: _buildSearchBar(),
+                          Tooltip(
+                            message: 'Type here to search projects by name or description.',
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: _buildSearchBar(),
+                            ),
                           ),
                           const SizedBox(height: 32),
 
@@ -343,15 +364,15 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
             children: [
               Row(
                 children: [
-                  Expanded(child: _buildStatCard('Total Projects', stats['total']!.toString(), Theme.of(context).colorScheme.onSurface)),
+                  Expanded(child: Tooltip(message: 'Total number of projects you have access to', child: _buildStatCard('Total Projects', stats['total']!.toString(), Theme.of(context).colorScheme.onSurface))),
                   const SizedBox(width: 16),
-                  Expanded(child: _buildStatCard('Running', stats['running']!.toString(), Theme.of(context).colorScheme.secondary)),
+                  Expanded(child: Tooltip(message: 'Number of projects currently running', child: _buildStatCard('Running', stats['running']!.toString(), Theme.of(context).colorScheme.secondary))),
                 ],
               ),
               const SizedBox(height: 16),
               Row(
                 children: [
-                  Expanded(child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981))),
+                  Expanded(child: Tooltip(message: 'Number of projects that have completed', child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981)))),
                 ],
               ),
             ],
@@ -361,15 +382,15 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         return Row(
           children: [
             Expanded(
-              child: _buildStatCard('Total Projects', stats['total']!.toString(), Theme.of(context).colorScheme.onSurface),
+              child: Tooltip(message: 'Total number of projects you have access to', child: _buildStatCard('Total Projects', stats['total']!.toString(), Theme.of(context).colorScheme.onSurface)),
             ),
             const SizedBox(width: 16),
             Expanded(
-              child: _buildStatCard('Running', stats['running']!.toString(), Theme.of(context).colorScheme.secondary),
+              child: Tooltip(message: 'Number of projects currently running', child: _buildStatCard('Running', stats['running']!.toString(), Theme.of(context).colorScheme.secondary)),
             ),
             const SizedBox(width: 16),
             Expanded(
-              child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981)),
+              child: Tooltip(message: 'Number of projects that have completed', child: _buildStatCard('Completed', stats['completed']!.toString(), const Color(0xFF10B981))),
             ),
           ],
         );
@@ -823,7 +844,55 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => const Center(child: CircularProgressIndicator()),
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return Dialog(
+          backgroundColor: theme.colorScheme.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _kCardAccent.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(Icons.sync_rounded, size: 32, color: _kCardAccent),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Loading sync preview…',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Fetching project and members from Zoho',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: theme.colorScheme.onSurface.withOpacity(0.6),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(_kCardAccent),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
     Map<String, dynamic>? preview;
     try {
@@ -862,37 +931,287 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Confirm Sync Projects'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'The following will be added or updated in the database:',
-                style: Theme.of(ctx).textTheme.bodyMedium,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return Dialog(
+          backgroundColor: theme.colorScheme.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            width: 480,
+            constraints: const BoxConstraints(maxWidth: 480),
+            padding: const EdgeInsets.all(28),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: _kCardAccent.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: _kCardAccent.withOpacity(0.5)),
+                        ),
+                        child: Icon(Icons.sync_rounded, size: 24, color: _kCardAccent),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Sync project from Zoho',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                color: theme.colorScheme.onSurface,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Review and confirm to sync members',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: theme.colorScheme.onSurface.withOpacity(0.55),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.folder_rounded, size: 20, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                'Project',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  color: theme.colorScheme.onSurface.withOpacity(0.6),
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                projectName,
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                  color: theme.colorScheme.onSurface,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              if (existingProject)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text(
+                                    'Existing project will be updated',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: theme.colorScheme.onSurface.withOpacity(0.5),
+                                      fontStyle: FontStyle.italic,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (techLine != null || startLine != null || targetLine != null) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.4),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: theme.dividerColor.withOpacity(0.4)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (techLine != null)
+                            Text(techLine, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: theme.colorScheme.onSurface)),
+                          if (startLine != null) ...[
+                            if (techLine != null) const SizedBox(height: 4),
+                            Text(startLine, style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurface.withOpacity(0.8))),
+                          ],
+                          if (targetLine != null) ...[
+                            if (techLine != null || startLine != null) const SizedBox(height: 2),
+                            Text(targetLine, style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurface.withOpacity(0.8))),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'Domains',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: theme.colorScheme.onSurface.withOpacity(0.6),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          domainSummary,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: theme.colorScheme.onSurface,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: _kCardAccent.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: _kCardAccent.withOpacity(0.3)),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.people_rounded, size: 20, color: _kCardAccent),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Project members from Zoho will be added to this project. Blocks and corresponding users will also be added so they can access the project.',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: theme.colorScheme.onSurface.withOpacity(0.9),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(ctx).pop(false),
+                        child: Text(
+                          'Cancel',
+                          style: TextStyle(
+                            color: theme.colorScheme.onSurface.withOpacity(0.7),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      ElevatedButton.icon(
+                        onPressed: () => Navigator.of(ctx).pop(true),
+                        icon: const Icon(Icons.sync_rounded, size: 18),
+                        label: const Text('Sync'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _kCardAccent,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          elevation: 0,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-              const SizedBox(height: 12),
-              Text('Project: $projectName', style: const TextStyle(fontWeight: FontWeight.w600)),
-              if (existingProject) Text('(existing project will be updated)', style: Theme.of(ctx).textTheme.bodySmall),
-              if (techLine != null) ...[const SizedBox(height: 6), Text(techLine, style: const TextStyle(fontWeight: FontWeight.w500))],
-              if (startLine != null) ...[const SizedBox(height: 4), Text(startLine, style: const TextStyle(fontWeight: FontWeight.w500))],
-              if (targetLine != null) ...[const SizedBox(height: 4), Text(targetLine, style: const TextStyle(fontWeight: FontWeight.w500))],
-              const SizedBox(height: 8),
-              Text('Domains: $domainSummary', style: const TextStyle(fontWeight: FontWeight.w600)),
-              const SizedBox(height: 16),
-              const Text('Members from Zoho will be synced to this project. Continue?'),
-            ],
+            ),
           ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Confirm')),
-        ],
-      ),
+        );
+      },
     );
     if (confirmed != true || !mounted) return;
+
+    // Show "Syncing..." dialog so user sees that sync is in progress
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          final theme = Theme.of(ctx);
+          return Dialog(
+            backgroundColor: theme.colorScheme.surface,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: _kCardAccent.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Icon(Icons.sync_rounded, size: 32, color: _kCardAccent),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    'Syncing…',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Adding project members, blocks, and users from Zoho',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: theme.colorScheme.onSurface.withOpacity(0.6),
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 24),
+                  SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 3,
+                      valueColor: AlwaysStoppedAnimation<Color>(_kCardAccent),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    }
 
     try {
       final result = await _apiService.syncZohoProjectMembersByZohoId(
@@ -902,36 +1221,223 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         token: token,
       );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Successfully synced ${result['updatedAssignments']} members. Created ${result['createdUsers']} new users.',
-            ),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 5),
-          ),
-        );
-        if (result['errors'] != null && (result['errors'] as List).isNotEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Sync completed with ${(result['errors'] as List).length} errors.'),
-              backgroundColor: Colors.orange,
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
+        Navigator.of(context).pop(); // Close syncing dialog
+        _showSyncResultDialog(context, result, zohoProjectName ?? 'Project');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error syncing members: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 5),
-          ),
-        );
+        Navigator.of(context).pop(); // Close syncing dialog
+        _showSyncResultDialog(context, null, zohoProjectName ?? 'Project', error: e.toString());
       }
     }
+  }
+
+  /// Shows a proper dialog with the complete sync result (same style as confirm sync dialog).
+  void _showSyncResultDialog(
+    BuildContext context,
+    Map<String, dynamic>? result,
+    String projectName, {
+    String? error,
+  }) {
+    final hasError = error != null && error.isNotEmpty;
+    final updated = result != null && result['updatedAssignments'] is int ? result['updatedAssignments'] as int : 0;
+    final created = result != null && result['createdUsers'] is int ? result['createdUsers'] as int : 0;
+    final errorsList = result != null && result['errors'] is List ? result['errors'] as List : <dynamic>[];
+    final errCount = errorsList.length;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        final t = Theme.of(ctx);
+        return Dialog(
+          backgroundColor: t.colorScheme.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            width: 480,
+            constraints: const BoxConstraints(maxWidth: 480),
+            padding: const EdgeInsets.all(28),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: hasError
+                              ? Colors.red.withOpacity(0.12)
+                              : (errCount > 0 ? Colors.orange : _kCardAccent).withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: hasError
+                                ? Colors.red.withOpacity(0.5)
+                                : (errCount > 0 ? Colors.orange : _kCardAccent).withOpacity(0.5),
+                          ),
+                        ),
+                        child: Icon(
+                          hasError ? Icons.error_rounded : (errCount > 0 ? Icons.warning_rounded : Icons.check_circle_rounded),
+                          size: 24,
+                          color: hasError ? Colors.red : (errCount > 0 ? Colors.orange : _kCardAccent),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              hasError ? 'Sync failed' : (errCount > 0 ? 'Sync completed with issues' : 'Sync completed'),
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                color: t.colorScheme.onSurface,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              projectName,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: t.colorScheme.onSurface.withOpacity(0.55),
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  if (hasError) ...[
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50.withOpacity(0.8),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.red.shade200),
+                      ),
+                      child: Text(
+                        error,
+                        style: TextStyle(fontSize: 13, color: Colors.red.shade900),
+                      ),
+                    ),
+                  ] else ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: t.colorScheme.surface,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: t.dividerColor.withOpacity(0.5)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _syncResultRow(ctx: ctx, icon: Icons.people_rounded, label: 'Project members added', value: '$updated'),
+                          const SizedBox(height: 10),
+                          _syncResultRow(ctx: ctx, icon: Icons.person_add_rounded, label: 'New users created', value: '$created'),
+                          const SizedBox(height: 10),
+                          _syncResultRow(ctx: ctx, icon: Icons.view_module_rounded, label: 'Blocks synced', value: 'Yes'),
+                        ],
+                      ),
+                    ),
+                    if (errCount > 0) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50.withOpacity(0.8),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.orange.shade200),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.warning_rounded, size: 18, color: Colors.orange.shade800),
+                                const SizedBox(width: 8),
+                                Text(
+                                  '$errCount item${errCount == 1 ? '' : 's'} had issues',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.orange.shade900),
+                                ),
+                              ],
+                            ),
+                            if (errorsList.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              ...(errorsList.take(5).map((e) {
+                                final map = e is Map ? e : <String, dynamic>{};
+                                final email = map['email']?.toString() ?? '—';
+                                final errMsg = map['error']?.toString() ?? '—';
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 4),
+                                  child: Text(
+                                    '$email: $errMsg',
+                                    style: TextStyle(fontSize: 12, color: Colors.orange.shade900),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                );
+                              })),
+                              if (errorsList.length > 5)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text(
+                                    '... and ${errorsList.length - 5} more',
+                                    style: TextStyle(fontSize: 12, color: Colors.orange.shade800),
+                                  ),
+                                ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                  const SizedBox(height: 24),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.of(ctx).pop(),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _kCardAccent,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        elevation: 0,
+                      ),
+                      child: const Text('Close'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _syncResultRow({required BuildContext ctx, required IconData icon, required String label, required String value}) {
+    final theme = Theme.of(ctx);
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: _kCardAccent.withOpacity(0.9)),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface.withOpacity(0.85)),
+          ),
+        ),
+        Text(
+          value,
+          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: theme.colorScheme.onSurface),
+        ),
+      ],
+    );
   }
 
   void _showExportToLinuxDialog(BuildContext context, Map<String, dynamic> project) async {
@@ -1227,14 +1733,38 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
     final isDark = theme.brightness == Brightness.dark;
     final statusColor = widget.statusConfig['color'] as Color;
 
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      child: InkWell(
-        onTap: widget.onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
+    return TooltipTheme(
+      data: TooltipThemeData(
+        constraints: const BoxConstraints(maxWidth: 200),
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.inverseSurface,
+          borderRadius: BorderRadius.circular(8),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.15),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        textStyle: TextStyle(
+          color: Theme.of(context).colorScheme.onInverseSurface,
+          fontSize: 12,
+        ),
+      ),
+      child: Tooltip(
+        message: 'Click to open this project. View blocks, runs, and dashboards.',
+        preferBelow: false,
+        child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _isHovered = true),
+        onExit: (_) => setState(() => _isHovered = false),
+        child: InkWell(
+          onTap: widget.onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
           height: double.infinity,
           decoration: BoxDecoration(
             color: theme.cardColor,
@@ -1269,7 +1799,7 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        // Header: icon + status pill
+                        // Header: icon + project name/status + actions at right end
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
@@ -1349,6 +1879,41 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                                 ],
                               ),
                             ),
+                            // Actions at right end of card
+                            if (widget.canSyncProjects || widget.canSetup || widget.canExportToLinux) ...[
+                              const SizedBox(width: 10),
+                              Wrap(
+                                spacing: 6,
+                                runSpacing: 6,
+                                alignment: WrapAlignment.end,
+                                children: [
+                                  if (widget.canSyncProjects) _actionChip(context, Icons.sync_rounded, 'Sync', widget.onSyncProjects!, accent: _kCardAccent, tooltip: 'Sync members and blocks from Zoho to this project.'),
+                                  if (widget.canSetup) _actionChip(context, Icons.settings_rounded, 'Experiment Setup', widget.onSetup!, tooltip: 'Create experiment run: choose block and enter experiment name.'),
+                                  if (widget.canExportToLinux)
+                                    (widget.isExported || widget.isSetupCompleted)
+                                        ? Tooltip(
+                                            message: 'Exported to Linux. You can run flows.',
+                                            child: Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFF10B981).withOpacity(0.15),
+                                                borderRadius: BorderRadius.circular(8),
+                                                border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5)),
+                                              ),
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Icon(Icons.check_circle_rounded, size: 14, color: Colors.green.shade700),
+                                                  const SizedBox(width: 5),
+                                                  Text('Exported', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.green.shade700)),
+                                                ],
+                                              ),
+                                            ),
+                                          )
+                                        : _actionChip(context, Icons.file_download_rounded, 'Project Setup', widget.onExportToLinux!, accent: _kCardAccent, tooltip: 'Export project to Linux (required before running flows).'),
+                                ],
+                              ),
+                            ],
                           ],
                         ),
                         if (widget.description.isNotEmpty && widget.description != 'Hardware design project') ...[
@@ -1469,55 +2034,23 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
                         const SizedBox(height: 16),
                         Divider(height: 1, color: theme.dividerColor.withOpacity(0.6)),
                         const SizedBox(height: 14),
-                        // Footer: Open + actions
+                        // Footer: Open project only (actions are in upper card)
                         Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          crossAxisAlignment: CrossAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  'Open project',
-                                  style: theme.textTheme.bodyMedium?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                    color: _kCardAccent,
-                                  ) ?? TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: _kCardAccent,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Icon(Icons.arrow_forward_rounded, size: 18, color: _kCardAccent),
-                              ],
+                            Text(
+                              'Open project',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                                color: _kCardAccent,
+                              ) ?? TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: _kCardAccent,
+                              ),
                             ),
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (widget.canSyncProjects) _actionChip(context, Icons.sync_rounded, 'Sync', widget.onSyncProjects!, accent: _kCardAccent),
-                                if (widget.canSetup) _actionChip(context, Icons.settings_rounded, 'Setup', widget.onSetup!),
-                                if (widget.canExportToLinux)
-                                  (widget.isExported || widget.isSetupCompleted)
-                                      ? Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFF10B981).withOpacity(0.15),
-                                            borderRadius: BorderRadius.circular(8),
-                                            border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5)),
-                                          ),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Icon(Icons.check_circle_rounded, size: 14, color: Colors.green.shade700),
-                                              const SizedBox(width: 5),
-                                              Text('Exported', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.green.shade700)),
-                                            ],
-                                          ),
-                                        )
-                                      : _actionChip(context, Icons.file_download_rounded, 'Setup', widget.onExportToLinux!, accent: _kCardAccent),
-                              ],
-                            ),
+                            const SizedBox(width: 6),
+                            Icon(Icons.arrow_forward_rounded, size: 18, color: _kCardAccent),
                           ],
                         ),
                       ],
@@ -1529,6 +2062,8 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
           ),
         ),
       ),
+      ),
+    ),
     );
   }
 
@@ -1668,10 +2203,10 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
     );
   }
 
-  Widget _actionChip(BuildContext context, IconData icon, String label, VoidCallback onTap, {Color? accent}) {
+  Widget _actionChip(BuildContext context, IconData icon, String label, VoidCallback onTap, {Color? accent, String? tooltip}) {
     final theme = Theme.of(context);
     final color = accent ?? theme.colorScheme.primary;
-    return Padding(
+    final chip = Padding(
       padding: const EdgeInsets.only(left: 6.0),
       child: Material(
         color: Colors.transparent,
@@ -1696,6 +2231,10 @@ class _ProjectCardWidgetState extends State<_ProjectCardWidget> {
         ),
       ),
     );
+    if (tooltip != null && tooltip.isNotEmpty) {
+      return Tooltip(message: tooltip, child: chip);
+    }
+    return chip;
   }
 }
 
@@ -2049,27 +2588,27 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
           final showMinimalRunning = (showOutput && isCommandRunning) || isSendingPassword;
           if (showMinimalRunning) {
             return Dialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 40),
+                padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 48),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const SizedBox(
-                      width: 40,
-                      height: 40,
+                    SizedBox(
+                      width: 48,
+                      height: 48,
                       child: CircularProgressIndicator(
                         strokeWidth: 3,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                        valueColor: AlwaysStoppedAnimation<Color>(_kCardAccent),
                       ),
                     ),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 24),
                     Text(
-                      'Running.......',
+                      'Running…',
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w500,
-                        color: Colors.grey.shade700,
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.8),
                       ),
                     ),
                   ],
@@ -2078,54 +2617,59 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
             );
           }
 
+          final theme = Theme.of(context);
           return Dialog(
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(20),
           ),
           child: Container(
-            width: 700,
-            constraints: const BoxConstraints(maxHeight: 700),
+            width: 520,
+            constraints: const BoxConstraints(maxWidth: 520, maxHeight: 640),
+            padding: const EdgeInsets.all(28),
             child: Column(
-              mainAxisSize: MainAxisSize.min,
+              mainAxisSize: MainAxisSize.max,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Header
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Colors.orange.shade400, Colors.orange.shade600],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    borderRadius: const BorderRadius.only(
-                      topLeft: Radius.circular(16),
-                      topRight: Radius.circular(16),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Icon(Icons.lock, color: Colors.white, size: 24),
+                // Header (match new UI: icon + title)
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surface,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: _kCardAccent.withOpacity(0.6)),
                       ),
-                      const SizedBox(width: 16),
-                      const Expanded(
-                        child: Text(
-                          'Password Required',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
+                      child: Icon(Icons.lock_rounded, size: 24, color: _kCardAccent),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Password Required',
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w700,
+                              color: theme.colorScheme.onSurface,
+                              letterSpacing: -0.3,
+                            ),
                           ),
-                        ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Enter sudo password to continue export',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: theme.colorScheme.onSurface.withOpacity(0.55),
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
+                const SizedBox(height: 24),
                 // Content: when complete show full output; else password form
                 Expanded(
                   child: showOutput
@@ -2138,56 +2682,56 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                               exitCode: lastExitCode,
                             ))
                       : SingleChildScrollView(
-                          padding: const EdgeInsets.all(24),
+                          padding: const EdgeInsets.only(bottom: 16),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // Info message
+                              // Info message (new UI: purple tint)
                               Container(
                                 padding: const EdgeInsets.all(16),
                                 decoration: BoxDecoration(
-                                  color: Colors.blue.shade50,
+                                  color: _kCardAccent.withOpacity(0.08),
                                   borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: Colors.blue.shade200),
+                                  border: Border.all(color: _kCardAccent.withOpacity(0.3)),
                                 ),
                                 child: Row(
                                   children: [
-                                    Icon(Icons.info_outline, color: Colors.blue.shade700, size: 24),
+                                    Icon(Icons.info_outline_rounded, color: _kCardAccent, size: 24),
                                     const SizedBox(width: 12),
                                     Expanded(
                                       child: Text(
                                         'The command requires sudo password to continue execution.',
                                         style: TextStyle(
-                                          fontSize: 15,
-                                          color: Colors.blue.shade900,
+                                          fontSize: 14,
+                                          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.85),
                                         ),
                                       ),
                                     ),
                                   ],
                                 ),
                               ),
-                              const SizedBox(height: 24),
+                              const SizedBox(height: 20),
                               // Command display
                               Container(
                                 padding: const EdgeInsets.all(16),
                                 decoration: BoxDecoration(
                                   color: const Color(0xFF1E1E1E),
                                   borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: Colors.grey.shade700),
+                                  border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
                                 ),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Row(
                                       children: [
-                                        Icon(Icons.code, color: Colors.blue.shade300, size: 20),
+                                        Icon(Icons.code_rounded, color: _kCardAccent.withOpacity(0.9), size: 20),
                                         const SizedBox(width: 8),
                                         Text(
                                           'Command to Execute:',
                                           style: TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.grey.shade300,
-                                            fontSize: 14,
+                                            fontWeight: FontWeight.w600,
+                                            color: theme.colorScheme.onSurface.withOpacity(0.7),
+                                            fontSize: 13,
                                           ),
                                         ),
                                       ],
@@ -2205,8 +2749,8 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                                   ],
                                 ),
                               ),
-                              const SizedBox(height: 24),
-                              // Password input with better styling
+                              const SizedBox(height: 20),
+                              // Password input (new UI: purple focus)
                               TextField(
                                 controller: passwordController,
                                 obscureText: true,
@@ -2214,21 +2758,21 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                                 decoration: InputDecoration(
                                   labelText: 'Enter Sudo Password',
                                   hintText: 'Enter your password',
-                                  prefixIcon: const Icon(Icons.lock_outline),
+                                  prefixIcon: Icon(Icons.lock_outline_rounded, color: theme.colorScheme.onSurface.withOpacity(0.5)),
                                   border: OutlineInputBorder(
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                   enabledBorder: OutlineInputBorder(
                                     borderRadius: BorderRadius.circular(12),
-                                    borderSide: BorderSide(color: Colors.grey.shade400),
+                                    borderSide: BorderSide(color: theme.dividerColor.withOpacity(0.5)),
                                   ),
                                   focusedBorder: OutlineInputBorder(
                                     borderRadius: BorderRadius.circular(12),
-                                    borderSide: BorderSide(color: Colors.orange.shade600, width: 2),
+                                    borderSide: BorderSide(color: _kCardAccent, width: 1.5),
                                   ),
                                   filled: true,
-                                  fillColor: Colors.grey.shade50,
-                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                                  fillColor: theme.colorScheme.surface,
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                                 ),
                                 enabled: !isSendingPassword,
                                 onSubmitted: (value) async {
@@ -2263,15 +2807,9 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                           ),
                         ),
                 ),
-                // Actions: when output shown and complete -> Close only; when password form -> Cancel + Send Password (enabled when text not empty)
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade50,
-                    border: Border(
-                      top: BorderSide(color: Colors.grey.shade300),
-                    )
-                  ),
+                // Actions (new UI: purple primary button)
+                Padding(
+                  padding: const EdgeInsets.only(top: 20),
                   child: showOutput && !isCommandRunning
                       ? Row(
                           mainAxisAlignment: MainAxisAlignment.end,
@@ -2279,7 +2817,13 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                             ElevatedButton(
                               onPressed: () => Navigator.of(context).pop(false),
                               style: ElevatedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                backgroundColor: _kCardAccent,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                elevation: 0,
                               ),
                               child: const Text('Close'),
                             ),
@@ -2295,10 +2839,13 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                                   children: [
                                     TextButton(
                                       onPressed: isSendingPassword ? null : () => Navigator.of(context).pop(null),
-                                      style: TextButton.styleFrom(
-                                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                      child: Text(
+                                        'Cancel',
+                                        style: TextStyle(
+                                          color: theme.colorScheme.onSurface.withOpacity(0.7),
+                                          fontWeight: FontWeight.w600,
+                                        ),
                                       ),
-                                      child: const Text('Cancel'),
                                     ),
                                     const SizedBox(width: 12),
                                     ElevatedButton.icon(
@@ -2333,24 +2880,25 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                                               });
                                             },
                                       style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.orange.shade600,
+                                        backgroundColor: _kCardAccent,
                                         foregroundColor: Colors.white,
-                                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
                                         shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(8),
+                                          borderRadius: BorderRadius.circular(12),
                                         ),
+                                        elevation: 0,
                                       ),
                                       icon: isSendingPassword
-                                          ? const SizedBox(
-                                              width: 16,
-                                              height: 16,
+                                          ? SizedBox(
+                                              width: 18,
+                                              height: 18,
                                               child: CircularProgressIndicator(
                                                 strokeWidth: 2,
                                                 valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                                               ),
                                             )
-                                          : const Icon(Icons.send, size: 18),
-                                      label: Text(isSendingPassword ? 'Sending...' : 'Send Password'),
+                                          : const Icon(Icons.send_rounded, size: 18),
+                                      label: Text(isSendingPassword ? 'Sending…' : 'Send Password'),
                                     ),
                                   ],
                                 );
@@ -2425,8 +2973,8 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                     children: [
                       Text(
                         isComplete 
-                          ? (isSuccess ? 'Project Setup Completed Successfully' : 'Project Setup Failed')
-                          : 'Setting up project...',
+                          ? (isSuccess ? 'Export Completed Successfully' : 'Export Failed')
+                          : 'Exporting to Linux...',
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
@@ -2809,49 +3357,107 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Dialog(
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
       ),
       child: Container(
-        width: 600,
-        padding: const EdgeInsets.all(24),
+        width: 520,
+        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 560),
+        padding: const EdgeInsets.all(28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Header
+            // Header (match _SetupDialog: icon + title + close)
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  'Project Setup',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: Theme.of(context).colorScheme.onSurface,
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: _kCardAccent.withOpacity(0.6)),
+                  ),
+                  child: Icon(Icons.terminal_rounded, size: 24, color: _kCardAccent),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Project Setup',
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w700,
+                          color: theme.colorScheme.onSurface,
+                          letterSpacing: -0.3,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Select domains and export to Linux',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: theme.colorScheme.onSurface.withOpacity(0.55),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.close),
+                  icon: Icon(Icons.close_rounded, color: theme.colorScheme.onSurface.withOpacity(0.6)),
                   onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
+                  style: IconButton.styleFrom(
+                    backgroundColor: theme.colorScheme.surface,
+                    side: BorderSide(color: theme.dividerColor.withOpacity(0.5)),
+                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 28),
 
-            // Project Name (read-only)
-            TextField(
-              readOnly: true,
-              decoration: InputDecoration(
-                labelText: 'Project Name',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                filled: true,
-                fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+            // Project Name (read-only, same style as _SetupDialog)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
               ),
-              controller: TextEditingController(text: widget.projectName),
+              child: Row(
+                children: [
+                  Icon(Icons.folder_rounded, size: 20, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'Project',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: theme.colorScheme.onSurface.withOpacity(0.6),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          widget.projectName,
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: theme.colorScheme.onSurface,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 20),
 
@@ -2859,32 +3465,48 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
             Text(
               'Select Domains',
               style: TextStyle(
-                fontSize: 16,
+                fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: Theme.of(context).colorScheme.onSurface,
+                color: theme.colorScheme.onSurface.withOpacity(0.8),
               ),
             ),
             const SizedBox(height: 12),
             
             if (widget.domains.isEmpty)
-              Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Text(
-                  'No domains available for this project',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                  ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline_rounded, size: 20, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'No domains available for this project',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: theme.colorScheme.onSurface.withOpacity(0.75),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               )
             else
               Container(
                 constraints: const BoxConstraints(maxHeight: 200),
                 decoration: BoxDecoration(
-                  border: Border.all(color: Theme.of(context).dividerColor),
-                  borderRadius: BorderRadius.circular(8),
+                  color: theme.colorScheme.surface,
+                  border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: ListView.builder(
                   shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(vertical: 6),
                   itemCount: widget.domains.length,
                   itemBuilder: (context, index) {
                     final domain = widget.domains[index];
@@ -2898,6 +3520,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                           ? Text('Code: $code') 
                           : null,
                       value: isSelected,
+                      activeColor: _kCardAccent,
                       onChanged: _isRunning
                           ? null
                           : (value) {
@@ -2915,19 +3538,18 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
               ),
             const SizedBox(height: 24),
 
-            // Output/Error Display
+            // Output/Error Display (match new style)
             if (_output != null || _error != null) ...[
               Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: _error != null
-                      ? Colors.red.shade50
-                      : Colors.green.shade50,
-                  borderRadius: BorderRadius.circular(8),
+                  color: theme.colorScheme.surface,
+                  borderRadius: BorderRadius.circular(12),
                   border: Border.all(
                     color: _error != null
                         ? Colors.red.shade300
                         : Colors.green.shade300,
+                    width: 1.5,
                   ),
                 ),
                 constraints: const BoxConstraints(maxHeight: 200),
@@ -2937,6 +3559,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                     style: TextStyle(
                       fontFamily: 'monospace',
                       fontSize: 12,
+                      height: 1.4,
                       color: _error != null
                           ? Colors.red.shade900
                           : Colors.green.shade900,
@@ -2944,17 +3567,23 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 18),
             ],
 
-            // Action Buttons: on success only Close; else Cancel + Run
+            // Action Buttons (match _SetupDialog: purple primary, rounded)
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 if (!_exportSuccess) ...[
                   TextButton(
                     onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
-                    child: const Text('Cancel'),
+                    child: Text(
+                      'Cancel',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurface.withOpacity(0.7),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                   const SizedBox(width: 12),
                 ],
@@ -2962,7 +3591,13 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                   ElevatedButton(
                     onPressed: () => Navigator.of(context).pop(),
                     style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      backgroundColor: _kCardAccent,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
                     ),
                     child: const Text('Close'),
                   )
@@ -2970,15 +3605,24 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
                   ElevatedButton.icon(
                     onPressed: _isRunning ? null : _runCommand,
                     icon: _isRunning
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                        ? SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
                           )
-                        : const Icon(Icons.play_arrow),
-                    label: Text(_isRunning ? 'Running...' : 'Run'),
+                        : const Icon(Icons.play_arrow_rounded, size: 20),
+                    label: Text(_isRunning ? 'Running…' : 'Run Export'),
                     style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      backgroundColor: _kCardAccent,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
                     ),
                   ),
               ],
@@ -3016,11 +3660,113 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
   bool _isSuccess = false;
   String? _output;
   String? _error;
+  final GlobalKey _blockDropdownKey = GlobalKey();
+  bool _blockDropdownOpen = false;
+  OverlayEntry? _blockDropdownOverlay;
 
   @override
   void dispose() {
+    _blockDropdownOverlay?.remove();
     _experimentController.dispose();
     super.dispose();
+  }
+
+  void _closeBlockDropdown() {
+    if (_blockDropdownOverlay != null) {
+      _blockDropdownOverlay!.remove();
+      _blockDropdownOverlay = null;
+    }
+    if (_blockDropdownOpen) {
+      _blockDropdownOpen = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _toggleBlockDropdown() {
+    if (_isRunning) return;
+    if (_blockDropdownOpen) {
+      _closeBlockDropdown();
+      return;
+    }
+    _blockDropdownOpen = true;
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_blockDropdownOpen) return;
+      final renderBox = _blockDropdownKey.currentContext?.findRenderObject() as RenderBox?;
+      if (renderBox == null) {
+        _blockDropdownOpen = false;
+        if (mounted) setState(() {});
+        return;
+      }
+      final position = renderBox.localToGlobal(Offset.zero);
+      final size = renderBox.size;
+      final theme = Theme.of(context);
+      _blockDropdownOverlay = OverlayEntry(
+        builder: (context) => Stack(
+          children: [
+            ModalBarrier(
+              dismissible: true,
+              onDismiss: _closeBlockDropdown,
+            ),
+            Positioned(
+              left: position.dx,
+              top: position.dy + size.height + 4,
+              width: size.width,
+              child: Material(
+                elevation: 8,
+                shadowColor: Colors.black26,
+                borderRadius: BorderRadius.circular(12),
+                color: Colors.transparent,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: _kCardAccent, width: 1.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.08),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  constraints: const BoxConstraints(maxHeight: 220),
+                  child: ListView(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    children: widget.blocks.map((block) {
+                      final name = block['block_name']?.toString() ?? block['name']?.toString() ?? '';
+                      final isSelected = _selectedBlock == name;
+                      return InkWell(
+                        onTap: () {
+                          setState(() {
+                            _selectedBlock = name;
+                          });
+                          _closeBlockDropdown();
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          child: Text(
+                            name,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: isSelected ? _kCardAccent : theme.colorScheme.onSurface,
+                              fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+      Overlay.of(context).insert(_blockDropdownOverlay!);
+    });
   }
 
   Future<void> _runSetup() async {
@@ -3250,7 +3996,7 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
               duration: Duration(seconds: 3),
             ),
           );
-          // Close Project Setup dialog automatically when setup is done
+          // Close Experiment Setup dialog automatically when setup is done
           Future.delayed(const Duration(milliseconds: 800), () {
             if (mounted) Navigator.of(context).pop();
           });
@@ -3276,38 +4022,110 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
     }
   }
 
+  InputDecoration _inputDecoration({
+    required String labelText,
+    String? hintText,
+    Widget? prefixIcon,
+    bool compact = false,
+  }) {
+    final theme = Theme.of(context);
+    return InputDecoration(
+      labelText: labelText,
+      hintText: hintText,
+      prefixIcon: prefixIcon,
+      contentPadding: EdgeInsets.symmetric(
+        horizontal: 16,
+        vertical: compact ? 12 : 14,
+      ),
+      filled: true,
+      fillColor: theme.colorScheme.surface,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: theme.dividerColor.withOpacity(0.5)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: theme.dividerColor.withOpacity(0.5)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: _kCardAccent, width: 1.5),
+      ),
+      labelStyle: TextStyle(
+        fontSize: 12,
+        color: theme.colorScheme.onSurface.withOpacity(0.6),
+        fontWeight: FontWeight.w500,
+      ),
+      hintStyle: TextStyle(
+        fontSize: 15,
+        color: theme.colorScheme.onSurface.withOpacity(0.5),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Dialog(
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
       ),
       child: Container(
-        width: 600,
-        padding: const EdgeInsets.all(24),
+        width: 520,
+        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 560),
+        padding: const EdgeInsets.all(28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Header
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  'Setup Experiment',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: Theme.of(context).colorScheme.onSurface,
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: _kCardAccent.withOpacity(0.6)),
+                  ),
+                  child: Icon(Icons.science_rounded, size: 24, color: _kCardAccent),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Setup Experiment',
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w700,
+                          color: theme.colorScheme.onSurface,
+                          letterSpacing: -0.3,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Choose block and enter experiment name',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: theme.colorScheme.onSurface.withOpacity(0.55),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.close),
+                  icon: Icon(Icons.close_rounded, color: theme.colorScheme.onSurface.withOpacity(0.6)),
                   onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
+                  style: IconButton.styleFrom(
+                    backgroundColor: theme.colorScheme.surface,
+                    side: BorderSide(color: theme.dividerColor.withOpacity(0.5)),
+                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 28),
 
             // While running show simple "Running......." UI; else show full form
             if (_isRunning)
@@ -3318,122 +4136,195 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                   mainAxisSize: MainAxisSize.min,
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const SizedBox(
+                    SizedBox(
                       width: 48,
                       height: 48,
                       child: CircularProgressIndicator(
                         strokeWidth: 3,
+                        valueColor: AlwaysStoppedAnimation<Color>(_kCardAccent),
                       ),
                     ),
                     const SizedBox(height: 24),
                     Text(
-                      'Running.......',
+                      'Running setup…',
                       style: TextStyle(
-                        fontSize: 18,
+                        fontSize: 16,
                         fontWeight: FontWeight.w500,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.8),
+                        color: theme.colorScheme.onSurface.withOpacity(0.8),
                       ),
                     ),
                   ],
                 ),
               )
             else ...[
-            // Project Name (read-only)
-            TextField(
-              readOnly: true,
-              decoration: InputDecoration(
-                labelText: 'Project Name',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                filled: true,
-                fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 380),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+            // Project Name (read-only, same style as block field)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
               ),
-              controller: TextEditingController(text: widget.projectName),
-            ),
-            const SizedBox(height: 20),
-
-            // Block Selection Dropdown (from DB only; no domain shown)
-            widget.blocks.isEmpty
-                ? Container(
-                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: Theme.of(context).colorScheme.outline.withOpacity(0.5),
-                      ),
-                    ),
-                    child: Row(
+              child: Row(
+                children: [
+                  Icon(Icons.folder_rounded, size: 20, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.info_outline, size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            'No blocks available for this project. Sync blocks from Zoho (admin) or ask an admin to add blocks.',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            ),
+                        Text(
+                          'Project',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: theme.colorScheme.onSurface.withOpacity(0.6),
                           ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          widget.projectName,
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: theme.colorScheme.onSurface,
+                          ),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
-                  )
-                : DropdownButtonFormField<String>(
-                    value: _selectedBlock,
-                    decoration: InputDecoration(
-                      labelText: 'Block',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      filled: true,
-                    ),
-                    items: widget.blocks.map((block) {
-                      final name = block['block_name']?.toString() ?? block['name']?.toString() ?? '';
-                      return DropdownMenuItem<String>(
-                        value: name,
-                        child: Text(name),
-                      );
-                    }).toList(),
-                    onChanged: _isRunning
-                        ? null
-                        : (value) {
-                            setState(() {
-                              _selectedBlock = value;
-                            });
-                          },
                   ),
+                ],
+              ),
+            ),
             const SizedBox(height: 20),
 
-            // Experiment Name (input only, not fetched)
+            // Block Selection Dropdown
+            if (widget.blocks.isEmpty)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline_rounded, size: 20, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'No blocks available. Sync blocks from Zoho (admin) or ask an admin to add blocks.',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: theme.colorScheme.onSurface.withOpacity(0.75),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              GestureDetector(
+                key: _blockDropdownKey,
+                onTap: _toggleBlockDropdown,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: _blockDropdownOpen ? _kCardAccent : theme.dividerColor.withOpacity(0.5),
+                      width: _blockDropdownOpen ? 1.5 : 1,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.view_module_rounded,
+                        size: 18,
+                        color: theme.colorScheme.onSurface.withOpacity(0.5),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Row(
+                          children: [
+                            Text(
+                              'Block name',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                                color: theme.colorScheme.onSurface.withOpacity(0.6),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _selectedBlock ?? 'Select a block',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: _selectedBlock != null
+                                      ? theme.colorScheme.onSurface
+                                      : theme.colorScheme.onSurface.withOpacity(0.5),
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        _blockDropdownOpen ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                        size: 20,
+                        color: _kCardAccent,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            const SizedBox(height: 18),
+
+            // Experiment Name (same white + blue border style as block)
             TextField(
               controller: _experimentController,
               enabled: !_isRunning,
-              decoration: InputDecoration(
-                labelText: 'Experiment Name',
-                hintText: 'Enter experiment name (e.g., exp1)',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
+              decoration: _inputDecoration(
+                labelText: 'Experiment name',
+                hintText: 'e.g. exp1, run_01',
+                compact: true,
+                prefixIcon: Icon(
+                  Icons.edit_rounded,
+                  size: 20,
+                  color: theme.colorScheme.onSurface.withOpacity(0.5),
                 ),
-                filled: true,
+              ),
+              style: TextStyle(
+                fontSize: 15,
+                color: theme.colorScheme.onSurface,
+                fontWeight: FontWeight.w500,
               ),
             ),
             const SizedBox(height: 24),
 
-            // Output/Error Display
+            // Output/Error Display (same white + border style)
             if (_output != null || _error != null) ...[
               Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: _error != null
-                      ? Colors.red.shade50
-                      : Colors.green.shade50,
-                  borderRadius: BorderRadius.circular(8),
+                  color: theme.colorScheme.surface,
+                  borderRadius: BorderRadius.circular(12),
                   border: Border.all(
                     color: _error != null
                         ? Colors.red.shade300
                         : Colors.green.shade300,
+                    width: 1.5,
                   ),
                 ),
                 constraints: const BoxConstraints(maxHeight: 200),
@@ -3443,6 +4334,7 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                     style: TextStyle(
                       fontFamily: 'monospace',
                       fontSize: 12,
+                      height: 1.4,
                       color: _error != null
                           ? Colors.red.shade900
                           : Colors.green.shade900,
@@ -3450,17 +4342,27 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 18),
             ],
+                  ],
+                ),
+              ),
+            ),
 
-            // Action Buttons: on success show only Close; while running show Cancel disabled + Running...; else Cancel + Setup
+            // Action Buttons (outside scroll so always visible)
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 if (!_isSuccess) ...[
                   TextButton(
                     onPressed: _isRunning ? null : () => Navigator.of(context).pop(),
-                    child: const Text('Cancel'),
+                    child: Text(
+                      'Cancel',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurface.withOpacity(0.7),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                   const SizedBox(width: 12),
                 ],
@@ -3468,7 +4370,13 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                   ElevatedButton(
                     onPressed: () => Navigator.of(context).pop(),
                     style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      backgroundColor: _kCardAccent,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
                     ),
                     child: const Text('Close'),
                   )
@@ -3476,18 +4384,24 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                   ElevatedButton.icon(
                     onPressed: (_isRunning || widget.blocks.isEmpty) ? null : _runSetup,
                     icon: _isRunning
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
+                        ? SizedBox(
+                            width: 18,
+                            height: 18,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
                               valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                             ),
                           )
-                        : const Icon(Icons.settings),
-                    label: Text(_isRunning ? 'Running...' : 'Setup'),
+                        : const Icon(Icons.play_arrow_rounded, size: 20),
+                    label: Text(_isRunning ? 'Running…' : 'Run Setup'),
                     style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      backgroundColor: _kCardAccent,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
                     ),
                   ),
               ],

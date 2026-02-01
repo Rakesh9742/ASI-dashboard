@@ -18,7 +18,7 @@ INSERT INTO domains (name, code, description, is_active) VALUES
 ('Design Verification', 'DV', 'Design Verification (DV) domain for verifying chip designs', true),
 ('Register Transfer Level', 'RTL', 'RTL (Register Transfer Level) design domain', true),
 ('Design for Testability', 'DFT', 'DFT (Design for Testability) domain for testability features', true),
-('Physical Design', 'PHYSICAL', 'Physical design domain for layout and floorplanning', true),
+('Physical Design', 'PD', 'Physical design domain for layout and floorplanning', true),
 ('Analog Layout', 'ANALOG', 'Analog layout domain for analog circuit design', true)
 ON CONFLICT (code) DO NOTHING;
 
