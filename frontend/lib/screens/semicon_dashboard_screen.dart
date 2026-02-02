@@ -31,12 +31,14 @@ class SemiconDashboardScreen extends ConsumerStatefulWidget {
 class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen> {
   final _apiService = ApiService();
   String _selectedBlock = 'Select a block';
+  String _selectedRtlTag = 'Select RTL tag';
   String _selectedExperiment = 'Select an experiment';
   String? _currentRunDirectory;
   final TextEditingController _commandController = TextEditingController();
   late String _selectedTab;
   
   List<String> _availableBlocks = [];
+  List<String> _availableRtlTags = [];
   List<String> _availableExperiments = [];
   bool _isLoadingBlocks = false;
   
@@ -44,6 +46,10 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   Map<String, int> _blockNameToId = {};
   // Cache: block name -> experiment names (from DB, filled on project open; no extra call when block selected)
   Map<String, List<String>> _blockToExperiments = {};
+  // Cache: block name -> (experiment name -> rtl_tag) for context/console display
+  Map<String, Map<String, String>> _blockExperimentToRtlTag = {};
+  // Cache: block name -> (rtl_tag -> list of experiment names) so we show RTL tag first, then experiment
+  Map<String, Map<String, List<String>>> _blockRtlTagToExperiments = {};
   
   // Command execution state
   bool _isExecutingCommand = false;
@@ -145,20 +151,34 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
 
       final blockSet = <String>{};
       final blockToExperiments = <String, List<String>>{};
+      final blockExperimentToRtlTag = <String, Map<String, String>>{};
+      final blockRtlTagToExperiments = <String, Map<String, List<String>>>{};
       for (var blockData in blocksDataList) {
         final blockName = blockData['block_name']?.toString();
         if (blockName == null || blockName.isEmpty) continue;
         blockSet.add(blockName);
         final experiments = blockData['experiments'];
         final expList = <String>[];
+        final expToRtlTag = <String, String>{};
+        final rtlTagToExps = <String, List<String>>{};
         if (experiments is List) {
           for (var exp in experiments) {
             final experiment = exp['experiment']?.toString();
-            if (experiment != null && experiment.isNotEmpty) expList.add(experiment);
+            if (experiment != null && experiment.isNotEmpty) {
+              expList.add(experiment);
+              final rtlTag = exp['rtl_tag']?.toString().trim() ?? '';
+              expToRtlTag[experiment] = rtlTag;
+              rtlTagToExps.putIfAbsent(rtlTag, () => []).add(experiment);
+            }
           }
+        }
+        for (var list in rtlTagToExps.values) {
+          list.sort();
         }
         expList.sort();
         blockToExperiments[blockName] = expList;
+        blockExperimentToRtlTag[blockName] = expToRtlTag;
+        blockRtlTagToExperiments[blockName] = rtlTagToExps;
       }
 
       final finalBlocks = blockSet.toList()..sort();
@@ -167,7 +187,10 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       setState(() {
         _availableBlocks = finalBlocks;
         _blockToExperiments = blockToExperiments;
-        _availableExperiments = []; // Experiments show after user selects a block (from cache)
+        _blockExperimentToRtlTag = blockExperimentToRtlTag;
+        _blockRtlTagToExperiments = blockRtlTagToExperiments;
+        _availableRtlTags = [];
+        _availableExperiments = []; // Experiments show after user selects block then RTL tag (from cache)
         _isLoadingBlocks = false;
       });
     } catch (e) {
@@ -299,6 +322,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   void _onBlockChanged(String? value) async {
     setState(() {
       _selectedBlock = value ?? 'Select a block';
+      _selectedRtlTag = 'Select RTL tag'; // Reset RTL tag when block changes
       _selectedExperiment = 'Select an experiment'; // Reset experiment when block changes
       _metricsData = null; // Reset metrics when block changes
       _currentRunDirectory = null;
@@ -308,11 +332,13 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       _consoleWorkingDirectory = null; // Reset so next commands use new run directory
     });
     
-    // Show experiments for the selected block (from DB cache; no extra API call)
+    // Show RTL tags for the selected block (from cache), then user picks RTL tag then experiment. RTL tag cannot be null/none.
     if (_selectedBlock != 'Select a block') {
-      final experiments = _blockToExperiments[_selectedBlock] ?? [];
+      final rtlTagToExps = _blockRtlTagToExperiments[_selectedBlock];
+      final rtlTags = (rtlTagToExps?.keys.where((s) => s.isNotEmpty).toList() ?? [])..sort();
       setState(() {
-        _availableExperiments = List<String>.from(experiments);
+        _availableRtlTags = rtlTags;
+        _availableExperiments = [];
       });
       // Load block IDs for QMS only when needed (first time a block is selected)
       final token = ref.read(authProvider).token;
@@ -323,10 +349,32 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       if (_selectedTab == 'QMS') _loadQmsData();
     } else {
       setState(() {
+        _availableRtlTags = [];
         _availableExperiments = [];
       });
     }
     // Load run history only when user selects block (DB only)
+    _loadRunHistory();
+  }
+
+  void _onRtlTagChanged(String? value) {
+    setState(() {
+      _selectedRtlTag = value ?? 'Select RTL tag';
+      _selectedExperiment = 'Select an experiment';
+      _currentRunDirectory = null;
+      _isLoadingRunDirectory = false;
+      _consoleWorkingDirectory = null;
+    });
+    if (_selectedBlock != 'Select a block' && _selectedRtlTag != 'Select RTL tag') {
+      final experiments = _blockRtlTagToExperiments[_selectedBlock]?[_selectedRtlTag] ?? [];
+      setState(() {
+        _availableExperiments = List<String>.from(experiments);
+      });
+    } else {
+      setState(() {
+        _availableExperiments = [];
+      });
+    }
     _loadRunHistory();
   }
   
@@ -1034,6 +1082,61 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
+                      'RTL tag',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.onSurface.withOpacity(0.6),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surface,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: theme.dividerColor),
+                      ),
+                      child: _isLoadingBlocks
+                          ? const Center(
+                              child: SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            )
+                          : DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _selectedRtlTag,
+                                isExpanded: true,
+                                isDense: true,
+                                style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface),
+                                dropdownColor: theme.cardColor,
+                                items: [
+                                  DropdownMenuItem(
+                                    value: 'Select RTL tag',
+                                    child: Text('Select RTL tag', style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.6))),
+                                  ),
+                                  ..._availableRtlTags.map((rtl) => DropdownMenuItem(
+                                        value: rtl,
+                                        child: Text(
+                                          rtl,
+                                          style: TextStyle(color: theme.colorScheme.onSurface, fontFamily: 'monospace'),
+                                        ),
+                                      )),
+                                ],
+                                onChanged: _onRtlTagChanged,
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
                       'Experiment',
                       style: theme.textTheme.labelSmall?.copyWith(
                         fontWeight: FontWeight.w600,
@@ -1119,6 +1222,29 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (_selectedRtlTag != 'Select RTL tag' && _selectedRtlTag.isNotEmpty) ...[
+                  Row(
+                    children: [
+                      Text(
+                        'RTL tag: ',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: theme.colorScheme.onSurface.withOpacity(0.6),
+                        ),
+                      ),
+                      Text(
+                        _selectedRtlTag,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: theme.colorScheme.onSurface,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                ],
                 Text(
                   'Run Directory',
                   style: theme.textTheme.labelMedium?.copyWith(
@@ -1250,6 +1376,23 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                     color: _kConsoleTextMuted,
                   ),
                 ),
+                if (_selectedBlock != 'Select a block' && _selectedExperiment != 'Select an experiment') ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Context: $_selectedBlock'
+                        + (_selectedRtlTag != 'Select RTL tag' && _selectedRtlTag.isNotEmpty
+                            ? ' · RTL: $_selectedRtlTag'
+                            : '')
+                        + ' · $_selectedExperiment',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: _kConsoleAccent.withOpacity(0.9),
+                      fontFamily: 'monospace',
+                      fontSize: 11,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
               ],
             ),
           ),

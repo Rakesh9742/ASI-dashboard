@@ -2225,7 +2225,7 @@ router.post(
       }
 
       // Use the run directory path provided from remote server
-      // Format should be: /CX_RUN_NEW/{projectName}/pd/users/{username}/{blockName}/{experimentName}
+      // Format: /CX_RUN_NEW/{project}/pd/users/{username}/{block}/{experimentName} or .../{block}/{rtlTag}/{experimentName} when rtl_tag set
       const actualRunDirectory = runDirectory.trim();
 
       await client.query('BEGIN');

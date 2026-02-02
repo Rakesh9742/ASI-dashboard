@@ -3664,6 +3664,12 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
   bool _isSuccess = false;
   String? _output;
   String? _error;
+  String? _successProjectName;
+  String? _successBlockName;
+  String? _successExperimentName;
+  String? _successRtlTag;
+  String? _successRunDirectory;
+  String? _successUsername;
   final GlobalKey _blockDropdownKey = GlobalKey();
   bool _blockDropdownOpen = false;
   OverlayEntry? _blockDropdownOverlay;
@@ -3849,9 +3855,11 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
       final blockName = _selectedBlock!;
       final sanitizedBlockName = blockName.replaceAll(' ', '_');
       final experimentName = _experimentController.text.trim().toLowerCase();
+      final rtlTag = _getEffectiveRtlTag();
 
-      // Build command: echo "setup -proj ... -domain ... -block ... -exp ..." | newgrp {project}
-      final command = 'echo "setup -proj $sanitizedProjectName -domain $domainCode -block $sanitizedBlockName -exp $experimentName" | newgrp $sanitizedProjectName';
+      // Build command: echo "setup -proj ... -domain ... -block ... -exp ... -rtltag ..." | newgrp {project}
+      final rtlTagEscaped = rtlTag.replaceAll('"', '\\"');
+      final command = 'echo "setup -proj $sanitizedProjectName -domain $domainCode -block $sanitizedBlockName -exp $experimentName -rtltag $rtlTagEscaped" | newgrp $sanitizedProjectName';
 
       print('═══════════════════════════════════════════════════════════');
       print('🚀 EXECUTING SETUP COMMAND:');
@@ -3862,6 +3870,7 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
       print('   Block (original): $blockName');
       print('   Block (sanitized): $sanitizedBlockName');
       print('   Experiment: $experimentName');
+      print('   RTL tag: $rtlTag');
       print('═══════════════════════════════════════════════════════════');
 
       // Execute via SSH
@@ -3883,11 +3892,10 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
       print('═══════════════════════════════════════════════════════════');
 
       // Determine success: exit code must be 0 (or null if command completed without explicit exit code)
-      // If exit code is 1 or any non-zero value, it's an error
       final exitCode = result['exitCode'] as int?;
       final isSuccess = result['success'] == true && (exitCode == 0 || (exitCode == null && result['stdout']?.toString().toLowerCase().contains('done.') == true));
-      
-      // If setup command succeeded, fetch the actual run directory path from remote server and save it
+      String? savedRunDirectory;
+      String? savedUsername;
       if (isSuccess) {
         try {
           print('═══════════════════════════════════════════════════════════');
@@ -3914,9 +3922,10 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
             throw Exception('Unable to get username from remote server');
           }
           
+          final rtlTagForPath = _getEffectiveRtlTag();
+          
           // Step 2: Search for the directory that was just created
-          // The setup command creates a directory matching: /CX_RUN_NEW/{project}/pd/users/{username}/{block}/{experiment}
-          // We'll search for recently created directories matching this pattern
+          // Path includes RTL tag when set: /CX_RUN_NEW/{project}/pd/users/{username}/{block}/{rtl_tag}/{experiment} or .../{block}/{experiment}
           print('   Step 2: Searching for directory created by setup command...');
           
           // Escape variables for shell command
@@ -3924,15 +3933,14 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
           final escapedBlock = sanitizedBlockName.replaceAll("'", "'\\''");
           final escapedExperiment = experimentName.replaceAll("'", "'\\''");
           final escapedUsername = actualUsername.replaceAll("'", "'\\''");
+          final escapedRtlTag = rtlTagForPath.replaceAll("'", "'\\''");
           
-          // Construct expected path
-          final expectedPath = '/CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername/$escapedBlock/$escapedExperiment';
+          // Construct expected path (with rtl_tag segment when non-empty)
+          final expectedPath = rtlTagForPath.isEmpty
+              ? '/CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername/$escapedBlock/$escapedExperiment'
+              : '/CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername/$escapedBlock/$escapedRtlTag/$escapedExperiment';
           
-          // Command to find the directory:
-          // 1. Try the expected path first
-          // 2. If not found, search for directories matching the pattern
-          // 3. Look for recently modified directories (created in last 5 minutes) matching the experiment name
-          // Use single quotes to prevent variable expansion, and escape properly
+          // Command to find the directory: try expected path first, then search
           final findPathCommand = "EXPECTED_PATH='$expectedPath'; if [ -d \"\$EXPECTED_PATH\" ]; then echo \"\$EXPECTED_PATH\"; else find /CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' -mmin -5 2>/dev/null | head -1 || find /CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' 2>/dev/null | head -1; fi";
           
           final pathResult = await widget.apiService.executeSSHCommand(
@@ -3950,8 +3958,10 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
           }
           
           if (actualRunDirectory == null || actualRunDirectory.isEmpty) {
-            // Last resort: construct path using actual username from server
-            actualRunDirectory = '/CX_RUN_NEW/$sanitizedProjectName/pd/users/$actualUsername/$sanitizedBlockName/$experimentName';
+            // Last resort: construct path with rtl_tag when set
+            actualRunDirectory = rtlTagForPath.isEmpty
+                ? '/CX_RUN_NEW/$sanitizedProjectName/pd/users/$actualUsername/$sanitizedBlockName/$experimentName'
+                : '/CX_RUN_NEW/$sanitizedProjectName/pd/users/$actualUsername/$sanitizedBlockName/$rtlTagForPath/$experimentName';
             print('   ⚠️ Directory not found via search, using constructed path: $actualRunDirectory');
           }
           
@@ -3978,13 +3988,9 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
             domainCode: domainCode,
             token: token,
           );
-          
+          savedRunDirectory = actualRunDirectory;
+          savedUsername = actualUsername;
           print('✅ Run directory path saved successfully');
-          
-          // Notify parent to update the project with the new run directory
-          if (widget.onRunDirectorySaved != null) {
-            widget.onRunDirectorySaved!(actualRunDirectory);
-          }
         } catch (e) {
           print('⚠️ Warning: Failed to fetch/save run directory path: $e');
           // Don't fail the entire setup if saving path fails, just log it
@@ -4017,7 +4023,12 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
         _isRunning = false;
         _isSuccess = isSuccess;
         if (isSuccess) {
-          // Success: show full output
+          _successProjectName = projectName;
+          _successBlockName = blockName;
+          _successExperimentName = experimentName;
+          _successRtlTag = _getEffectiveRtlTag().isEmpty ? null : _getEffectiveRtlTag();
+          _successRunDirectory = savedRunDirectory;
+          _successUsername = savedUsername;
           _output = fullOutput.isNotEmpty 
               ? fullOutput 
               : 'Setup command executed successfully';
@@ -4041,17 +4052,7 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
 
       if (mounted) {
         if (isSuccess) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('✅ Setup completed successfully'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 3),
-            ),
-          );
-          // Close Experiment Setup dialog automatically when setup is done
-          Future.delayed(const Duration(milliseconds: 800), () {
-            if (mounted) Navigator.of(context).pop();
-          });
+          // Keep dialog open and show success info card (no auto-close)
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -4072,6 +4073,39 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
         ref.read(errorHandlerProvider.notifier).showError(e, title: 'SSH Error');
       }
     }
+  }
+
+  Widget _buildSuccessInfoRow(ThemeData theme, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 100,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.onSurface.withOpacity(0.5),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          Expanded(
+            child: SelectableText(
+              value,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: theme.colorScheme.onSurface.withOpacity(0.9),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   InputDecoration _inputDecoration({
@@ -4543,8 +4577,70 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
             ),
             const SizedBox(height: 24),
 
+            // Success info card (what we did) when experiment setup done
+            if (_isSuccess && (_successProjectName != null || _successBlockName != null)) ...[
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.green.shade200, width: 1.5),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.check_circle_rounded, color: Colors.green.shade700, size: 26),
+                        const SizedBox(width: 10),
+                        Text(
+                          'Experiment setup completed',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.green.shade800,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    _buildSuccessInfoRow(theme, 'Project', _successProjectName ?? '—'),
+                    _buildSuccessInfoRow(theme, 'Block', _successBlockName ?? '—'),
+                    _buildSuccessInfoRow(theme, 'Experiment', _successExperimentName ?? '—'),
+                    if (_successRtlTag != null && _successRtlTag!.isNotEmpty)
+                      _buildSuccessInfoRow(theme, 'RTL tag', _successRtlTag!),
+                    if (_successUsername != null)
+                      _buildSuccessInfoRow(theme, 'Username', _successUsername!),
+                    if (_successRunDirectory != null && _successRunDirectory!.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Run directory',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: theme.colorScheme.onSurface.withOpacity(0.5),
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      SelectableText(
+                        _successRunDirectory!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontFamily: 'monospace',
+                          color: theme.colorScheme.onSurface.withOpacity(0.9),
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 18),
+            ],
+
             // Output/Error Display (same white + border style)
-            if (_output != null || _error != null) ...[
+            if (!_isSuccess && (_output != null || _error != null)) ...[
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
@@ -4578,7 +4674,6 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                 ),
               ),
             ),
-
             // Action Buttons (outside scroll so always visible)
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -4598,7 +4693,12 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                 ],
                 if (_isSuccess)
                   ElevatedButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () {
+                      if (widget.onRunDirectorySaved != null && _successRunDirectory != null) {
+                        widget.onRunDirectorySaved!(_successRunDirectory!);
+                      }
+                      Navigator.of(context).pop();
+                    },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: _kCardAccent,
                       foregroundColor: Colors.white,
@@ -4608,7 +4708,7 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                       ),
                       elevation: 0,
                     ),
-                    child: const Text('Close'),
+                    child: const Text('Done'),
                   )
                 else
                   ElevatedButton.icon(
