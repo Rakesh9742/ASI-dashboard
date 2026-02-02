@@ -1001,6 +1001,75 @@ router.get(
 );
 
 /**
+ * GET /api/projects/:projectIdOrName/rtl-tags?blockName=X
+ * Get RTL tags created by current user for the given block (for experiment setup dropdown).
+ */
+router.get(
+  '/:projectIdOrName/rtl-tags',
+  authenticate,
+  async (req: Request, res: Response) => {
+    try {
+      const projectIdOrName = String(req.params.projectIdOrName || '').trim();
+      const blockName = String(req.query.blockName || '').trim();
+      const userId = (req as any).user?.id;
+      if (!userId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      if (!blockName) {
+        return res.json({ success: true, rtlTags: [] });
+      }
+      let projectId: number | null = null;
+      if (projectIdOrName.startsWith('zoho_')) {
+        const zohoId = projectIdOrName.replace('zoho_', '');
+        const mappingResult = await pool.query(
+          'SELECT local_project_id FROM zoho_projects_mapping WHERE zoho_project_id = $1 OR zoho_project_id::text = $1',
+          [zohoId]
+        );
+        if (mappingResult.rows.length > 0 && mappingResult.rows[0].local_project_id) {
+          projectId = mappingResult.rows[0].local_project_id;
+        }
+      } else {
+        const numericId = parseInt(projectIdOrName, 10);
+        if (!Number.isNaN(numericId) && String(numericId) === projectIdOrName) {
+          const byId = await pool.query('SELECT id FROM projects WHERE id = $1', [numericId]);
+          if (byId.rows.length > 0) projectId = byId.rows[0].id;
+        }
+        if (projectId == null) {
+          const byName = await pool.query('SELECT id FROM projects WHERE LOWER(name) = LOWER($1)', [projectIdOrName]);
+          if (byName.rows.length > 0) projectId = byName.rows[0].id;
+        }
+      }
+      if (projectId == null) {
+        return res.json({ success: true, rtlTags: [] });
+      }
+      const blockResult = await pool.query(
+        'SELECT id FROM blocks WHERE project_id = $1 AND block_name = $2',
+        [projectId, blockName]
+      );
+      if (blockResult.rows.length === 0) {
+        return res.json({ success: true, rtlTags: [] });
+      }
+      const blockId = blockResult.rows[0].id;
+      const tableExists = await pool.query(
+        `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'user_block_rtl_tags')`
+      );
+      if (tableExists.rows[0]?.exists !== true) {
+        return res.json({ success: true, rtlTags: [] });
+      }
+      const rtlResult = await pool.query(
+        `SELECT rtl_tag FROM user_block_rtl_tags WHERE user_id = $1 AND block_id = $2 ORDER BY rtl_tag`,
+        [userId, blockId]
+      );
+      const rtlTags = (rtlResult.rows as any[]).map((r) => (r.rtl_tag ?? '').toString().trim()).filter(Boolean);
+      return res.json({ success: true, rtlTags });
+    } catch (error: any) {
+      console.error('Error fetching rtl-tags:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
  * GET /api/projects/:projectId/run-history
  * Get run history for a project (optionally filtered by block and experiment)
  */
@@ -2092,13 +2161,14 @@ router.post(
   async (req: Request, res: Response) => {
     const client = await pool.connect();
     try {
-      const { projectName, blockName, experimentName, runDirectory, zohoProjectId: providedZohoProjectId, username: sshUsername, domainCode } = req.body;
+      const { projectName, blockName, experimentName, runDirectory, zohoProjectId: providedZohoProjectId, username: sshUsername, domainCode, rtlTag: bodyRtlTag } = req.body;
       
       // Debug logging
       console.log('Save run directory request:', {
         projectName,
         blockName,
         experimentName,
+        rtlTag: bodyRtlTag,
         domainCode,
         zohoProjectId: providedZohoProjectId,
         hasUsername: !!sshUsername
@@ -2141,6 +2211,16 @@ router.post(
         return res.status(400).json({
           error: 'Invalid experiment name',
           message: 'Experiment name must contain only lowercase letters, numbers, and underscores',
+        });
+      }
+
+      // RTL tag: from body (engineer creates/selects during setup); lowercase only; empty string allowed for backward compat
+      const rawRtlTag = bodyRtlTag != null ? String(bodyRtlTag).trim() : '';
+      const rtlTag = rawRtlTag.toLowerCase();
+      if (rawRtlTag.length > 0 && !/^[a-z0-9_]+$/.test(rtlTag)) {
+        return res.status(400).json({
+          error: 'Invalid RTL tag',
+          message: 'RTL tag must contain only lowercase letters, numbers, and underscores',
         });
       }
 
@@ -2223,31 +2303,42 @@ router.post(
         blockId = insertBlockResult.rows[0].id;
       }
 
-      // Find or create run (experiment)
-      // Note: rtl_tag is required for unique constraint, so we'll use empty string as default
-      const rtlTag = ''; // Default empty since it's not provided in setup
-      
-      // Check for existing run with same block_id, experiment, and rtl_tag (treating NULL as empty string)
+      // Record RTL tag for this user+block (for dropdown: engineer-created tags)
+      try {
+        const tableExists = await client.query(
+          `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'user_block_rtl_tags')`
+        );
+        if (tableExists.rows[0]?.exists === true && rtlTag.length > 0) {
+          await client.query(
+            `INSERT INTO user_block_rtl_tags (user_id, block_id, rtl_tag) VALUES ($1, $2, $3)
+             ON CONFLICT (user_id, block_id, rtl_tag) DO NOTHING`,
+            [userId, blockId, rtlTag]
+          );
+        }
+      } catch (ubrtErr: any) {
+        console.warn('Could not save to user_block_rtl_tags:', ubrtErr?.message);
+      }
+
+      // Find or create run (experiment) with rtl_tag from engineer (or empty for backward compat)
+      const rtlTagForRun = rtlTag; // use sanitized rtl_tag from body
       let runResult = await client.query(
         `SELECT id, run_directory FROM runs 
          WHERE block_id = $1 AND experiment = $2 AND COALESCE(rtl_tag, '') = $3`,
-        [blockId, sanitizedExperimentName, rtlTag]
+        [blockId, sanitizedExperimentName, rtlTagForRun]
       );
 
       let runId: number;
       const isNewRun = runResult.rows.length === 0;
       if (!isNewRun) {
         runId = runResult.rows[0].id;
-        // Update run_directory and ensure rtl_tag is set (in case it was NULL)
         await client.query(
           'UPDATE runs SET run_directory = $1, user_name = $2, rtl_tag = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4',
-          [actualRunDirectory, finalUsername, rtlTag, runId]
+          [actualRunDirectory, finalUsername, rtlTagForRun, runId]
         );
       } else {
-        // Create new run
         const insertRunResult = await client.query(
           'INSERT INTO runs (block_id, experiment, rtl_tag, user_name, run_directory, last_updated) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP) RETURNING id',
-          [blockId, sanitizedExperimentName, rtlTag, finalUsername, actualRunDirectory]
+          [blockId, sanitizedExperimentName, rtlTagForRun, finalUsername, actualRunDirectory]
         );
         runId = insertRunResult.rows[0].id;
       }

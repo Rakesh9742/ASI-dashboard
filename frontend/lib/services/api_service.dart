@@ -1096,6 +1096,28 @@ class ApiService {
     }
   }
 
+  // Get RTL tags created by current user for a block (for experiment setup dropdown)
+  Future<List<String>> getRtlTagsForBlock({
+    required dynamic projectIdOrName,
+    required String blockName,
+    String? token,
+  }) async {
+    final projectStr = projectIdOrName.toString();
+    final uri = Uri.parse('$baseUrl/projects/$projectStr/rtl-tags').replace(
+      queryParameters: {'blockName': blockName},
+    );
+    final response = await _request(
+      () => http.get(uri, headers: _getHeaders(token: token)),
+      token: token,
+    );
+    if (response.statusCode != 200) return [];
+    final data = json.decode(response.body);
+    if (data is Map && data['rtlTags'] is List) {
+      return (data['rtlTags'] as List).map((e) => e?.toString() ?? '').where((s) => s.isNotEmpty).toList();
+    }
+    return [];
+  }
+
   // Save run directory path after setup
   Future<Map<String, dynamic>> saveRunDirectory({
     required String projectName,
@@ -1103,6 +1125,7 @@ class ApiService {
     required String experimentName,
     required String runDirectory,
     required String username, // Username from SSH session (whoami)
+    String? rtlTag, // RTL tag selected/created by engineer during setup
     String? zohoProjectId,
     String? domainCode, // Domain code from setup command
     String? token,
@@ -1114,12 +1137,13 @@ class ApiService {
       'runDirectory': runDirectory,
       'username': username, // Pass the actual username from SSH session
     };
-    
+    if (rtlTag != null && rtlTag.trim().isNotEmpty) {
+      body['rtlTag'] = rtlTag.trim();
+    }
     // Include Zoho project ID if provided (for unmapped Zoho projects)
     if (zohoProjectId != null && zohoProjectId.isNotEmpty) {
       body['zohoProjectId'] = zohoProjectId;
     }
-    
     // Include domain code if provided (for linking domain to project)
     if (domainCode != null && domainCode.isNotEmpty) {
       body['domainCode'] = domainCode;

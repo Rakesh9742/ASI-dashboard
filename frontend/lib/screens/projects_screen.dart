@@ -1642,6 +1642,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         showDialog(
           context: context,
           builder: (context) => _SetupDialog(
+            projectIdOrName: project['id'] ?? project['name'] ?? projectName,
             projectName: projectName,
             blocks: blocks,
             apiService: _apiService,
@@ -3635,6 +3636,7 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
 }
 
 class _SetupDialog extends ConsumerStatefulWidget {
+  final dynamic projectIdOrName;
   final String projectName;
   final List<Map<String, dynamic>> blocks;
   final ApiService apiService;
@@ -3642,6 +3644,7 @@ class _SetupDialog extends ConsumerStatefulWidget {
   final Function(String runDirectory)? onRunDirectorySaved;
 
   const _SetupDialog({
+    required this.projectIdOrName,
     required this.projectName,
     required this.blocks,
     required this.apiService,
@@ -3656,6 +3659,7 @@ class _SetupDialog extends ConsumerStatefulWidget {
 class _SetupDialogState extends ConsumerState<_SetupDialog> {
   String? _selectedBlock;
   final TextEditingController _experimentController = TextEditingController();
+  final TextEditingController _rtlTagCreateNewController = TextEditingController();
   bool _isRunning = false;
   bool _isSuccess = false;
   String? _output;
@@ -3663,12 +3667,54 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
   final GlobalKey _blockDropdownKey = GlobalKey();
   bool _blockDropdownOpen = false;
   OverlayEntry? _blockDropdownOverlay;
+  List<String> _rtlTags = [];
+  bool _rtlTagsLoading = false;
+  bool _rtlTagCreateNew = true; // true = Create new, false = Use existing
+  String? _selectedRtlTag; // when use existing: selected tag
 
   @override
   void dispose() {
     _blockDropdownOverlay?.remove();
     _experimentController.dispose();
+    _rtlTagCreateNewController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadRtlTags() async {
+    if (_selectedBlock == null) {
+      setState(() {
+        _rtlTags = [];
+        _selectedRtlTag = null;
+      });
+      return;
+    }
+    setState(() => _rtlTagsLoading = true);
+    try {
+      final token = ref.read(authProvider).token;
+      final list = await widget.apiService.getRtlTagsForBlock(
+        projectIdOrName: widget.projectIdOrName,
+        blockName: _selectedBlock!,
+        token: token,
+      );
+      if (mounted) {
+        setState(() {
+          _rtlTags = list;
+          _rtlTagsLoading = false;
+          if (!_rtlTagCreateNew && list.isNotEmpty && (_selectedRtlTag == null || !list.contains(_selectedRtlTag))) {
+            _selectedRtlTag = list.first;
+          }
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() { _rtlTags = []; _rtlTagsLoading = false; });
+    }
+  }
+
+  String _getEffectiveRtlTag() {
+    if (_rtlTagCreateNew) {
+      return _rtlTagCreateNewController.text.trim().toLowerCase();
+    }
+    return _selectedRtlTag ?? '';
   }
 
   void _closeBlockDropdown() {
@@ -3741,8 +3787,12 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                         onTap: () {
                           setState(() {
                             _selectedBlock = name;
+                            _rtlTagCreateNew = true;
+                            _selectedRtlTag = null;
+                            _rtlTagCreateNewController.clear();
                           });
                           _closeBlockDropdown();
+                          _loadRtlTags();
                         },
                         child: Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -3916,12 +3966,14 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
           print('      Username: $actualUsername');
           print('      Run Directory: $actualRunDirectory');
           
+          final rtlTag = _getEffectiveRtlTag();
           await widget.apiService.saveRunDirectory(
             projectName: projectName,
             blockName: blockName,
             experimentName: experimentName,
             runDirectory: actualRunDirectory,
             username: actualUsername,
+            rtlTag: rtlTag.isEmpty ? null : rtlTag,
             zohoProjectId: widget.zohoProjectId,
             domainCode: domainCode,
             token: token,
@@ -4290,6 +4342,174 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                 ),
               ),
             const SizedBox(height: 18),
+
+            // RTL Tag: two clear options — Create new | Use existing
+            if (_selectedBlock != null) ...[
+              Text(
+                'RTL tag',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: theme.colorScheme.onSurface.withOpacity(0.85),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: InkWell(
+                      onTap: _isRunning ? null : () => setState(() {
+                        _rtlTagCreateNew = true;
+                        _rtlTagCreateNewController.clear();
+                      }),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: _rtlTagCreateNew ? _kCardAccent.withOpacity(0.12) : theme.colorScheme.surface,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: _rtlTagCreateNew ? _kCardAccent : theme.dividerColor.withOpacity(0.5),
+                            width: _rtlTagCreateNew ? 1.5 : 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.add_circle_outline_rounded,
+                              size: 22,
+                              color: _rtlTagCreateNew ? _kCardAccent : theme.colorScheme.onSurface.withOpacity(0.5),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'Create new RTL tag',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: _rtlTagCreateNew ? _kCardAccent : theme.colorScheme.onSurface.withOpacity(0.8),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: InkWell(
+                      onTap: _isRunning ? null : () => setState(() {
+                        _rtlTagCreateNew = false;
+                        if (_rtlTags.isNotEmpty) _selectedRtlTag = _rtlTags.first;
+                      }),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: !_rtlTagCreateNew ? _kCardAccent.withOpacity(0.12) : theme.colorScheme.surface,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: !_rtlTagCreateNew ? _kCardAccent : theme.dividerColor.withOpacity(0.5),
+                            width: !_rtlTagCreateNew ? 1.5 : 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.label_rounded,
+                              size: 22,
+                              color: !_rtlTagCreateNew ? _kCardAccent : theme.colorScheme.onSurface.withOpacity(0.5),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'Use existing RTL tag',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: !_rtlTagCreateNew ? _kCardAccent : theme.colorScheme.onSurface.withOpacity(0.8),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              if (_rtlTagCreateNew)
+                TextField(
+                  controller: _rtlTagCreateNewController,
+                  enabled: !_isRunning,
+                  decoration: _inputDecoration(
+                    labelText: 'New RTL tag name (lowercase only)',
+                    hintText: 'e.g. v1, rtl_jan',
+                    compact: true,
+                    prefixIcon: Icon(Icons.edit_rounded, size: 20, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                  ),
+                  style: TextStyle(fontSize: 15, color: theme.colorScheme.onSurface, fontWeight: FontWeight.w500),
+                  inputFormatters: [
+                    TextInputFormatter.withFunction((oldValue, newValue) {
+                      final lower = newValue.text.toLowerCase();
+                      final allowed = lower.replaceAll(RegExp(r'[^a-z0-9_]'), '');
+                      return TextEditingValue(
+                        text: allowed,
+                        selection: TextSelection.collapsed(offset: allowed.length),
+                      );
+                    }),
+                  ],
+                  onChanged: (_) => setState(() {}),
+                )
+              else
+                _rtlTagsLoading
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Row(
+                        children: [
+                          SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: _kCardAccent)),
+                          const SizedBox(width: 12),
+                          Text('Loading RTL tags...', style: TextStyle(fontSize: 14, color: theme.colorScheme.onSurface.withOpacity(0.6))),
+                        ],
+                      ),
+                    )
+                  : _rtlTags.isEmpty
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: theme.dividerColor.withOpacity(0.5)),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.info_outline_rounded, size: 20, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'No RTL tags yet for this block. Select "Create new RTL tag" above.',
+                                style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface.withOpacity(0.7)),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : DropdownButtonFormField<String>(
+                        value: _selectedRtlTag ?? (_rtlTags.isNotEmpty ? _rtlTags.first : null),
+                        isExpanded: true,
+                        decoration: _inputDecoration(
+                          labelText: 'Select existing RTL tag',
+                          hintText: 'Choose one',
+                          compact: true,
+                          prefixIcon: Icon(Icons.label_rounded, size: 20, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                        ),
+                        items: _rtlTags.map((tag) => DropdownMenuItem(value: tag, child: Text(tag))).toList(),
+                        onChanged: _isRunning ? null : (value) => setState(() => _selectedRtlTag = value),
+                      ),
+              const SizedBox(height: 18),
+            ],
 
             // Experiment Name (lowercase only; same white + blue border style as block)
             TextField(
