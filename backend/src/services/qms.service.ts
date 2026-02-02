@@ -3003,10 +3003,15 @@ class QmsService {
       );
 
       const checklists = result.rows;
-      const allSubmitted = checklists.every((cl: any) => cl.checklist_status === 'submitted');
+      const hasChecklists = checklists.length > 0;
+      const allApproved = hasChecklists && checklists.every((cl: any) => cl.checklist_status === 'approved');
+      const allSubmitted = hasChecklists && checklists.every((cl: any) =>
+        cl.checklist_status === 'submitted_for_approval' || cl.checklist_status === 'approved'
+      );
 
       return {
         block_id: blockId,
+        all_checklists_approved: allApproved,
         all_checklists_submitted: allSubmitted,
         checklists: checklists
       };
