@@ -2133,10 +2133,16 @@ router.post(
 
       const finalUsername = sshUsername.trim();
 
-      // Sanitize names (replace spaces with underscores, same as frontend)
+      // Sanitize names (replace spaces with underscores, same as frontend); experiment name: lowercase only
       const sanitizedProjectName = projectName.replace(/\s+/g, '_');
       const sanitizedBlockName = blockName.replace(/\s+/g, '_');
-      const sanitizedExperimentName = experimentName.trim();
+      const sanitizedExperimentName = experimentName.trim().toLowerCase();
+      if (!/^[a-z0-9_]+$/.test(sanitizedExperimentName)) {
+        return res.status(400).json({
+          error: 'Invalid experiment name',
+          message: 'Experiment name must contain only lowercase letters, numbers, and underscores',
+        });
+      }
 
       // Use the run directory path provided from remote server
       // Format should be: /CX_RUN_NEW/{projectName}/pd/users/{username}/{blockName}/{experimentName}

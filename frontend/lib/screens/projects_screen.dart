@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:html' as html;
@@ -3797,7 +3798,7 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
       const domainCode = 'pd';
       final blockName = _selectedBlock!;
       final sanitizedBlockName = blockName.replaceAll(' ', '_');
-      final experimentName = _experimentController.text.trim();
+      final experimentName = _experimentController.text.trim().toLowerCase();
 
       // Build command: echo "setup -proj ... -domain ... -block ... -exp ..." | newgrp {project}
       final command = 'echo "setup -proj $sanitizedProjectName -domain $domainCode -block $sanitizedBlockName -exp $experimentName" | newgrp $sanitizedProjectName';
@@ -4290,12 +4291,12 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
               ),
             const SizedBox(height: 18),
 
-            // Experiment Name (same white + blue border style as block)
+            // Experiment Name (lowercase only; same white + blue border style as block)
             TextField(
               controller: _experimentController,
               enabled: !_isRunning,
               decoration: _inputDecoration(
-                labelText: 'Experiment name',
+                labelText: 'Experiment name (lowercase only)',
                 hintText: 'e.g. exp1, run_01',
                 compact: true,
                 prefixIcon: Icon(
@@ -4309,6 +4310,16 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                 color: theme.colorScheme.onSurface,
                 fontWeight: FontWeight.w500,
               ),
+              inputFormatters: [
+                TextInputFormatter.withFunction((oldValue, newValue) {
+                  final lower = newValue.text.toLowerCase();
+                  final allowed = lower.replaceAll(RegExp(r'[^a-z0-9_]'), '');
+                  return TextEditingValue(
+                    text: allowed,
+                    selection: TextSelection.collapsed(offset: allowed.length),
+                  );
+                }),
+              ],
             ),
             const SizedBox(height: 24),
 

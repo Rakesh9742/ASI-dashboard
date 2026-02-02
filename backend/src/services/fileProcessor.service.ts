@@ -728,6 +728,23 @@ class FileProcessorService {
   }
 
   /**
+   * Extract project and domain from run_directory path.
+   * Format: CX_RUN_NEW/{project}/{domain}/users/...
+   * Example: CX_RUN_NEW/semicon/pd/users/srikanth/aes_cipher_top/feb02_exp1 → { project: "semicon", domain: "pd" }
+   */
+  private extractProjectAndDomainFromRunDirectory(runDirectory: string | undefined): { project: string | null; domain: string | null } {
+    if (!runDirectory || typeof runDirectory !== 'string') return { project: null, domain: null };
+    const trimmed = runDirectory.trim().replace(/\\/g, '/');
+    const parts = trimmed.split('/').filter(Boolean);
+    if (parts.length < 3) return { project: null, domain: null };
+    const first = parts[0].toUpperCase();
+    if (first !== 'CX_RUN_NEW') return { project: null, domain: null };
+    const projectSegment = parts[1].trim() || null;
+    const domainSegment = parts[2].trim() || null;
+    return { project: projectSegment, domain: domainSegment };
+  }
+
+  /**
    * Find domain ID from domain name (with typo handling)
    */
   async findDomainId(domainName: string): Promise<number | null> {
@@ -802,10 +819,11 @@ class FileProcessorService {
         throw new Error('No data to save');
       }
 
-      // Get project from file data, domain from filename (or file data as fallback) for tracking
+      // Project and domain always from run_directory in EDA file (CX_RUN_NEW/{project}/{domain}/users/...); do not use project/domain from file fields
       const firstRow = processedData[0];
-      const projectName = firstRow.project_name || null; // Project name comes from file data only
-      const domainName = filenameDomain || firstRow.domain_name || null; // Domain from filename takes priority
+      const { project: projectFromRunDir, domain: domainFromRunDir } = this.extractProjectAndDomainFromRunDirectory(firstRow.run_directory);
+      const projectName = projectFromRunDir || firstRow.project_name || null;
+      const domainName = domainFromRunDir || filenameDomain || firstRow.domain_name || null;
       let domainId: number | null = null;
       if (domainName) {
         domainId = await this.findDomainId(domainName);
