@@ -859,7 +859,8 @@ router.post(
 /**
  * GET /api/projects/:projectIdOrName/blocks
  * Get all blocks for a project from DB only. projectIdOrName can be numeric id or project name.
- * For non-admin, optionally filter to blocks assigned to current user (block_users) if table exists.
+ * Filter by assignment: only engineers (and similar) see just assigned blocks when filterByAssigned=true.
+ * Admin, project_manager, and lead always see ALL blocks (filter is not applied to them).
  */
 router.get(
   '/:projectIdOrName/blocks',
@@ -951,8 +952,9 @@ router.get(
         [userId, projectId]
       );
       const projectRole = projectRoleRow.rows[0]?.role?.toString().trim() || null;
-      const effectiveRole = projectRole || userRole || '';
+      const effectiveRole = (projectRole || userRole || '').toString().trim();
       const roleLowerBlocks = effectiveRole.toLowerCase();
+      // Lead must see all blocks (same as admin/project_manager); do not apply assigned-only filter to lead.
       const isAdminOrManagerBlocks = roleLowerBlocks === 'admin' || roleLowerBlocks === 'project_manager' || roleLowerBlocks === 'lead';
       const blockUsersExists = await pool.query(
         `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'block_users')`
@@ -2305,7 +2307,7 @@ router.post(
  * GET /api/projects/:projectIdOrName/blocks-experiments
  * Get blocks and experiments for a project from DB only (no Zoho).
  * If projectIdOrName is zoho_<id>, resolve to local project via mapping; if no mapping, return [].
- * For non-admin/manager/lead: only blocks assigned to the user (block_users) and only experiments (runs) they created.
+ * Admin, project_manager, and lead: see ALL blocks and all runs. Others: only blocks assigned (block_users) and runs they created.
  */
 router.get(
   '/:projectIdOrName/blocks-experiments',
@@ -2403,8 +2405,9 @@ router.get(
         [userId, projectId]
       );
       const projectRole = projectRoleRow.rows[0]?.role?.toString().trim() || null;
-      const effectiveRole = projectRole || userRole || '';
+      const effectiveRole = (projectRole || userRole || '').toString().trim();
       const roleLower = effectiveRole.toLowerCase();
+      // Lead must see all blocks and all runs (same as admin/project_manager).
       const showAll = roleLower === 'admin' || roleLower === 'project_manager' || roleLower === 'lead';
       console.log('🔵 [blocks-experiments] globalRole:', userRole, '| projectRole:', projectRole, '| effectiveRole:', effectiveRole, '| showAll (see all blocks):', showAll);
 
