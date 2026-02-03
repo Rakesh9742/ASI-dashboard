@@ -475,8 +475,10 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         print('Error loading run directory from DB: $e');
       }
 
-      // Prefer run-specific directory; fallback to block_user only when no run match.
-      final finalRunDirectory = runDirectoryFromRun ?? runDirectoryFromBlockUser;
+      // When an RTL tag is selected, only show the run directory for that (rtl_tag, experiment) run.
+      // Do not fall back to block_user_run_directory — that is one path per block and may be for a different RTL tag (e.g. gold_v3).
+      final finalRunDirectory = runDirectoryFromRun ??
+          (selectedRtlTagNorm.isEmpty ? runDirectoryFromBlockUser : null);
       if (mounted) {
         setState(() {
           _currentRunDirectory = (finalRunDirectory != null && finalRunDirectory.isNotEmpty) ? finalRunDirectory : null;

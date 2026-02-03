@@ -2507,11 +2507,11 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
               }
             }
             
-            // Check for run directory under /CX_RUN_NEW (common pattern)
-            // Look for: /CX_RUN_NEW/{project}/pd/users/{username}/*
+            // Check for run directory under /CX_PROJ (setup uses --base-path /CX_PROJ)
+            // Look for: /CX_PROJ/{project}/pd/users/{username}/*
             final escapedProject = projectNameSanitized.replaceAll("'", "'\\''");
             final escapedUsername = actualUsername.replaceAll("'", "'\\''");
-            final findRunDirCommand = "find /CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername -maxdepth 3 -type d 2>/dev/null | head -1 || echo ''";
+            final findRunDirCommand = "find /CX_PROJ/$escapedProject/pd/users/$escapedUsername -maxdepth 3 -type d 2>/dev/null | head -1 || echo ''";
             
             final runDirResult = await widget.apiService.executeSSHCommand(
               command: findRunDirCommand,
@@ -2527,10 +2527,9 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
               }
             }
             
-            // If not found, construct expected path based on common pattern
+            // If not found, construct expected path based on setup (CX_PROJ)
             if (runDirectory == null || runDirectory.isEmpty) {
-              // Common pattern: /CX_RUN_NEW/{project}/pd/users/{username}
-              runDirectory = '/CX_RUN_NEW/$projectNameSanitized/pd/users/$actualUsername';
+              runDirectory = '/CX_PROJ/$projectNameSanitized/pd/users/$actualUsername';
               print('   ⚠️ Run directory not found via search, using expected path: $runDirectory');
             }
             
@@ -3926,8 +3925,10 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
           final rtlTagForPath = _getEffectiveRtlTag();
           
           // Step 2: Search for the directory that was just created
-          // Path includes RTL tag when set: /CX_RUN_NEW/{project}/pd/users/{username}/{block}/{rtl_tag}/{experiment} or .../{block}/{experiment}
+          // Setup uses --base-path /CX_PROJ, so run dirs are under /CX_PROJ/{project}/pd/users/...
+          // Path includes RTL tag when set: /CX_PROJ/{project}/pd/users/{username}/{block}/{rtl_tag}/{experiment} or .../{block}/{experiment}
           print('   Step 2: Searching for directory created by setup command...');
+          const runDirBasePath = '/CX_PROJ';
           
           // Escape variables for shell command
           final escapedProject = sanitizedProjectName.replaceAll("'", "'\\''");
@@ -3936,13 +3937,13 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
           final escapedUsername = actualUsername.replaceAll("'", "'\\''");
           final escapedRtlTag = rtlTagForPath.replaceAll("'", "'\\''");
           
-          // Construct expected path (with rtl_tag segment when non-empty)
+          // Construct expected path (with rtl_tag segment when non-empty) — use CX_PROJ to match setup command
           final expectedPath = rtlTagForPath.isEmpty
-              ? '/CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername/$escapedBlock/$escapedExperiment'
-              : '/CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername/$escapedBlock/$escapedRtlTag/$escapedExperiment';
+              ? '$runDirBasePath/$escapedProject/pd/users/$escapedUsername/$escapedBlock/$escapedExperiment'
+              : '$runDirBasePath/$escapedProject/pd/users/$escapedUsername/$escapedBlock/$escapedRtlTag/$escapedExperiment';
           
-          // Command to find the directory: try expected path first, then search
-          final findPathCommand = "EXPECTED_PATH='$expectedPath'; if [ -d \"\$EXPECTED_PATH\" ]; then echo \"\$EXPECTED_PATH\"; else find /CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' -mmin -5 2>/dev/null | head -1 || find /CX_RUN_NEW/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' 2>/dev/null | head -1; fi";
+          // Command to find the directory: try expected path first, then search under CX_PROJ
+          final findPathCommand = "EXPECTED_PATH='$expectedPath'; if [ -d \"\$EXPECTED_PATH\" ]; then echo \"\$EXPECTED_PATH\"; else find $runDirBasePath/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' -mmin -5 2>/dev/null | head -1 || find $runDirBasePath/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' 2>/dev/null | head -1; fi";
           
           final pathResult = await widget.apiService.executeSSHCommand(
             command: findPathCommand,
@@ -3959,10 +3960,10 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
           }
           
           if (actualRunDirectory == null || actualRunDirectory.isEmpty) {
-            // Last resort: construct path with rtl_tag when set
+            // Last resort: construct path with rtl_tag when set — use /CX_PROJ to match setup command
             actualRunDirectory = rtlTagForPath.isEmpty
-                ? '/CX_RUN_NEW/$sanitizedProjectName/pd/users/$actualUsername/$sanitizedBlockName/$experimentName'
-                : '/CX_RUN_NEW/$sanitizedProjectName/pd/users/$actualUsername/$sanitizedBlockName/$rtlTagForPath/$experimentName';
+                ? '/CX_PROJ/$sanitizedProjectName/pd/users/$actualUsername/$sanitizedBlockName/$experimentName'
+                : '/CX_PROJ/$sanitizedProjectName/pd/users/$actualUsername/$sanitizedBlockName/$rtlTagForPath/$experimentName';
             print('   ⚠️ Directory not found via search, using constructed path: $actualRunDirectory');
           }
           

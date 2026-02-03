@@ -341,9 +341,8 @@ router.get('/', authenticate, async (req, res) => {
         (r.run_directory IS NOT NULL AND r.run_directory ~* $${paramCount + 1})
       )`;
       params.push(`%${domainNameStr}%`);
-      // Pattern to match domain in run_directory: /CX_RUN_NEW/{project}/{domain_code}/
-      // Match case-insensitively: /CX_RUN_NEW/{project}/pd/ or /CX_RUN_NEW/{project}/dv/ etc.
-      const runDirPattern = `(?i)/CX_RUN_NEW/[^/]+/(${domainPattern})/`;
+      // Pattern to match domain in run_directory: /CX_PROJ or /CX_RUN_NEW / {project} / {domain_code}/
+      const runDirPattern = `(?i)/(CX_RUN_NEW|CX_PROJ)/[^/]+/(${domainPattern})/`;
       params.push(runDirPattern);
       console.log(`🔍 [EDA_FILES] Domain filter - checking d.name LIKE "%${domainNameStr}%" OR run_directory ~* "${runDirPattern}"`);
       paramCount++; // Increment for the second parameter
@@ -474,7 +473,7 @@ router.get('/', authenticate, async (req, res) => {
         domainCodesCount = [domainNameLowerCount];
       }
       const domainPatternCount = domainCodesCount.join('|');
-      const runDirPatternCount = `(?i)/CX_RUN_NEW/[^/]+/(${domainPatternCount})/`;
+      const runDirPatternCount = `(?i)/(CX_RUN_NEW|CX_PROJ)/[^/]+/(${domainPatternCount})/`;
       countParamCount++;
       countQuery += ` AND (
         LOWER(d.name) LIKE LOWER($${countParamCount}) OR

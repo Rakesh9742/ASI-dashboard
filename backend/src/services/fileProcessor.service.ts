@@ -729,8 +729,8 @@ class FileProcessorService {
 
   /**
    * Extract project and domain from run_directory path.
-   * Format: CX_RUN_NEW/{project}/{domain}/users/...
-   * Example: CX_RUN_NEW/semicon/pd/users/srikanth/aes_cipher_top/feb02_exp1 → { project: "semicon", domain: "pd" }
+   * Format: CX_PROJ or CX_RUN_NEW / {project} / {domain} / users/...
+   * Example: /CX_PROJ/semicon/pd/users/... or /CX_RUN_NEW/... → { project: "semicon", domain: "pd" }
    */
   private extractProjectAndDomainFromRunDirectory(runDirectory: string | undefined): { project: string | null; domain: string | null } {
     if (!runDirectory || typeof runDirectory !== 'string') return { project: null, domain: null };
@@ -738,7 +738,7 @@ class FileProcessorService {
     const parts = trimmed.split('/').filter(Boolean);
     if (parts.length < 3) return { project: null, domain: null };
     const first = parts[0].toUpperCase();
-    if (first !== 'CX_RUN_NEW') return { project: null, domain: null };
+    if (first !== 'CX_RUN_NEW' && first !== 'CX_PROJ') return { project: null, domain: null };
     const projectSegment = parts[1].trim() || null;
     const domainSegment = parts[2].trim() || null;
     return { project: projectSegment, domain: domainSegment };
