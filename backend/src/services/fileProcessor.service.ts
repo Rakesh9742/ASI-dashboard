@@ -819,14 +819,34 @@ class FileProcessorService {
         throw new Error('No data to save');
       }
 
-      // Project and domain only from run_directory (CX_RUN_NEW/{project}/{domain}/users/...); e.g. pd or dv from path — no fallback to filename or file data
+      // Project and domain only from run_directory (CX_PROJ or CX_RUN_NEW / {project} / {domain} / users/...); e.g. pd or dv from path — no fallback
       const firstRow = processedData[0];
+      const runDirForLog = firstRow.run_directory ?? '(none)';
       const { project: projectFromRunDir, domain: domainFromRunDir } = this.extractProjectAndDomainFromRunDirectory(firstRow.run_directory);
       const projectName = projectFromRunDir || firstRow.project_name || null;
       const domainName = domainFromRunDir || null;
       let domainId: number | null = null;
       if (domainName) {
         domainId = await this.findDomainId(domainName);
+        console.log(`[EDA incoming file] run_directory: ${runDirForLog} → extracted project: "${projectName}", domain: "${domainName}" → domain_id: ${domainId ?? 'null'}`);
+        if (domainId == null) {
+          // Create domain so run can have domain_id set (e.g. "pd" or "dv" from path)
+          const domainCode = domainName.toUpperCase().replace(/\s+/g, '_').substring(0, 50);
+          try {
+            const domainInsert = await client.query(
+              `INSERT INTO public.domains (name, code, description, is_active) VALUES ($1, $2, $3, true) ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+              [domainName.trim(), domainCode, `Domain: ${domainName.trim()}`]
+            );
+            domainId = domainInsert.rows[0]?.id ?? null;
+            if (domainId) {
+              console.log(`[EDA incoming file] Created/found domain "${domainName}" (code: ${domainCode}) → domain_id: ${domainId}`);
+            }
+          } catch (domainErr: any) {
+            console.warn(`[EDA incoming file] Could not create domain "${domainName}":`, domainErr?.message);
+          }
+        }
+      } else {
+        console.log(`[EDA incoming file] run_directory: ${runDirForLog} → extracted project: "${projectName}", domain: (none) → domain_id not set`);
       }
 
       if (!projectName) {
