@@ -869,7 +869,7 @@ class FileProcessorService {
 
       // 4. Get run info from first row
       const experiment = firstRow.experiment;
-      const incomingRtlTag = (firstRow.rtl_tag ?? '').toString().trim().toLowerCase();
+      const incomingRtlTagRaw = (firstRow.rtl_tag ?? '').toString().trim();
       const userName = firstRow.user_name;
       const runDirectory = firstRow.run_directory;
       const lastUpdated = firstRow.run_end_time ? new Date(firstRow.run_end_time) : new Date();
@@ -888,39 +888,27 @@ class FileProcessorService {
       if (runResult.rows.length > 0) {
         runId = runResult.rows[0].id;
         const existingRtlTag = runResult.rows[0].rtl_tag?.toString().trim() ?? '';
-        // Incoming RTL tag (from file) must match the run's RTL tag for this block (same for this user)
-        if (incomingRtlTag.length > 0 || existingRtlTag.length > 0) {
-          if (incomingRtlTag !== existingRtlTag) {
-            throw new Error(
-              existingRtlTag.length === 0
-                ? `RTL tag in the file ("${incomingRtlTag}") does not match this run (no RTL tag set). ` +
-                  `Set the same RTL tag in Experiment Setup for this block first.`
-                : incomingRtlTag.length === 0
-                  ? `RTL tag in the file is missing but this run has RTL tag "${existingRtlTag}". They must be the same.`
-                  : `RTL tag in the file ("${incomingRtlTag}") does not match the RTL tag for this run ("${existingRtlTag}"). ` +
-                    `They must be the same. Use the RTL tag you created for this block in Experiment Setup.`
-            );
-          }
-        }
-        // If uploader is known and run has an RTL tag, require that this user has that RTL tag for this block
-        if (uploadedBy != null && existingRtlTag.length > 0) {
+        // RTL tag belongs to user+block (user_block_rtl_tags). A user or block can have multiple RTL tags.
+        // Use file's RTL tag when present; otherwise keep run's. Allow entry when uploader has this RTL tag for this block.
+        const rtlTagToSet = incomingRtlTagRaw.length > 0 ? incomingRtlTagRaw : existingRtlTag;
+        const rtlTagToSetLower = rtlTagToSet.toLowerCase();
+        if (uploadedBy != null && rtlTagToSet.length > 0) {
           const tableExists = await client.query(
             `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'user_block_rtl_tags')`
           );
           if (tableExists.rows[0]?.exists === true) {
             const allowed = await client.query(
-              `SELECT 1 FROM user_block_rtl_tags WHERE user_id = $1 AND block_id = $2 AND rtl_tag = $3 LIMIT 1`,
-              [uploadedBy, blockId, existingRtlTag]
+              `SELECT 1 FROM user_block_rtl_tags WHERE user_id = $1 AND block_id = $2 AND LOWER(rtl_tag) = $3 LIMIT 1`,
+              [uploadedBy, blockId, rtlTagToSetLower]
             );
             if (allowed.rows.length === 0) {
               throw new Error(
-                `RTL tag "${existingRtlTag}" for block "${blockName}" is not assigned to you. ` +
+                `RTL tag "${rtlTagToSet}" for block "${blockName}" is not assigned to you. ` +
                 `Create or select this RTL tag in Experiment Setup for this block first, then upload EDA files.`
               );
             }
           }
         }
-        const rtlTagToSet = existingRtlTag;
         await client.query(
           'UPDATE public.runs SET rtl_tag = $1, user_name = $2, run_directory = $3, last_updated = $4, domain_id = $5 WHERE id = $6',
           [rtlTagToSet, userName, runDirectory, lastUpdated, domainId, runId]
