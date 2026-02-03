@@ -24,20 +24,30 @@ ENV PATH=$PATH:$FLUTTER_HOME/bin
 RUN git clone --branch ${FLUTTER_VERSION} --depth 1 https://github.com/flutter/flutter.git $FLUTTER_HOME && \
     flutter config --enable-web --no-analytics
 
+# Create non-root user (Flutter warns when run as root; also good practice)
+RUN adduser --disabled-password --gecos "" flutter && \
+    chown -R flutter:flutter $FLUTTER_HOME
+
 WORKDIR /app
 
 # Copy pubspec files
 COPY pubspec.yaml pubspec.lock* ./
 
-# Get dependencies
-RUN flutter pub get
+# Get dependencies and precache Web SDK so it's in a cached layer
+# (Reduces peak disk usage in the build step and avoids re-download on code-only changes)
+RUN chown -R flutter:flutter /app && \
+    su flutter -c "PATH=$PATH flutter pub get" && \
+    su flutter -c "PATH=$PATH flutter precache --web"
 
 # Copy source code
 COPY . .
+RUN chown -R flutter:flutter /app
 
+# Build for web as non-root. Requires ~5GB free disk on build host (Docker + Flutter SDK + Web SDK + build).
 # Build for web - no API_URL needed, frontend uses relative URLs (/api)
 # nginx will proxy /api requests to backend
-RUN flutter build web --release
+RUN su flutter -c "PATH=$PATH flutter build web --release" && \
+    rm -rf $FLUTTER_HOME/bin/cache
 
 # Use nginx to serve the web app
 FROM nginx:alpine
