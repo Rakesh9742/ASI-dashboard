@@ -1002,7 +1002,8 @@ router.get(
 
 /**
  * GET /api/projects/:projectIdOrName/rtl-tags?blockName=X
- * Get RTL tags created by current user for the given block (for experiment setup dropdown).
+ * Get RTL tags for the given block. Admin/project_manager/lead see all RTL tags for the block;
+ * other users see only RTL tags they created for that block (user_block_rtl_tags).
  */
 router.get(
   '/:projectIdOrName/rtl-tags',
@@ -1012,6 +1013,7 @@ router.get(
       const projectIdOrName = String(req.params.projectIdOrName || '').trim();
       const blockName = String(req.query.blockName || '').trim();
       const userId = (req as any).user?.id;
+      const userRole = ((req as any).user?.role ?? '').toString().toLowerCase();
       if (!userId) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
@@ -1056,10 +1058,17 @@ router.get(
       if (tableExists.rows[0]?.exists !== true) {
         return res.json({ success: true, rtlTags: [] });
       }
-      const rtlResult = await pool.query(
-        `SELECT rtl_tag FROM user_block_rtl_tags WHERE user_id = $1 AND block_id = $2 ORDER BY rtl_tag`,
-        [userId, blockId]
-      );
+      // Admin, project_manager, lead: show all RTL tags for this block (any user). Others: only current user's tags.
+      const showAllRtlTags = userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
+      const rtlResult = showAllRtlTags
+        ? await pool.query(
+            `SELECT DISTINCT rtl_tag FROM user_block_rtl_tags WHERE block_id = $1 ORDER BY rtl_tag`,
+            [blockId]
+          )
+        : await pool.query(
+            `SELECT rtl_tag FROM user_block_rtl_tags WHERE user_id = $1 AND block_id = $2 ORDER BY rtl_tag`,
+            [userId, blockId]
+          );
       const rtlTags = (rtlResult.rows as any[]).map((r) => (r.rtl_tag ?? '').toString().trim()).filter(Boolean);
       return res.json({ success: true, rtlTags });
     } catch (error: any) {
