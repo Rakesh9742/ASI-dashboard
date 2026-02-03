@@ -860,7 +860,7 @@ router.post(
  * GET /api/projects/:projectIdOrName/blocks
  * Get all blocks for a project from DB only. projectIdOrName can be numeric id or project name.
  * Filter by assignment: only engineers (and similar) see just assigned blocks when filterByAssigned=true.
- * Admin, project_manager, and lead always see ALL blocks (filter is not applied to them).
+ * Admin and project_manager see ALL blocks. Lead sees only blocks assigned to them (block_users).
  */
 router.get(
   '/:projectIdOrName/blocks',
@@ -954,8 +954,8 @@ router.get(
       const projectRole = projectRoleRow.rows[0]?.role?.toString().trim() || null;
       const effectiveRole = (projectRole || userRole || '').toString().trim();
       const roleLowerBlocks = effectiveRole.toLowerCase();
-      // Lead must see all blocks (same as admin/project_manager); do not apply assigned-only filter to lead.
-      const isAdminOrManagerBlocks = roleLowerBlocks === 'admin' || roleLowerBlocks === 'project_manager' || roleLowerBlocks === 'lead';
+      // Lead sees only assigned blocks (block_users). Admin and project_manager see all blocks.
+      const isAdminOrManagerBlocks = roleLowerBlocks === 'admin' || roleLowerBlocks === 'project_manager';
       const blockUsersExists = await pool.query(
         `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'block_users')`
       );
@@ -1437,8 +1437,13 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
       }
     }
     
-    // Determine effective role: project-specific role if exists, otherwise global role
-    const effectiveRole = projectRole || globalRole;
+    // Determine effective role: project-specific role if exists, otherwise global role.
+    // Exception: when global role is project_manager, keep them as manager (don't elevate to admin
+    // if project role is admin), so they get manager experience (dashboard, manager view), not admin/management-only.
+    let effectiveRole = projectRole || globalRole;
+    if (globalRole === 'project_manager' && projectRole === 'admin') {
+      effectiveRole = 'project_manager';
+    }
     
     // Determine available view types based on role
     // Admin: all views. Manager: engineer, lead, manager. Lead: engineer, lead. CAD: cad only.
@@ -1468,8 +1473,9 @@ router.get('/:projectIdentifier/user-role', authenticate, async (req: Request, r
     }
     
     // Special case: If user has admin role from project profile only (global role is not admin),
-    // they see only the management view for that project (no block selection, no setup)
-    if (projectRole === 'admin' && globalRole !== 'admin') {
+    // they see only the management view for that project (no block selection, no setup).
+    // Exclude project_manager: managers with project role admin stay as manager (dashboard + manager view).
+    if (projectRole === 'admin' && globalRole !== 'admin' && globalRole !== 'project_manager') {
       availableViewTypes.length = 0;
       availableViewTypes.push('management');
     }
@@ -2404,7 +2410,7 @@ router.post(
  * GET /api/projects/:projectIdOrName/blocks-experiments
  * Get blocks and experiments for a project from DB only (no Zoho).
  * If projectIdOrName is zoho_<id>, resolve to local project via mapping; if no mapping, return [].
- * Admin, project_manager, and lead: see ALL blocks and all runs. Others: only blocks assigned (block_users) and runs they created.
+ * Admin, project_manager: see ALL blocks and all runs. Lead: only blocks assigned (block_users) and ALL runs in those blocks. Others: only blocks assigned and runs they created.
  */
 router.get(
   '/:projectIdOrName/blocks-experiments',
@@ -2504,8 +2510,8 @@ router.get(
       const projectRole = projectRoleRow.rows[0]?.role?.toString().trim() || null;
       const effectiveRole = (projectRole || userRole || '').toString().trim();
       const roleLower = effectiveRole.toLowerCase();
-      // Lead must see all blocks and all runs (same as admin/project_manager).
-      const showAll = roleLower === 'admin' || roleLower === 'project_manager' || roleLower === 'lead';
+      // Admin and project_manager see all blocks and all runs. Lead sees only assigned blocks but all runs in those blocks.
+      const showAll = roleLower === 'admin' || roleLower === 'project_manager';
       console.log('🔵 [blocks-experiments] globalRole:', userRole, '| projectRole:', projectRole, '| effectiveRole:', effectiveRole, '| showAll (see all blocks):', showAll);
 
       if (showAll) {
@@ -2541,19 +2547,61 @@ router.get(
           `,
           [projectId, userId]
         );
-        console.log('🔵 [blocks-experiments] Returning ALL blocks for admin/manager/lead. Count:', result.rows.length, '| block_names:', result.rows.map((r: any) => r.block_name));
+        console.log('🔵 [blocks-experiments] Returning ALL blocks for admin/manager. Count:', result.rows.length, '| block_names:', result.rows.map((r: any) => r.block_name));
         client.release();
         return res.json({ success: true, data: result.rows });
       }
 
-      // Non-admin: only blocks assigned to user and only experiments (runs) they created. DB only.
+      // Lead: only blocks assigned (block_users), but ALL runs in those blocks. Engineer: only blocks assigned and only runs they created.
       const blockUsersExists = await client.query(
         `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'block_users')`
       );
       const hasBlockUsersTable = blockUsersExists.rows[0]?.exists === true;
       console.log('🔵 [blocks-experiments] hasBlockUsersTable:', hasBlockUsersTable);
 
-      // Current user's run user_name (runs.user_name): prefer ssh_user, else username
+      // Lead: only blocks assigned to lead (block_users), all runs in those blocks (any user)
+      if (roleLower === 'lead' && hasBlockUsersTable) {
+        const result = await client.query(
+          `
+            SELECT 
+              b.id as block_id,
+              b.block_name,
+              b.project_id,
+              b.created_at as block_created_at,
+              MAX(bu.run_directory) as block_user_run_directory,
+              COALESCE(
+                json_agg(
+                  json_build_object(
+                    'id', r.id,
+                    'experiment', r.experiment,
+                    'rtl_tag', r.rtl_tag,
+                    'user_name', r.user_name,
+                    'run_directory', r.run_directory,
+                    'last_updated', r.last_updated,
+                    'created_at', r.created_at
+                  )
+                ) FILTER (WHERE r.id IS NOT NULL),
+                '[]'
+              ) as experiments
+            FROM blocks b
+            INNER JOIN block_users bu ON bu.block_id = b.id AND bu.user_id = $2
+            LEFT JOIN runs r ON r.block_id = b.id
+            WHERE b.project_id = $1
+            GROUP BY b.id, b.block_name, b.project_id, b.created_at
+            ORDER BY b.block_name
+          `,
+          [projectId, userId]
+        );
+        const rows = (result.rows as any[]).map((row: any) => ({
+          ...row,
+          experiments: Array.isArray(row.experiments) ? row.experiments.filter((e: any) => e && e.id != null) : [],
+        }));
+        console.log('🔵 [blocks-experiments] Returning ASSIGNED blocks for lead (all runs in those blocks). Count:', rows.length, '| block_names:', rows.map((r: any) => r.block_name));
+        client.release();
+        return res.json({ success: true, data: rows });
+      }
+
+      // Current user's run user_name (runs.user_name): prefer ssh_user, else username (for engineer path)
       const userRow = await client.query(
         'SELECT COALESCE(ssh_user, username) AS run_user_name FROM users WHERE id = $1',
         [userId]
@@ -2562,7 +2610,7 @@ router.get(
       console.log('🔵 [blocks-experiments] runUserName (for filtering runs):', runUserName);
 
       if (hasBlockUsersTable) {
-        // Blocks: only those in block_users for this user. Experiments: only runs where user_name matches.
+        // Engineer: only blocks in block_users for this user, only runs where user_name matches.
         if (!runUserName) {
           client.release();
           return res.json({ success: true, data: [] });

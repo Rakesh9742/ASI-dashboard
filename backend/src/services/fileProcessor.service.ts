@@ -819,11 +819,11 @@ class FileProcessorService {
         throw new Error('No data to save');
       }
 
-      // Project and domain always from run_directory in EDA file (CX_RUN_NEW/{project}/{domain}/users/...); do not use project/domain from file fields
+      // Project and domain only from run_directory (CX_RUN_NEW/{project}/{domain}/users/...); e.g. pd or dv from path — no fallback to filename or file data
       const firstRow = processedData[0];
       const { project: projectFromRunDir, domain: domainFromRunDir } = this.extractProjectAndDomainFromRunDirectory(firstRow.run_directory);
       const projectName = projectFromRunDir || firstRow.project_name || null;
-      const domainName = domainFromRunDir || filenameDomain || firstRow.domain_name || null;
+      const domainName = domainFromRunDir || null;
       let domainId: number | null = null;
       if (domainName) {
         domainId = await this.findDomainId(domainName);
@@ -1465,9 +1465,6 @@ class FileProcessorService {
     const fileExt = path.extname(filePath).toLowerCase().slice(1);
     const stats = fs.statSync(filePath);
     const fileSize = stats.size;
-    
-    // Extract only domain from filename (project name will come from file data)
-    const filenameDomain = this.extractDomainFromFilename(fileName);
 
     let processedData: ProcessedFileData[];
 
@@ -1486,17 +1483,8 @@ class FileProcessorService {
       if (processedData.length === 0) {
         throw new Error('No data found in file');
       }
-      
-      // Override domain from filename if extracted (project name comes from file data)
-      if (filenameDomain) {
-        // Update all rows with filename-extracted domain (keep project from file data)
-        processedData = processedData.map(row => ({
-          ...row,
-          domain_name: filenameDomain,
-        }));
-      }
 
-      // Save to database using new Physical Design schema
+      // Domain is taken only from run_directory (e.g. pd or dv in path) in saveToNewSchema — no filename or file-data override
       const fileId = await this.saveToNewSchema(
         fileName,
         filePath,
@@ -1504,8 +1492,8 @@ class FileProcessorService {
         fileSize,
         processedData,
         uploadedBy,
-        undefined, // Project name comes from file data, not filename
-        filenameDomain || undefined
+        undefined,
+        undefined
       );
 
       return fileId;

@@ -688,8 +688,9 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
         // Get effective role and project-only role (project-specific if available, otherwise global)
         final effectiveRole = snapshot.hasData ? snapshot.data!['effectiveRole'] : userRole;
         final projectRole = snapshot.hasData ? snapshot.data!['projectRole'] : null;
-        // Project-role admin: only management view, no Setup button, open directly to management
-        final isProjectAdminOnly = projectRole == 'admin' && userRole != 'admin';
+        // Project-role admin (and not global admin/manager): only management view, no Setup button, open directly to management.
+        // Managers (project_manager) always get dashboard on card tap, not management view.
+        final isProjectAdminOnly = projectRole == 'admin' && userRole != 'admin' && userRole != 'project_manager';
         
         // Check if user is CAD engineer (global or project-specific)
         // Only CAD engineers should see Export to Linux button

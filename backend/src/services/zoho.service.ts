@@ -1464,6 +1464,12 @@ class ZohoService {
 
     const roleLower = zohoProjectRole.toLowerCase().trim();
     
+    // In Zoho Projects, role is often exactly "Manager" (project manager). Map that first so it
+    // is not caught by adminKeywords below (which contain "manager" for general/senior manager).
+    if (roleLower === 'manager') {
+      return 'project_manager';
+    }
+    
     // Admin roles in Zoho Project - These roles should have full admin access matching DB admin role
     // Note: Check AFTER project_manager to avoid conflicts (project manager is more specific)
     // Handles both "Admin" and "admin" (case-insensitive via toLowerCase)
@@ -1471,7 +1477,7 @@ class ZohoService {
       'admin', 'administrator', 'owner', 'project owner',
       'director', 'head', 'ceo', 'cto', 'cfo', 'vp', 'vice president',
       'president', 'founder', 'principal', 'executive', 'exec', 'chief',
-      'manager' // General manager (not project manager - checked first)
+      'general manager', 'senior manager' // Not bare "manager" - that is project_manager above
     ];
     
     // Project Manager roles - Check FIRST (more specific than general manager/admin)
