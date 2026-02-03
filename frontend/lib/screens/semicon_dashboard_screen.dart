@@ -760,6 +760,182 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     }
   }
   
+  /// Show error modal after loading dialog is closed so the error dialog appears reliably (avoids timing where error shows nothing).
+  void _showPopOutErrorAfterDialogClosed(String title, String message) {
+    Future.delayed(const Duration(milliseconds: 150), () {
+      if (!mounted) return;
+      ref.read(errorHandlerProvider.notifier).show(title, message);
+    });
+  }
+
+  /// Pop Out: show loading until domain/data are resolved; if no domain or no data, show error in modal and do not open window.
+  Future<void> _openViewScreenInNewWindowWithLoading() async {
+    final projectName = widget.project['name'] ?? '';
+    if (projectName.isEmpty) {
+      if (mounted) {
+        ref.read(errorHandlerProvider.notifier).showInfo(
+          'Project name not available.',
+          title: 'Info',
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const Center(
+        child: Card(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(height: 16),
+                Text('Loading view data...', style: TextStyle(fontSize: 14)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    try {
+      // Resolve domain for selected block/experiment (metrics, then EDA files, then project domains)
+      String? domainName;
+      if (_selectedBlock != 'Select a block' &&
+          _metricsData != null &&
+          _metricsData!['domain_name'] != null &&
+          _metricsData!['domain_name'].toString().trim().isNotEmpty) {
+        domainName = _metricsData!['domain_name']?.toString();
+      }
+      if ((domainName == null || domainName.isEmpty) &&
+          _selectedBlock != 'Select a block' &&
+          _selectedExperiment != 'Select an experiment') {
+        final token = ref.read(authProvider).token;
+        if (token != null) {
+          final filesResponse = await _apiService.getEdaFiles(
+            token: token,
+            projectName: projectName,
+            limit: 100,
+          );
+          final files = filesResponse['files'] ?? [];
+          for (var file in files) {
+            if (file['block_name']?.toString() == _selectedBlock &&
+                file['experiment']?.toString() == _selectedExperiment) {
+              final d = file['domain_name']?.toString();
+              if (d != null && d.trim().isNotEmpty) {
+                domainName = d;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (domainName == null || domainName.isEmpty) {
+        final domains = widget.project['domains'];
+        if (domains is List && domains.isNotEmpty) {
+          final firstDomain = domains.first;
+          if (firstDomain is Map) {
+            domainName = firstDomain['name']?.toString();
+          }
+        }
+      }
+
+      if (!mounted) return;
+      Navigator.of(context).pop(); // close loading dialog
+
+      // No domain assigned for this block/experiment and no project domains
+      if (domainName == null || domainName.isEmpty) {
+        _showPopOutErrorAfterDialogClosed(
+          'Cannot pop out',
+          'No domain is assigned for the selected block and experiment. '
+          'There is no EDA data or project domain to show in the view. '
+          'Select a block/experiment that has data, or assign a domain to the project.',
+        );
+        return;
+      }
+
+      // Optional: verify there is at least some EDA data for this project/domain/block/experiment
+      final token = ref.read(authProvider).token;
+      bool hasData = _metricsData != null || _runHistory.isNotEmpty;
+      if (!hasData && token != null) {
+        final filesResponse = await _apiService.getEdaFiles(
+          token: token,
+          projectName: projectName,
+          domainName: domainName,
+          limit: 50,
+        );
+        final files = filesResponse['files'] ?? [];
+        hasData = files.any((f) =>
+            f['block_name']?.toString() == _selectedBlock &&
+            f['experiment']?.toString() == _selectedExperiment);
+      }
+      if (!hasData && mounted) {
+        _showPopOutErrorAfterDialogClosed(
+          'No data',
+          'No data to show for the selected block and experiment in this domain. '
+          'Pop out is only available when there is dashboard/EDA data.',
+        );
+        return;
+      }
+
+      // Default view type by role
+      final userRole = ref.read(authProvider).user?['role']?.toString();
+      final viewType = userRole == 'admin'
+          ? 'manager'
+          : (userRole == 'customer' ? 'customer' : 'engineer');
+
+      final blockName = (_selectedBlock != null && _selectedBlock != 'Select a block' && _selectedBlock.isNotEmpty)
+          ? _selectedBlock
+          : null;
+      final experimentName = (_selectedExperiment != null && _selectedExperiment != 'Select an experiment' && _selectedExperiment.isNotEmpty)
+          ? _selectedExperiment
+          : null;
+
+      final viewData = {
+        'project': projectName,
+        if (domainName.isNotEmpty) 'domain': domainName,
+        'viewType': viewType,
+        if (blockName != null) 'block': blockName,
+        if (experimentName != null) 'experiment': experimentName,
+      };
+      html.window.localStorage['standalone_view'] = jsonEncode(viewData);
+
+      final baseUrl = html.window.location.href.split('?')[0].split('#')[0];
+      final projectNameEncoded = Uri.encodeComponent(projectName);
+      final domainNameEncoded = Uri.encodeComponent(domainName);
+
+      String newWindowUrl = '$baseUrl#/view?project=$projectNameEncoded&domain=$domainNameEncoded&viewType=$viewType';
+      if (blockName != null) {
+        newWindowUrl += '&block=${Uri.encodeComponent(blockName)}';
+      }
+      if (experimentName != null) {
+        newWindowUrl += '&experiment=${Uri.encodeComponent(experimentName)}';
+      }
+
+      html.window.open(
+        newWindowUrl,
+        'view_${projectName.replaceAll(' ', '_')}',
+        'width=1600,height=1000,scrollbars=yes,resizable=yes',
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop(); // close loading dialog if still open
+        Future.delayed(const Duration(milliseconds: 150), () {
+          if (!mounted) return;
+          ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to open view window');
+        });
+      }
+    }
+  }
+
   Future<void> _openViewScreenInNewWindow() async {
     try {
       // Project and domain from DB only (no Zoho, no EDA files)
@@ -1814,13 +1990,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                             );
                             return;
                           }
-                          if (_metricsData == null && _runHistory.isEmpty) {
-                            ref.read(errorHandlerProvider.notifier).showInfo(
-                              'No data to show. Pop out is only available when there is dashboard data for the selected block and experiment.',
-                            );
-                            return;
-                          }
-                          _openViewScreenInNewWindow();
+                          _openViewScreenInNewWindowWithLoading();
                         } else if (_selectedTab == 'QMS') {
                           _openQMSInNewWindow();
                         }
