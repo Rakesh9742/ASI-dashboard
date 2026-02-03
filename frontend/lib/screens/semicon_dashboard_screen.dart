@@ -41,6 +41,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   List<String> _availableRtlTags = [];
   List<String> _availableExperiments = [];
   bool _isLoadingBlocks = false;
+  bool _isLoadingRtlTags = false;
   
   // Store block data with IDs for QMS navigation
   Map<String, int> _blockNameToId = {};
@@ -320,8 +321,9 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   }
 
   void _onBlockChanged(String? value) async {
+    final selectedBlock = value ?? 'Select a block';
     setState(() {
-      _selectedBlock = value ?? 'Select a block';
+      _selectedBlock = selectedBlock;
       _selectedRtlTag = 'Select RTL tag'; // Reset RTL tag when block changes
       _selectedExperiment = 'Select an experiment'; // Reset experiment when block changes
       _metricsData = null; // Reset metrics when block changes
@@ -330,28 +332,46 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       _qmsChecklists = [];
       _qmsBlockStatus = null;
       _consoleWorkingDirectory = null; // Reset so next commands use new run directory
+      _availableRtlTags = [];
+      _availableExperiments = [];
+      _isLoadingRtlTags = selectedBlock != 'Select a block';
     });
-    
-    // Show RTL tags for the selected block (from cache), then user picks RTL tag then experiment. RTL tag cannot be null/none.
-    if (_selectedBlock != 'Select a block') {
-      final rtlTagToExps = _blockRtlTagToExperiments[_selectedBlock];
-      final rtlTags = (rtlTagToExps?.keys.where((s) => s.isNotEmpty).toList() ?? [])..sort();
-      setState(() {
-        _availableRtlTags = rtlTags;
-        _availableExperiments = [];
-      });
-      // Load block IDs for QMS only when needed (first time a block is selected)
+
+    // RTL tags for this block: load from user_block_rtl_tags (tags created by user for this block), not only from runs.
+    if (selectedBlock != 'Select a block') {
       final token = ref.read(authProvider).token;
+      if (token != null) {
+        try {
+          final userRtlTags = await _apiService.getRtlTagsForBlock(
+            projectIdOrName: _localProjectIdentifier,
+            blockName: selectedBlock,
+            token: token,
+          );
+          if (mounted && _selectedBlock == selectedBlock) {
+            setState(() {
+              _availableRtlTags = userRtlTags;
+              _isLoadingRtlTags = false;
+            });
+          }
+        } catch (_) {
+          if (mounted && _selectedBlock == selectedBlock) {
+            setState(() {
+              _availableRtlTags = [];
+              _isLoadingRtlTags = false;
+            });
+          }
+        }
+      } else {
+        setState(() => _isLoadingRtlTags = false);
+      }
+      // Load block IDs for QMS only when needed (first time a block is selected)
       if (_blockNameToId.isEmpty && token != null) {
         final projectName = widget.project['name']?.toString() ?? '';
         if (projectName.isNotEmpty) _loadBlockIds(projectName, token);
       }
       if (_selectedTab == 'QMS') _loadQmsData();
     } else {
-      setState(() {
-        _availableRtlTags = [];
-        _availableExperiments = [];
-      });
+      setState(() => _isLoadingRtlTags = false);
     }
     // Load run history only when user selects block (DB only)
     _loadRunHistory();
@@ -412,9 +432,13 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
 
     try {
       String? runDirectoryFromBlockUser;
-      String? runDirectoryFromExperiment;
+      String? runDirectoryFromRun;
 
-      // Run directory from DB only: block_users (per block per user) then runs (per experiment). No EDA files.
+      // Run directory: prefer the run that matches (block + experiment + rtl_tag); fallback to block_users.
+      final selectedRtlTagNorm = (_selectedRtlTag == 'Select RTL tag' || _selectedRtlTag.isEmpty)
+          ? ''
+          : _selectedRtlTag.trim();
+
       try {
         final blocksData = await _apiService.getBlocksAndExperiments(
           projectIdOrName: _localProjectIdentifier,
@@ -425,21 +449,21 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
           final blockName = blockData['block_name']?.toString();
           if (blockName != _selectedBlock) continue;
 
-          // 1) block_users.run_directory (set when engineer completes setup)
           final blockUserRunDir = blockData['block_user_run_directory']?.toString();
           if (blockUserRunDir != null && blockUserRunDir.isNotEmpty) {
             runDirectoryFromBlockUser = blockUserRunDir;
           }
 
-          // 2) runs.run_directory for this experiment (fallback)
+          // Match run by both experiment and rtl_tag so each (RTL tag, experiment) shows its own run directory.
           final experiments = blockData['experiments'];
           if (experiments is List) {
             for (var exp in experiments) {
-              final experiment = exp['experiment']?.toString();
-              if (experiment == _selectedExperiment) {
+              final expName = exp['experiment']?.toString();
+              final expRtl = (exp['rtl_tag']?.toString() ?? '').trim();
+              if (expName == _selectedExperiment && expRtl == selectedRtlTagNorm) {
                 final runDir = exp['run_directory']?.toString();
                 if (runDir != null && runDir.isNotEmpty) {
-                  runDirectoryFromExperiment = runDir;
+                  runDirectoryFromRun = runDir;
                   break;
                 }
               }
@@ -451,7 +475,8 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         print('Error loading run directory from DB: $e');
       }
 
-      final finalRunDirectory = runDirectoryFromBlockUser ?? runDirectoryFromExperiment;
+      // Prefer run-specific directory; fallback to block_user only when no run match.
+      final finalRunDirectory = runDirectoryFromRun ?? runDirectoryFromBlockUser;
       if (mounted) {
         setState(() {
           _currentRunDirectory = (finalRunDirectory != null && finalRunDirectory.isNotEmpty) ? finalRunDirectory : null;
@@ -1096,7 +1121,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: theme.dividerColor),
                       ),
-                      child: _isLoadingBlocks
+                      child: (_isLoadingBlocks || _isLoadingRtlTags)
                           ? const Center(
                               child: SizedBox(
                                 width: 18,
