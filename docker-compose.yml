@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -26,6 +28,7 @@ services:
       - asi_network
 
   backend:
+    image: asi-dashboard-backend:latest
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -43,27 +46,22 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
-      - /app/dist
     networks:
       - asi_network
 
   frontend:
+    image: asi-dashboard-frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      # No API_URL needed - frontend uses relative URLs (/api) which nginx proxies
     container_name: asi_frontend
     ports:
       - "8080:8080"
     depends_on:
       - backend
     environment:
-      # BACKEND_URL is used by nginx to proxy /api requests
-      - BACKEND_URL=${BACKEND_URL:-http://backend:3000}
-      - FRONTEND_URL=${FRONTEND_URL:-http://13.204.252.101:8080}
+      BACKEND_URL: ${BACKEND_URL:-http://backend:3000}
+      FRONTEND_URL: ${FRONTEND_URL:-http://13.204.252.101:8080}
     networks:
       - asi_network
 
@@ -73,4 +71,3 @@ volumes:
 networks:
   asi_network:
     driver: bridge
-
