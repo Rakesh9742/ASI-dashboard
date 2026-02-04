@@ -8,6 +8,14 @@ import '../widgets/qms_status_badge.dart';
 import '../widgets/qms_history_dialog.dart';
 import 'qms_checklist_detail_screen.dart';
 
+// ASI Brand colors to match projects theme
+const Color _kBrandPrimary = Color(0xFF6366F1); // Indigo
+const Color _kBrandSecondary = Color(0xFF4F46E5); // Darker indigo
+const Color _kBrandAccent = Color(0xFF14B8A6); // Teal accent
+const Color _kSuccessGreen = Color(0xFF10B981);
+const Color _kDangerRed = Color(0xFFEF4444);
+const Color _kWarningOrange = Color(0xFFF59E0B);
+
 class QmsDashboardScreen extends ConsumerStatefulWidget {
   final int blockId;
   final bool isStandalone;
@@ -264,8 +272,9 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                           );
                         },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF14B8A6),
+                    backgroundColor: _kBrandPrimary,
                     foregroundColor: Colors.white,
+                    elevation: 0,
                   ),
                   child: const Text('Submit'),
                 ),
@@ -466,6 +475,13 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
               title: const Text('QMS Dashboard'),
               elevation: 0,
               actions: [
+                // Template Settings (Admin only)
+                if (ref.read(authProvider).user?['role'] == 'admin')
+                  IconButton(
+                    icon: const Icon(Icons.settings),
+                    onPressed: _showTemplateSettings,
+                    tooltip: 'Template Settings',
+                  ),
                 IconButton(
                   icon: const Icon(Icons.refresh),
                   onPressed: refreshData,
@@ -515,8 +531,8 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                         icon: const Icon(Icons.history, size: 18),
                         label: const Text('Block History'),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF14B8A6),
-                          side: const BorderSide(color: Color(0xFF14B8A6)),
+                          foregroundColor: _kBrandPrimary,
+                          side: BorderSide(color: _kBrandPrimary.withOpacity(0.5)),
                           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
@@ -543,13 +559,14 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                                   : const Icon(Icons.upload_file, size: 18),
                               label: Text(_isUploading ? 'Uploading...' : 'Upload Template'),
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF14B8A6),
+                                backgroundColor: _kBrandPrimary,
                                 foregroundColor: Colors.white,
                                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(12),
                                 ),
-                                elevation: 2,
+                                elevation: 0,
+                                shadowColor: _kBrandPrimary.withOpacity(0.3),
                               ),
                             );
                           }
@@ -564,27 +581,47 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
               // Block status summary
               if (_blockStatus != null) ...[
                 Container(
-                  padding: const EdgeInsets.all(16.0),
+                  padding: const EdgeInsets.all(20.0),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Theme.of(context).dividerColor),
+                    color: Theme.of(context).cardColor,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Theme.of(context).dividerColor.withOpacity(0.5)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 10,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
                   ),
                   child: Row(
                     children: [
-                      Icon(
-                        _blockStatus!['all_checklists_approved'] == true
-                            ? Icons.check_circle
-                            : (_blockStatus!['all_checklists_submitted'] == true
-                                ? Icons.pending_actions
-                                : Icons.info_outline),
-                        color: _blockStatus!['all_checklists_approved'] == true
-                            ? Colors.green
-                            : (_blockStatus!['all_checklists_submitted'] == true
-                                ? const Color(0xFF14B8A6)
-                                : Colors.orange.shade700),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: (_blockStatus!['all_checklists_approved'] == true
+                                  ? _kSuccessGreen
+                                  : (_blockStatus!['all_checklists_submitted'] == true
+                                      ? _kBrandPrimary
+                                      : _kWarningOrange))
+                              .withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          _blockStatus!['all_checklists_approved'] == true
+                              ? Icons.check_circle_rounded
+                              : (_blockStatus!['all_checklists_submitted'] == true
+                                  ? Icons.pending_actions_rounded
+                                  : Icons.info_rounded),
+                          color: _blockStatus!['all_checklists_approved'] == true
+                              ? _kSuccessGreen
+                              : (_blockStatus!['all_checklists_submitted'] == true
+                                  ? _kBrandPrimary
+                                  : _kWarningOrange),
+                          size: 28,
+                        ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 16),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -592,25 +629,23 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                             Text(
                               'Block Status',
                               style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                                color: Theme.of(context).colorScheme.onSurface,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                                letterSpacing: 0.5,
                               ),
                             ),
+                            const SizedBox(height: 4),
                             Text(
                               _blockStatus!['all_checklists_approved'] == true
-                                  ? 'Block Completed'
+                                  ? 'All Checklists Completed'
                                   : (_blockStatus!['all_checklists_submitted'] == true
-                                      ? 'Block Submitted'
-                                      : 'Some checklists pending'),
+                                      ? 'All Checklists Submitted'
+                                      : 'Checklists In Progress'),
                               style: TextStyle(
-                                color: _blockStatus!['all_checklists_approved'] == true
-                                    ? Colors.green
-                                    : (_blockStatus!['all_checklists_submitted'] == true
-                                        ? const Color(0xFF14B8A6)
-                                        : Colors.orange.shade700),
-                                fontWeight: FontWeight.w500,
-                                fontSize: 14,
+                                color: Theme.of(context).colorScheme.onSurface,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 16,
                               ),
                             ),
                           ],
@@ -619,16 +654,23 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 32),
               ],
 
               // Checklists table
               Row(
                 children: [
-                  Icon(Icons.folder_open, color: const Color(0xFF14B8A6), size: 24),
-                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: _kBrandPrimary.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(Icons.checklist_rounded, color: _kBrandPrimary, size: 22),
+                  ),
+                  const SizedBox(width: 12),
                   Text(
-                    'Checklists',
+                    'Quality Checklists',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
                           fontWeight: FontWeight.bold,
                           color: Theme.of(context).colorScheme.onSurface,
@@ -636,16 +678,17 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                   ),
                   const SizedBox(width: 12),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF14B8A6).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(12),
+                      color: _kBrandPrimary.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(16),
                     ),
                     child: Text(
                       '${_checklists.length}',
                       style: TextStyle(
-                        color: const Color(0xFF14B8A6),
+                        color: _kBrandPrimary,
                         fontWeight: FontWeight.bold,
+                        fontSize: 13,
                       ),
                     ),
                   ),
@@ -685,8 +728,15 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                  Container(
                    decoration: BoxDecoration(
                      color: Theme.of(context).cardColor,
-                     borderRadius: BorderRadius.circular(12),
-                     border: Border.all(color: Theme.of(context).dividerColor),
+                     borderRadius: BorderRadius.circular(16),
+                     border: Border.all(color: Theme.of(context).dividerColor.withOpacity(0.5)),
+                     boxShadow: [
+                       BoxShadow(
+                         color: Colors.black.withOpacity(0.04),
+                         blurRadius: 10,
+                         offset: const Offset(0, 2),
+                       ),
+                     ],
                    ),
                   child: SizedBox(
                     height: 56 + (5 * 64), // Header height + 5 rows height
@@ -831,7 +881,9 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                                                       checklist['name'] ?? 'Unnamed Checklist',
                                                       style: baseTextStyle.copyWith(
                                                         fontWeight: FontWeight.w600,
-                                                        color: const Color(0xFF14B8A6),
+                                                        color: _kBrandPrimary,
+                                                        decoration: TextDecoration.underline,
+                                                        decorationColor: _kBrandPrimary.withOpacity(0.4),
                                                       ),
                                                       overflow: TextOverflow.ellipsis,
                                                     ),
@@ -1034,9 +1086,9 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
         label = 'Admin';
         break;
       case 'lead':
-        bg = const Color(0xFF14B8A6).withOpacity(0.1);
-        fg = const Color(0xFF14B8A6);
-        border = const Color(0xFF14B8A6).withOpacity(0.3);
+        bg = _kBrandPrimary.withOpacity(0.1);
+        fg = _kBrandPrimary;
+        border = _kBrandPrimary.withOpacity(0.3);
         label = 'Lead';
         break;
       case 'project_manager':
@@ -1163,8 +1215,9 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
+                backgroundColor: _kDangerRed,
                 foregroundColor: Colors.white,
+                elevation: 0,
               ),
               onPressed: () async {
                 Navigator.pop(context);
@@ -1455,8 +1508,9 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                           );
                         },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: approved == true ? Colors.green : Colors.orange,
+                    backgroundColor: approved == true ? _kSuccessGreen : _kWarningOrange,
                     foregroundColor: Colors.white,
+                    elevation: 0,
                   ),
                   child: Text(approved == true ? 'Approve' : approved == false ? 'Reject' : 'Submit'),
                 ),
@@ -1556,5 +1610,292 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
         });
       }
     }
+  }
+
+  // Show template settings dialog (Admin only)
+  void _showTemplateSettings() {
+    showDialog(
+      context: context,
+      builder: (context) => _TemplateSettingsDialog(
+        qmsService: _qmsService,
+        onTemplateUploaded: () {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Default template uploaded successfully! New checklists will use this template.'),
+                backgroundColor: Colors.green,
+                duration: Duration(seconds: 4),
+              ),
+            );
+          }
+        },
+      ),
+    );
+  }
+}
+
+// Template Settings Dialog Widget
+class _TemplateSettingsDialog extends ConsumerStatefulWidget {
+  final QmsService qmsService;
+  final VoidCallback onTemplateUploaded;
+
+  const _TemplateSettingsDialog({
+    required this.qmsService,
+    required this.onTemplateUploaded,
+  });
+
+  @override
+  ConsumerState<_TemplateSettingsDialog> createState() => _TemplateSettingsDialogState();
+}
+
+class _TemplateSettingsDialogState extends ConsumerState<_TemplateSettingsDialog> {
+  bool _isUploading = false;
+  bool _isLoadingBackups = false;
+  List<dynamic> _backups = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBackups();
+  }
+
+  Future<void> _loadBackups() async {
+    setState(() => _isLoadingBackups = true);
+    try {
+      final token = ref.read(authProvider).token;
+      final backups = await widget.qmsService.getTemplateBackups(token: token);
+      if (mounted) {
+        setState(() {
+          _backups = backups;
+          _isLoadingBackups = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingBackups = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading backups: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _uploadTemplate() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx', 'xls'],
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+
+      final file = result.files.first;
+      if (file.bytes == null) {
+        throw Exception('Unable to read file data');
+      }
+
+      // Confirm replacement
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Replace Default Template?'),
+          content: Text(
+            'Are you sure you want to replace the default QMS template with "${file.name}"?\n\n'
+            'The current template will be backed up automatically.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _kBrandPrimary,
+              ),
+              child: const Text('Replace'),
+            ),
+          ],
+        ),
+      );
+
+      if (confirmed != true) return;
+
+      setState(() => _isUploading = true);
+
+      final token = ref.read(authProvider).token;
+      await widget.qmsService.uploadDefaultTemplate(
+        file.bytes!,
+        file.name,
+        token: token,
+      );
+
+      if (mounted) {
+        widget.onTemplateUploaded();
+        await _loadBackups(); // Refresh backups list
+        setState(() => _isUploading = false);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isUploading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error uploading template: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Container(
+        width: MediaQuery.of(context).size.width * 0.5,
+        constraints: const BoxConstraints(maxHeight: 600),
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: _kBrandPrimary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.description, color: _kBrandPrimary, size: 24),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    'QMS Template Settings',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+
+            // Upload section
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: _kBrandPrimary.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _kBrandPrimary.withOpacity(0.2)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.upload_file, color: _kBrandPrimary, size: 20),
+                      SizedBox(width: 8),
+                      Text(
+                        'Upload New Default Template',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'This will replace the default template used for creating new checklists. The current template will be backed up automatically.',
+                    style: TextStyle(fontSize: 13, color: Colors.black87),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _isUploading ? null : _uploadTemplate,
+                      icon: _isUploading
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Icon(Icons.cloud_upload),
+                      label: Text(_isUploading ? 'Uploading...' : 'Choose & Upload Template'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _kBrandPrimary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            // Backups section
+            const Row(
+              children: [
+                Icon(Icons.history, color: _kBrandPrimary, size: 20),
+                SizedBox(width: 8),
+                Text(
+                  'Template Backups',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // Backups list
+            Expanded(
+              child: _isLoadingBackups
+                  ? const Center(child: CircularProgressIndicator())
+                  : _backups.isEmpty
+                      ? Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Center(
+                            child: Text(
+                              'No backups available',
+                              style: TextStyle(color: Colors.grey),
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: _backups.length,
+                          itemBuilder: (context, index) {
+                            final backup = _backups[index];
+                            final createdAt = DateTime.parse(backup['created_at']);
+                            final size = (backup['size'] / 1024).toStringAsFixed(1);
+                            
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              child: ListTile(
+                                leading: const Icon(Icons.file_copy, color: _kBrandAccent),
+                                title: Text(
+                                  backup['filename'],
+                                  style: const TextStyle(fontSize: 13),
+                                ),
+                                subtitle: Text(
+                                  '${DateFormat('MMM dd, yyyy hh:mm a').format(createdAt)} • $size KB',
+                                  style: const TextStyle(fontSize: 11),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

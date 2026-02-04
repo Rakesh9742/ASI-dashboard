@@ -7,7 +7,7 @@ node_modules/
 dist/
 build/
 *.log
-
+backend/templates/*
 # Environment variables
 .env
 .env.local
