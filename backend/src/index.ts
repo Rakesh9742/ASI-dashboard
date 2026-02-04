@@ -43,8 +43,12 @@ server.headersTimeout = 300000; // Wait 5 minutes for headers
 const isDevelopment = process.env.NODE_ENV !== 'production';
 const corsOrigin = process.env.CORS_ORIGIN || process.env.FRONTEND_URL;
 
-if (!corsOrigin) {
+// Support multiple origins separated by comma
+const corsOrigins = corsOrigin ? corsOrigin.split(',').map(origin => origin.trim()) : [];
+
+if (!corsOrigin || corsOrigins.length === 0) {
   console.warn('⚠️  CORS_ORIGIN or FRONTEND_URL is not set in .env file. CORS may not work correctly.');
+  console.warn('   Please set CORS_ORIGIN=http://your-frontend-url.com in your .env file');
 }
 
 app.use(cors({
@@ -68,39 +72,42 @@ app.use(cors({
       }
     }
     
-    // Check against allowed origin from environment variable (works for both dev and production)
-    if (corsOrigin) {
+    // Check against allowed origins from environment variable (works for both dev and production)
+    if (corsOrigins.length > 0) {
       const normalizedOrigin = normalizeUrl(origin);
-      const normalizedCorsOrigin = normalizeUrl(corsOrigin);
       
-      // Exact match after normalization (protocol-agnostic)
-      if (normalizedOrigin === normalizedCorsOrigin) {
-        console.log(`✅ CORS allowed origin: ${origin} (matched normalized: ${normalizedOrigin})`);
-        return callback(null, true);
-      }
-      
-      // Also check if origin matches by hostname and port (protocol-agnostic)
-      try {
-        const originUrl = new URL(origin);
-        const corsOriginObj = new URL(corsOrigin);
-        
-        // Get ports (handle default ports)
-        const getPort = (url: URL) => {
-          if (url.port) return url.port;
-          return url.protocol === 'https:' ? '443' : '80';
-        };
-        
-        const originPort = getPort(originUrl);
-        const corsPort = getPort(corsOriginObj);
-        
-        // Match by hostname and port (allows http/https flexibility)
-        if (originUrl.hostname === corsOriginObj.hostname && originPort === corsPort) {
-          console.log(`✅ CORS allowed origin: ${origin} (matched hostname: ${originUrl.hostname}, port: ${originPort})`);
-          return callback(null, true);
+      for (const allowedOrigin of corsOrigins) {
+        try {
+          const normalizedAllowed = normalizeUrl(allowedOrigin);
+          
+          // Exact match after normalization (protocol-agnostic)
+          if (normalizedOrigin === normalizedAllowed) {
+            console.log(`✅ CORS allowed origin: ${origin} (matched normalized: ${normalizedOrigin})`);
+            return callback(null, true);
+          }
+          
+          // Also check if origin matches by hostname and port (protocol-agnostic)
+          const originUrl = new URL(origin);
+          const allowedUrl = new URL(allowedOrigin);
+          
+          // Get ports (handle default ports)
+          const getPort = (url: URL) => {
+            if (url.port) return url.port;
+            return url.protocol === 'https:' ? '443' : '80';
+          };
+          
+          const originPort = getPort(originUrl);
+          const allowedPort = getPort(allowedUrl);
+          
+          // Match by hostname and port (allows http/https flexibility)
+          if (originUrl.hostname === allowedUrl.hostname && originPort === allowedPort) {
+            console.log(`✅ CORS allowed origin: ${origin} (matched hostname: ${originUrl.hostname}, port: ${originPort})`);
+            return callback(null, true);
+          }
+        } catch (e) {
+          // Invalid URL format, continue to next origin
+          console.debug(`⚠️  Skipping invalid CORS origin: ${allowedOrigin}`, e);
         }
-      } catch (e) {
-        // Invalid URL format, continue to error
-        console.warn(`⚠️  Invalid URL format in CORS check: ${origin}`, e);
       }
     }
     
