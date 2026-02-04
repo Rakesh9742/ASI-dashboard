@@ -31,6 +31,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: asi_backend
+    env_file:
+      - ./backend/.env
     environment:
       PORT: 3000
       NODE_ENV: production
@@ -38,8 +40,7 @@ services:
       JWT_SECRET: your-secret-key-change-in-production
       JWT_EXPIRES_IN: 7d
       BACKEND_URL: ${BACKEND_URL:-http://localhost:3000}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
-      CORS_ORIGIN: ${FRONTEND_URL:-http://localhost:8080}
+      # FRONTEND_URL and CORS_ORIGIN come from backend/.env (env_file above)
     ports:
       - "3000:3000"
     depends_on:
