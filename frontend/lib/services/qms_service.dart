@@ -35,11 +35,27 @@ class QmsService {
     }
   }
 
-  // Get all checklists for a block
-  Future<List<dynamic>> getChecklistsForBlock(int blockId, {String? token}) async {
+  // Get all checklists for a block (optionally filtered by experiment and rtl_tag)
+  Future<List<dynamic>> getChecklistsForBlock(
+    int blockId, {
+    String? token,
+    String? experiment,
+    String? rtlTag,
+  }) async {
     try {
+      final queryParams = <String, String>{};
+      if (experiment != null && experiment.isNotEmpty) {
+        queryParams['experiment'] = experiment;
+      }
+      if (rtlTag != null && rtlTag.isNotEmpty) {
+        queryParams['rtl_tag'] = rtlTag;
+      }
+      
+      final uri = Uri.parse('${ApiService.baseUrl}/qms/blocks/$blockId/checklists')
+          .replace(queryParameters: queryParams.isNotEmpty ? queryParams : null);
+      
       final response = await http.get(
-        Uri.parse('${ApiService.baseUrl}/qms/blocks/$blockId/checklists'),
+        uri,
         headers: _getHeaders(token: token),
       );
 
@@ -319,6 +335,7 @@ class QmsService {
     List<int> checkItemIds,
     bool approved, {
     String? comments,
+    bool withWaiver = false,
     String? token,
   }) async {
     try {
@@ -328,6 +345,7 @@ class QmsService {
         body: json.encode({
           'check_item_ids': checkItemIds,
           'approved': approved,
+          'with_waiver': withWaiver,
           'comments': comments,
         }),
       );
@@ -381,6 +399,40 @@ class QmsService {
       }
     } catch (e) {
       throw Exception('Error deleting checklist: $e');
+    }
+  }
+
+  // Update check item comments (engineer or reviewer)
+  Future<Map<String, dynamic>> updateCheckItemComments(
+    int checkItemId,
+    String commentType, // 'engineer' or 'reviewer'
+    String comments, {
+    String? token,
+  }) async {
+    try {
+      final Map<String, dynamic> body = {};
+      if (commentType == 'engineer') {
+        body['engineer_comments'] = comments;
+      } else if (commentType == 'reviewer') {
+        body['reviewer_comments'] = comments;
+      } else {
+        throw Exception('Invalid comment type. Must be "engineer" or "reviewer"');
+      }
+
+      final response = await http.put(
+        Uri.parse('${ApiService.baseUrl}/qms/check-items/$checkItemId/comments'),
+        headers: _getHeaders(token: token),
+        body: json.encode(body),
+      );
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        final error = json.decode(response.body);
+        throw Exception(error['error'] ?? 'Failed to update comments');
+      }
+    } catch (e) {
+      throw Exception('Error updating comments: $e');
     }
   }
 
@@ -489,6 +541,61 @@ class QmsService {
       }
     } catch (e) {
       throw Exception('Error getting checklist version: $e');
+    }
+  }
+
+  // Upload and replace default QMS template (Admin only)
+  Future<Map<String, dynamic>> uploadDefaultTemplate(
+    List<int> fileBytes,
+    String fileName, {
+    String? token,
+  }) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('${ApiService.baseUrl}/qms/templates/upload-default'),
+      );
+
+      request.headers.addAll(_getHeaders(token: token));
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'template',
+          fileBytes,
+          filename: fileName,
+        ),
+      );
+
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        final error = json.decode(response.body);
+        throw Exception(error['error'] ?? 'Failed to upload default template');
+      }
+    } catch (e) {
+      throw Exception('Error uploading default template: $e');
+    }
+  }
+
+  // Get list of template backup files (Admin only)
+  Future<List<dynamic>> getTemplateBackups({String? token}) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiService.baseUrl}/qms/templates/backups'),
+        headers: _getHeaders(token: token),
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data['backups'] ?? [];
+      } else {
+        final error = json.decode(response.body);
+        throw Exception(error['error'] ?? 'Failed to load template backups');
+      }
+    } catch (e) {
+      throw Exception('Error getting template backups: $e');
     }
   }
 }

@@ -6,6 +6,11 @@ import '../providers/auth_provider.dart';
 
 import '../widgets/qms_status_badge.dart';
 
+// ASI Brand colors
+const Color _kBrandPrimary = Color(0xFF6366F1);
+const Color _kSuccessGreen = Color(0xFF10B981);
+const Color _kDangerRed = Color(0xFFEF4444);
+
 class QmsHistoryDialog extends ConsumerStatefulWidget {
   final int blockId;
 
@@ -74,11 +79,18 @@ class _QmsHistoryDialogState extends ConsumerState<QmsHistoryDialog> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Row(
+                Row(
                   children: [
-                    Icon(Icons.history, size: 28, color: Color(0xFF14B8A6)),
-                    SizedBox(width: 12),
-                    Text(
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: _kBrandPrimary.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(Icons.history_rounded, size: 24, color: _kBrandPrimary),
+                    ),
+                    const SizedBox(width: 12),
+                    const Text(
                       'QMS Revision History',
                       style: TextStyle(
                         fontSize: 24,
@@ -149,14 +161,26 @@ class _QmsHistoryDialogState extends ConsumerState<QmsHistoryDialog> {
         return Card(
           margin: const EdgeInsets.only(bottom: 16),
           elevation: 0,
+          color: Theme.of(context).cardColor,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: BorderSide(color: Colors.grey.withOpacity(0.2)),
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: Theme.of(context).dividerColor.withOpacity(0.5)),
           ),
-          child: ExpansionTile(
-            leading: const CircleAvatar(
-              backgroundColor: Color(0xFF14B8A6),
-              child: Icon(Icons.assignment, color: Colors.white, size: 20),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 10,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: ExpansionTile(
+            leading: CircleAvatar(
+              backgroundColor: _kBrandPrimary,
+              child: const Icon(Icons.assignment_rounded, color: Colors.white, size: 20),
             ),
             title: Row(
               children: [
@@ -199,7 +223,8 @@ class _QmsHistoryDialogState extends ConsumerState<QmsHistoryDialog> {
                 ],
               ),
             ),
-            children: history.map((version) => _buildVersionItem(version)).toList(),
+              children: history.map((version) => _buildVersionItem(version)).toList(),
+            ),
           ),
         );
       },
@@ -220,13 +245,13 @@ class _QmsHistoryDialogState extends ConsumerState<QmsHistoryDialog> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
-              color: const Color(0xFFEF4444).withOpacity(0.1),
+              color: _kDangerRed.withOpacity(0.1),
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
               'v${version['version_number']}',
-              style: const TextStyle(
-                color: Color(0xFFEF4444),
+              style: TextStyle(
+                color: _kDangerRed,
                 fontWeight: FontWeight.bold,
                 fontSize: 12,
               ),
@@ -255,10 +280,11 @@ class _QmsHistoryDialogState extends ConsumerState<QmsHistoryDialog> {
           ElevatedButton(
             onPressed: () => _viewVersionSnapshot(version['id']),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF14B8A6),
+              backgroundColor: _kBrandPrimary,
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               textStyle: const TextStyle(fontSize: 12),
+              elevation: 0,
             ),
             child: const Text('View Snapshot'),
           ),
@@ -422,18 +448,18 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFFEF4444).withOpacity(0.05),
+        color: _kDangerRed.withOpacity(0.05),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFFEF4444).withOpacity(0.1)),
+        border: Border.all(color: _kDangerRed.withOpacity(0.1)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.error_outline, size: 18, color: Color(0xFFEF4444)),
+              Icon(Icons.error_outline, size: 18, color: _kDangerRed),
               const SizedBox(width: 8),
-              const Text('Rejection Reason:', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFFEF4444))),
+              Text('Rejection Reason:', style: TextStyle(fontWeight: FontWeight.bold, color: _kDangerRed)),
             ],
           ),
           const SizedBox(height: 8),
@@ -452,8 +478,8 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
           label: const Text('Show Rejected Only'),
           selected: _showOnlyRejected,
           onSelected: (v) => setState(() { _showOnlyRejected = v; _currentPage = 0; }),
-          selectedColor: const Color(0xFFEF4444).withOpacity(0.2),
-          checkmarkColor: const Color(0xFFEF4444),
+          selectedColor: _kDangerRed.withOpacity(0.2),
+          checkmarkColor: _kDangerRed,
         ),
         const Spacer(),
         if (_hasAnyFilter()) 
@@ -525,11 +551,19 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
     return LayoutBuilder(builder: (context, constraints) {
       return Container(
         decoration: BoxDecoration(
-          border: Border.all(color: Colors.grey.shade200),
-          borderRadius: BorderRadius.circular(8),
+          color: Theme.of(context).cardColor,
+          border: Border.all(color: Theme.of(context).dividerColor.withOpacity(0.5)),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 10,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           child: Scrollbar(
             controller: _horizontalScrollController,
             thumbVisibility: true,
@@ -542,7 +576,7 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
                   children: [
                     // Header
                     Container(
-                      color: Colors.grey.shade50,
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
                       child: Table(
                         columnWidths: columnWidths,
                         children: [
@@ -559,7 +593,7 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
                             _buildHeaderCell('Evidence'),
                             _buildHeaderCell('Report Path'),
                             _buildHeaderCell('Result/Value'),
-                            _buildFilterHeaderCell('Status', _selectedStatus, ['pending', 'approved', 'rejected'], (v) => setState(() { _selectedStatus = v; _currentPage = 0; })),
+                            _buildFilterHeaderCell('Status', _selectedStatus, ['pending', 'pass', 'skip', 'fail', 'n/a'], (v) => setState(() { _selectedStatus = v; _currentPage = 0; })),
                             _buildHeaderCell('Comments'),
                             _buildHeaderCell('Reviewer Comments'),
                             _buildHeaderCell('Signoff'),
@@ -581,7 +615,7 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
                                 border: Border(bottom: BorderSide(color: Colors.grey.shade100)),
                               ),
                               children: [
-                                _buildBodyCell(Text(item['name'] ?? 'N/A', style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF14B8A6)))),
+                                _buildBodyCell(Text(item['name'] ?? 'N/A', style: TextStyle(fontWeight: FontWeight.bold, color: _kBrandPrimary))),
                                 _buildBodyCell(Text(item['category'] ?? 'N/A')),
                                 _buildBodyCell(Text(item['sub_category'] ?? 'N/A')),
                                 _buildBodyCell(Text(item['description'] ?? 'N/A', maxLines: 2, overflow: TextOverflow.ellipsis)),
@@ -630,7 +664,7 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
         children: [
           Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13), overflow: TextOverflow.ellipsis)),
           PopupMenuButton<String>(
-            icon: Icon(Icons.filter_list, size: 16, color: current != null ? const Color(0xFF14B8A6) : Colors.grey),
+            icon: Icon(Icons.filter_list, size: 16, color: current != null ? _kBrandPrimary : Colors.grey),
             onSelected: (v) => onChanged(v == '_clear_' ? null : v),
             itemBuilder: (ctx) => [
               if (current != null) const PopupMenuItem(value: '_clear_', child: Text('Clear Filter')),
@@ -654,12 +688,12 @@ class _SnapshotDetailDialogState extends State<_SnapshotDetailDialog> {
     Color color;
     String text = status.toUpperCase();
     if (status == 'not_approved' || status == 'rejected') {
-      color = Colors.red;
+      color = _kDangerRed;
       text = 'REJECTED';
     } else if (status == 'approved') {
-      color = Colors.green;
+      color = _kSuccessGreen;
     } else {
-      color = Colors.orange;
+      color = _kBrandPrimary;
     }
 
     return Container(

@@ -384,6 +384,8 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       _currentRunDirectory = null;
       _isLoadingRunDirectory = false; // Will be set true when _loadRunDirectory runs
       _consoleWorkingDirectory = null; // Reset so next commands use new run directory
+      _qmsChecklists = []; // Reset QMS data when experiment changes
+      _qmsBlockStatus = null;
     });
     
     // Load metrics and run directory when experiment is selected
@@ -391,6 +393,11 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       // Load run directory first so it's available for command console
       await _loadRunDirectory();
       _loadMetricsData(); // This will also load the run directory
+      
+      // Load QMS data if on QMS tab
+      if (_selectedTab == 'QMS') {
+        _loadQmsData();
+      }
     }
     
     // Reload run history with new experiment filter
@@ -1832,6 +1839,16 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       return;
     }
     
+    // Require experiment selection for QMS
+    if (_selectedExperiment == 'Select an experiment') {
+      setState(() {
+        _qmsChecklists = [];
+        _qmsBlockStatus = null;
+        _isLoadingQms = false;
+      });
+      return;
+    }
+    
     final blockId = _blockNameToId[_selectedBlock];
     if (blockId == null) {
       return;
@@ -1847,7 +1864,12 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         throw Exception('No authentication token');
       }
       
-      final checklists = await _qmsService.getChecklistsForBlock(blockId, token: token);
+      final checklists = await _qmsService.getChecklistsForBlock(
+        blockId, 
+        token: token,
+        experiment: _selectedExperiment,
+        rtlTag: _selectedRtlTag != 'Select RTL tag' ? _selectedRtlTag : null,
+      );
       final status = await _qmsService.getBlockStatus(blockId, token: token);
       
       setState(() {

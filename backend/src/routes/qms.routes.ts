@@ -94,18 +94,30 @@ router.get('/filters', authenticate, async (req, res) => {
 /**
  * GET /api/qms/blocks/:blockId/checklists
  * Get all checklists for a block
+ * Query params: experiment, rtl_tag (optional - for filtering by run)
  */
 router.get('/blocks/:blockId/checklists', authenticate, async (req, res) => {
   try {
     const blockId = parseInt(req.params.blockId, 10);
     const userId = (req as any).user?.id;
     const userRole = (req as any).user?.role;
+    const experiment = req.query.experiment as string | undefined;
+    const rtlTag = req.query.rtl_tag as string | undefined;
+    
+    console.log(`[QMS] GET /blocks/${blockId}/checklists - experiment: ${experiment}, rtl_tag: ${rtlTag}`);
     
     if (isNaN(blockId)) {
       return res.status(400).json({ error: 'Invalid block ID' });
     }
 
-    const checklists = await qmsService.getChecklistsForBlock(blockId, userId, userRole);
+    const checklists = await qmsService.getChecklistsForBlock(
+      blockId, 
+      userId, 
+      userRole,
+      experiment,
+      rtlTag
+    );
+    console.log(`[QMS] Returning ${checklists.length} checklists`);
     res.json(checklists);
   } catch (error: any) {
     console.error('Error getting checklists:', error);
@@ -324,6 +336,7 @@ router.post(
 /**
  * PUT /api/qms/check-items/:checkItemId/approve
  * Approve/Reject check item (approver)
+ * Supports: approved (boolean), with_waiver (boolean), comments (string)
  */
 router.put(
   '/check-items/:checkItemId/approve',
@@ -332,7 +345,7 @@ router.put(
   async (req, res) => {
     try {
       const checkItemId = parseInt(req.params.checkItemId, 10);
-      const { approved, comments } = req.body;
+      const { approved, with_waiver, comments } = req.body;
       const userId = (req as any).user?.id;
       
       if (isNaN(checkItemId)) {
@@ -343,15 +356,65 @@ router.put(
         return res.status(400).json({ error: 'approved must be a boolean' });
       }
 
-      await qmsService.approveCheckItem(checkItemId, approved, comments || null, userId);
+      const withWaiver = with_waiver === true;
+      await qmsService.approveCheckItem(checkItemId, approved, comments || null, userId, withWaiver);
 
       const updatedItem = await qmsService.getCheckItem(checkItemId);
+      
+      let statusMessage = 'rejected';
+      if (approved) {
+        statusMessage = withWaiver ? 'approved with waiver' : 'approved';
+      }
+      
       res.json({
-        message: `Check item ${approved ? 'approved' : 'rejected'}`,
+        message: `Check item ${statusMessage}`,
         check_item: updatedItem
       });
     } catch (error: any) {
       console.error('Error approving check item:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
+ * PUT /api/qms/check-items/:checkItemId/comments
+ * Update engineer or reviewer comments for a check item
+ * Engineers can edit engineer_comments, Approvers/Admins can edit reviewer_comments
+ */
+router.put(
+  '/check-items/:checkItemId/comments',
+  authenticate,
+  async (req, res) => {
+    try {
+      const checkItemId = parseInt(req.params.checkItemId, 10);
+      const { engineer_comments, reviewer_comments } = req.body;
+      const userId = (req as any).user?.id;
+      const userRole = (req as any).user?.role;
+      
+      if (isNaN(checkItemId)) {
+        return res.status(400).json({ error: 'Invalid check item ID' });
+      }
+
+      if (engineer_comments === undefined && reviewer_comments === undefined) {
+        return res.status(400).json({ error: 'At least one comment field must be provided' });
+      }
+
+      await qmsService.updateCheckItemComments(
+        checkItemId,
+        engineer_comments,
+        reviewer_comments,
+        userId,
+        userRole
+      );
+
+      const updatedItem = await qmsService.getCheckItem(checkItemId);
+      res.json({
+        message: 'Comments updated successfully',
+        check_item: updatedItem
+      });
+    } catch (error: any) {
+      console.error('Error updating comments:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -484,6 +547,7 @@ router.put(
 /**
  * POST /api/qms/check-items/batch-approve-reject
  * Batch approve or reject multiple check items
+ * Supports: check_item_ids (array), approved (boolean), with_waiver (boolean), comments (string)
  */
 router.post(
   '/check-items/batch-approve-reject',
@@ -491,7 +555,7 @@ router.post(
   authorize('engineer', 'admin', 'project_manager', 'lead'),
   async (req, res) => {
     try {
-      const { check_item_ids, approved, comments } = req.body;
+      const { check_item_ids, approved, with_waiver, comments } = req.body;
       const userId = (req as any).user?.id;
       
       if (!Array.isArray(check_item_ids) || check_item_ids.length === 0) {
@@ -502,15 +566,22 @@ router.post(
         return res.status(400).json({ error: 'approved must be a boolean' });
       }
 
+      const withWaiver = with_waiver === true;
       await qmsService.batchApproveRejectCheckItems(
         check_item_ids.map((id: any) => parseInt(id, 10)),
         approved,
         userId,
-        comments || null
+        comments || null,
+        withWaiver
       );
 
+      let statusMessage = 'rejected';
+      if (approved) {
+        statusMessage = withWaiver ? 'approved with waiver' : 'approved';
+      }
+
       res.json({
-        message: `${check_item_ids.length} check item(s) ${approved ? 'approved' : 'rejected'} successfully`
+        message: `${check_item_ids.length} check item(s) ${statusMessage} successfully`
       });
     } catch (error: any) {
       console.error('Error batch approving/rejecting check items:', error);
@@ -603,6 +674,25 @@ router.post(
         checklist_name || null,
         milestone_id ? parseInt(milestone_id, 10) : null
       );
+
+      // Replace default template with the latest uploaded file
+      try {
+        const templateDir = path.resolve(__dirname, '..', '..', 'templates');
+        const templatePath = path.join(templateDir, 'Synthesis_QMS.xlsx');
+        const backupPath = path.join(templateDir, `Synthesis_QMS_backup_${Date.now()}.xlsx`);
+
+        if (!fs.existsSync(templateDir)) {
+          fs.mkdirSync(templateDir, { recursive: true });
+        }
+
+        if (fs.existsSync(templatePath)) {
+          fs.copyFileSync(templatePath, backupPath);
+        }
+
+        fs.copyFileSync(req.file.path, templatePath);
+      } catch (replaceError) {
+        console.warn('Failed to replace default template:', replaceError);
+      }
 
       // Clean up uploaded file
       try {
@@ -812,6 +902,110 @@ router.get('/versions/:versionId', authenticate, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+/**
+ * POST /api/qms/templates/upload-default
+ * Upload and replace the default QMS template file (Admin only)
+ */
+router.post(
+  '/templates/upload-default',
+  authenticate,
+  authorize('admin'),
+  upload.single('template'),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      if (ext !== '.xlsx' && ext !== '.xls') {
+        // Clean up uploaded file
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({ error: 'Only Excel files (.xlsx, .xls) are allowed' });
+      }
+
+      // Define paths
+      const templateDir = path.resolve(__dirname, '..', '..', 'templates');
+      const templatePath = path.join(templateDir, 'Synthesis_QMS.xlsx');
+      const backupPath = path.join(templateDir, `Synthesis_QMS_backup_${Date.now()}.xlsx`);
+
+      // Ensure templates directory exists
+      if (!fs.existsSync(templateDir)) {
+        fs.mkdirSync(templateDir, { recursive: true });
+      }
+
+      // Backup existing template if it exists
+      if (fs.existsSync(templatePath)) {
+        fs.copyFileSync(templatePath, backupPath);
+        console.log(`Backed up existing template to: ${backupPath}`);
+      }
+
+      // Move uploaded file to replace the template
+      fs.copyFileSync(req.file.path, templatePath);
+      
+      // Clean up the uploaded temp file
+      fs.unlinkSync(req.file.path);
+
+      res.json({
+        message: 'Default template replaced successfully',
+        template_path: 'templates/Synthesis_QMS.xlsx',
+        backup_path: path.basename(backupPath),
+        original_filename: req.file.originalname
+      });
+    } catch (error: any) {
+      // Clean up uploaded file on error
+      if (req.file && fs.existsSync(req.file.path)) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (unlinkError) {
+          console.warn('Failed to delete uploaded file on error:', unlinkError);
+        }
+      }
+      console.error('Error replacing default template:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
+ * GET /api/qms/templates/backups
+ * Get list of template backup files (Admin only)
+ */
+router.get(
+  '/templates/backups',
+  authenticate,
+  authorize('admin'),
+  async (req, res) => {
+    try {
+      const templateDir = path.resolve(__dirname, '..', '..', 'templates');
+      
+      if (!fs.existsSync(templateDir)) {
+        return res.json({ backups: [] });
+      }
+
+      // Read directory and filter backup files
+      const files = fs.readdirSync(templateDir);
+      const backups = files
+        .filter(file => file.startsWith('Synthesis_QMS_backup_') && file.endsWith('.xlsx'))
+        .map(file => {
+          const stats = fs.statSync(path.join(templateDir, file));
+          return {
+            filename: file,
+            size: stats.size,
+            created_at: stats.birthtime,
+            modified_at: stats.mtime
+          };
+        })
+        .sort((a, b) => b.created_at.getTime() - a.created_at.getTime()); // Most recent first
+
+      res.json({ backups });
+    } catch (error: any) {
+      console.error('Error listing template backups:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
 
 export default router;
 
