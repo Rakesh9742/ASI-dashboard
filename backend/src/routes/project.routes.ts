@@ -3,6 +3,7 @@ import { pool } from '../config/database';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import zohoService from '../services/zoho.service';
 import qmsService from '../services/qms.service';
+import fileProcessorService from '../services/fileProcessor.service';
 
 const router = express.Router();
 
@@ -859,8 +860,7 @@ router.post(
 /**
  * GET /api/projects/:projectIdOrName/blocks
  * Get all blocks for a project from DB only. projectIdOrName can be numeric id or project name.
- * Filter by assignment: only engineers (and similar) see just assigned blocks when filterByAssigned=true.
- * Admin and project_manager see ALL blocks. Lead sees only blocks assigned to them (block_users).
+ * Admin and project_manager: ALL blocks. Lead: only blocks in which they are assigned (block_users). Others: only assigned when filterByAssigned=true.
  */
 router.get(
   '/:projectIdOrName/blocks',
@@ -954,13 +954,14 @@ router.get(
       const projectRole = projectRoleRow.rows[0]?.role?.toString().trim() || null;
       const effectiveRole = (projectRole || userRole || '').toString().trim();
       const roleLowerBlocks = effectiveRole.toLowerCase();
-      // Lead sees only assigned blocks (block_users). Admin and project_manager see all blocks.
+      // Lead: always only blocks assigned to them (block_users). Admin and project_manager: all blocks. Others: filtered when filterByAssigned=true.
       const isAdminOrManagerBlocks = roleLowerBlocks === 'admin' || roleLowerBlocks === 'project_manager';
+      const isLead = roleLowerBlocks === 'lead';
       const blockUsersExists = await pool.query(
         `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'block_users')`
       );
       const hasBlockUsersTable = blockUsersExists.rows[0]?.exists === true;
-      const useFilteredBlocks = hasBlockUsersTable && filterByAssigned && !isAdminOrManagerBlocks;
+      const useFilteredBlocks = hasBlockUsersTable && (filterByAssigned || isLead) && !isAdminOrManagerBlocks;
       console.log('🔵 [GET /blocks] globalRole:', userRole, '| projectRole:', projectRole, '| effectiveRole:', effectiveRole, '| filterByAssigned:', filterByAssigned, '| useFilteredBlocks (assigned only):', useFilteredBlocks);
 
       let result: { rows: any[] };
@@ -2336,6 +2337,10 @@ router.post(
 
       // Find or create run (experiment) with rtl_tag from engineer (or empty for backward compat)
       const rtlTagForRun = rtlTag; // use sanitized rtl_tag from body
+      // Assign domain from run_directory path (e.g. /CX_PROJ/proj/pd/users/... → domain "pd"); do not take domain from EDA files
+      const domainId = await fileProcessorService.getDomainIdFromRunDirectory(actualRunDirectory);
+      console.log(`[Experiment Setup] Assigned domain_id=${domainId ?? 'null'} from run_directory: ${actualRunDirectory}`);
+
       let runResult = await client.query(
         `SELECT id, run_directory FROM runs 
          WHERE block_id = $1 AND experiment = $2 AND COALESCE(rtl_tag, '') = $3`,
@@ -2347,13 +2352,13 @@ router.post(
       if (!isNewRun) {
         runId = runResult.rows[0].id;
         await client.query(
-          'UPDATE runs SET run_directory = $1, user_name = $2, rtl_tag = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4',
-          [actualRunDirectory, finalUsername, rtlTagForRun, runId]
+          'UPDATE runs SET run_directory = $1, user_name = $2, rtl_tag = $3, domain_id = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5',
+          [actualRunDirectory, finalUsername, rtlTagForRun, domainId, runId]
         );
       } else {
         const insertRunResult = await client.query(
-          'INSERT INTO runs (block_id, experiment, rtl_tag, user_name, run_directory, last_updated) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP) RETURNING id',
-          [blockId, sanitizedExperimentName, rtlTagForRun, finalUsername, actualRunDirectory]
+          'INSERT INTO runs (block_id, experiment, rtl_tag, user_name, run_directory, last_updated, domain_id) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, $6) RETURNING id',
+          [blockId, sanitizedExperimentName, rtlTagForRun, finalUsername, actualRunDirectory, domainId]
         );
         runId = insertRunResult.rows[0].id;
       }
@@ -2533,6 +2538,7 @@ router.get(
               b.project_id,
               b.created_at as block_created_at,
               MAX(bu.run_directory) as block_user_run_directory,
+              MAX(bu.role) as block_user_role,
               COALESCE(
                 json_agg(
                   json_build_object(
@@ -2578,6 +2584,7 @@ router.get(
               b.project_id,
               b.created_at as block_created_at,
               MAX(bu.run_directory) as block_user_run_directory,
+              MAX(bu.role) as block_user_role,
               COALESCE(
                 json_agg(
                   json_build_object(
@@ -2632,6 +2639,7 @@ router.get(
               b.project_id,
               b.created_at as block_created_at,
               MAX(bu.run_directory) as block_user_run_directory,
+              MAX(bu.role) as block_user_role,
               COALESCE(
                 json_agg(
                   json_build_object(

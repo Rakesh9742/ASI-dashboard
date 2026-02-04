@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
+import '../providers/semicon_project_state_provider.dart';
 import '../providers/tab_provider.dart';
 import '../providers/theme_provider.dart';
 import '../widgets/auth_wrapper.dart';
@@ -36,37 +37,39 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
     final isCustomer = userRole == 'customer';
     final currentNav = ref.watch(currentNavTabProvider);
     final tabState = ref.watch(tabProvider);
-    final activeTab = tabState.tabs.firstWhere(
-      (tab) => tab.id == tabState.activeTabId,
-      orElse: () => ProjectTab(id: '', name: '', project: {}),
-    );
 
     // Determine which screen to show based on current navigation
+    // Chrome-like: keep all project tab screens mounted and switch visibility (IndexedStack)
     Widget currentScreen;
-    if (tabState.activeTabId != null && activeTab.id.isNotEmpty && currentNav == 'project_tab') {
-      // For customers, show ViewScreen with customer view instead of SemiconDashboardScreen
-      if (isCustomer) {
-        final projectName = activeTab.project['name']?.toString();
-        if (projectName != null) {
-          // Import ViewScreen at top if not already imported
-          currentScreen = ViewScreen(
-            key: ValueKey('view-$projectName'),
-            initialProject: projectName,
-            initialViewType: 'customer',
-          );
-        } else {
-          currentScreen = SemiconDashboardScreen(
-            key: ValueKey('project-${activeTab.id}'),
-            project: activeTab.project,
+    if (tabState.tabs.isNotEmpty && currentNav == 'project_tab') {
+      final activeIndex = tabState.activeTabId != null
+          ? tabState.tabs.indexWhere((t) => t.id == tabState.activeTabId)
+          : -1;
+      final index = activeIndex >= 0 ? activeIndex : 0;
+      final tabScreens = tabState.tabs.map((tab) {
+        if (isCustomer) {
+          final projectName = tab.project['name']?.toString();
+          if (projectName != null) {
+            return ViewScreen(
+              key: ValueKey('view-${tab.id}'),
+              initialProject: projectName,
+              initialViewType: 'customer',
+            );
+          }
+          return SemiconDashboardScreen(
+            key: ValueKey('project-${tab.id}'),
+            project: tab.project,
           );
         }
-      } else {
-        // Show active project tab (SemiconDashboardScreen) for non-customers
-        currentScreen = SemiconDashboardScreen(
-          key: ValueKey('project-${activeTab.id}'),
-          project: activeTab.project,
+        return SemiconDashboardScreen(
+          key: ValueKey('project-${tab.id}'),
+          project: tab.project,
         );
-      }
+      }).toList();
+      currentScreen = IndexedStack(
+        index: index,
+        children: tabScreens,
+      );
     } else if (currentNav == 'Users' && isAdmin) {
       currentScreen = const UserManagementScreen();
     } else {
@@ -83,11 +86,16 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
             _buildNavigationHeader(user, isAdmin, isEngineer, isCustomer),
             // Project tabs (top-left)
             _buildProjectTabsBar(),
-            // Current Screen Content
+            // Current Screen Content — AnimatedSwitcher only when switching nav (Projects/Users/tabs)
             Expanded(
               child: Material(
                 color: Theme.of(context).scaffoldBackgroundColor,
-                child: currentScreen,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 150),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeIn,
+                  child: currentScreen,
+                ),
               ),
             ),
           ],
@@ -454,6 +462,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
                     Navigator.of(context).pop();
                     await ref.read(authProvider.notifier).logout();
                     // Reset project tabs and nav so next login shows Projects list, not a previously opened project
+                    ref.read(semiconProjectStateProvider.notifier).clearAll();
+                    ref.read(semiconBlocksCacheProvider.notifier).clearAll();
                     ref.read(tabProvider.notifier).closeAllTabs();
                     ref.read(currentNavTabProvider.notifier).state = 'Projects';
                     if (context.mounted) {
@@ -642,6 +652,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
               const SizedBox(width: 8),
               InkWell(
                 onTap: () {
+                  ref.read(semiconProjectStateProvider.notifier).clearState(tab.id);
+                  ref.read(semiconBlocksCacheProvider.notifier).clearCache(tab.id);
                   ref.read(tabProvider.notifier).closeTab(tab.id);
                   if (isSelected) {
                     ref.read(currentNavTabProvider.notifier).state = 'Projects';

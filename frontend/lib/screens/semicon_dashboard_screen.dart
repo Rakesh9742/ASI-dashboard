@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
 import '../providers/error_handler_provider.dart';
+import '../providers/semicon_project_state_provider.dart';
 import '../services/qms_service.dart';
 import '../widgets/qms_history_dialog.dart';
 import '../widgets/qms_status_badge.dart';
@@ -83,7 +84,14 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   // Development Tools expansion state
   bool _isDevelopmentToolsExpanded = false;
 
-  /// Local project identifier for API calls (DB only, no Zoho). Prefer local id, else project name.
+  /// Captured in initState so we never use ref after dispose (avoids "Cannot use ref after the widget was disposed").
+  late final SemiconProjectStateNotifier _stateNotifier;
+  late final SemiconBlocksCacheNotifier _blocksCacheNotifier;
+
+  /// Same id as tab_provider uses so we can persist/restore state per project tab.
+  String get _projectStateId => SemiconProjectStateNotifier.projectStateId(widget.project);
+
+  /// Local project identifier for API calls (DB only). Prefer local id, else project name.
   dynamic get _localProjectIdentifier {
     final rawId = widget.project['id'];
     final source = widget.project['source']?.toString();
@@ -101,7 +109,20 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   @override
   void initState() {
     super.initState();
+    _stateNotifier = ref.read(semiconProjectStateProvider.notifier);
+    _blocksCacheNotifier = ref.read(semiconBlocksCacheProvider.notifier);
     _selectedTab = widget.initialTab ?? 'Dashboard';
+    // Restore persisted state when switching back to this project tab
+    final saved = _stateNotifier.getState(_projectStateId);
+    if (saved != null) {
+      _selectedBlock = saved.selectedBlock;
+      _selectedRtlTag = saved.selectedRtlTag;
+      _selectedExperiment = saved.selectedExperiment;
+      _selectedTab = saved.selectedTab;
+      if (saved.chatMessages.isNotEmpty) {
+        _chatMessages.addAll(saved.chatMessages);
+      }
+    }
     // Log when project tab is opened (user clicked project card)
     final role = ref.read(authProvider).user?['role']?.toString();
     final projectName = widget.project['name']?.toString();
@@ -110,12 +131,62 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     print('   Project: $projectName');
     print('   User role: $role');
     print('═══════════════════════════════════════════════════════════');
-    // On project open: only load blocks from DB (one call). Run history and EDA load when user selects block/experiment.
-    _loadBlocksAndExperiments();
+    // Use cached blocks when switching back to this project tab so it shows instantly (no loading).
+    final blocksCache = _blocksCacheNotifier.getCache(_projectStateId);
+    if (blocksCache != null && blocksCache.availableBlocks.isNotEmpty) {
+      _availableBlocks = List<String>.from(blocksCache.availableBlocks);
+      _blockToExperiments = Map<String, List<String>>.from(
+        blocksCache.blockToExperiments.map((k, v) => MapEntry(k, List<String>.from(v))),
+      );
+      _blockExperimentToRtlTag = Map<String, Map<String, String>>.from(
+        blocksCache.blockExperimentToRtlTag.map((k, v) => MapEntry(k, Map<String, String>.from(v))),
+      );
+      _blockRtlTagToExperiments = Map<String, Map<String, List<String>>>.from(
+        blocksCache.blockRtlTagToExperiments.map(
+          (k, v) => MapEntry(k, Map<String, List<String>>.from(v.map((k2, v2) => MapEntry(k2, List<String>.from(v2))))),
+        ),
+      );
+      _isLoadingBlocks = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() {});
+        if (_selectedBlock != 'Select a block') _loadRtlTagsAndRestoredState();
+      });
+    } else {
+      _loadBlocksAndExperiments();
+    }
+  }
+
+  void _saveProjectState() {
+    _stateNotifier.saveState(
+      _projectStateId,
+      SemiconProjectState(
+        selectedBlock: _selectedBlock,
+        selectedRtlTag: _selectedRtlTag,
+        selectedExperiment: _selectedExperiment,
+        selectedTab: _selectedTab,
+        chatMessages: List<Map<String, dynamic>>.from(
+          _chatMessages.map((m) => Map<String, dynamic>.from(m)),
+        ),
+      ),
+    );
   }
 
   @override
   void dispose() {
+    // Defer saving to after the widget tree is done — Riverpod forbids modifying a provider during dispose.
+    final projectId = _projectStateId;
+    final notifier = _stateNotifier;
+    final stateToSave = SemiconProjectState(
+      selectedBlock: _selectedBlock,
+      selectedRtlTag: _selectedRtlTag,
+      selectedExperiment: _selectedExperiment,
+      selectedTab: _selectedTab,
+      chatMessages: List<Map<String, dynamic>>.from(
+        _chatMessages.map((m) => Map<String, dynamic>.from(m)),
+      ),
+    );
+    Future.microtask(() => notifier.saveState(projectId, stateToSave));
     _commandController.dispose();
     _chatScrollController.dispose();
     super.dispose();
@@ -148,6 +219,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         projectIdOrName: projectIdOrName,
         token: token,
       );
+      if (!mounted) return;
       print('🔵 [BLOCKS] API returned ${blocksDataList.length} blocks from DB');
 
       final blockSet = <String>{};
@@ -194,13 +266,97 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         _availableExperiments = []; // Experiments show after user selects block then RTL tag (from cache)
         _isLoadingBlocks = false;
       });
+      // Cache blocks so switching back to this project tab does not refetch (use captured notifier, not ref)
+      _blocksCacheNotifier.saveCache(
+        _projectStateId,
+        SemiconBlocksCache(
+          availableBlocks: List<String>.from(finalBlocks),
+          blockToExperiments: Map<String, List<String>>.from(
+            blockToExperiments.map((k, v) => MapEntry(k, List<String>.from(v))),
+          ),
+          blockExperimentToRtlTag: Map<String, Map<String, String>>.from(
+            blockExperimentToRtlTag.map((k, v) => MapEntry(k, Map<String, String>.from(v))),
+          ),
+          blockRtlTagToExperiments: Map<String, Map<String, List<String>>>.from(
+            blockRtlTagToExperiments.map(
+              (k, v) => MapEntry(k, Map<String, List<String>>.from(v.map((k2, v2) => MapEntry(k2, List<String>.from(v2))))),
+            ),
+          ),
+        ),
+      );
+      // If we restored block/rtl/experiment from another tab, populate dropdowns and load run directory/metrics
+      if (mounted && _selectedBlock != 'Select a block') {
+        _loadRtlTagsAndRestoredState();
+      }
     } catch (e) {
-      setState(() {
-        _isLoadingBlocks = false;
-      });
       if (mounted) {
+        setState(() {
+          _isLoadingBlocks = false;
+        });
         ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to load blocks and experiments');
       }
+    }
+  }
+
+  /// After blocks load, if we restored block/rtl/experiment from another tab, load RTL tags and run directory/metrics.
+  Future<void> _loadRtlTagsAndRestoredState() async {
+    if (_selectedBlock == 'Select a block') return;
+    // Ensure restored block is still in the list (e.g. not deleted); otherwise reset selections
+    if (!_availableBlocks.contains(_selectedBlock)) {
+      if (mounted) {
+        setState(() {
+          _selectedBlock = 'Select a block';
+          _selectedRtlTag = 'Select RTL tag';
+          _selectedExperiment = 'Select an experiment';
+          _availableRtlTags = [];
+          _availableExperiments = [];
+          _isLoadingRtlTags = false;
+        });
+      }
+      return;
+    }
+    final token = ref.read(authProvider).token;
+    setState(() => _isLoadingRtlTags = true);
+    try {
+      final userRtlTags = token != null
+          ? await _apiService.getRtlTagsForBlock(
+              projectIdOrName: _localProjectIdentifier,
+              blockName: _selectedBlock,
+              token: token,
+            )
+          : <String>[];
+      if (!mounted) return;
+      // Validate restored RTL tag is in list; otherwise keep placeholder
+      final validRtlTag = (_selectedRtlTag != 'Select RTL tag' && userRtlTags.contains(_selectedRtlTag))
+          ? _selectedRtlTag
+          : 'Select RTL tag';
+      if (validRtlTag != _selectedRtlTag) _selectedRtlTag = validRtlTag;
+      final experiments = _blockRtlTagToExperiments[_selectedBlock]?[_selectedRtlTag] ?? [];
+      // Validate restored experiment is in list
+      final validExperiment = (_selectedExperiment != 'Select an experiment' && experiments.contains(_selectedExperiment))
+          ? _selectedExperiment
+          : 'Select an experiment';
+      if (validExperiment != _selectedExperiment) _selectedExperiment = validExperiment;
+      setState(() {
+        _availableRtlTags = userRtlTags;
+        _availableExperiments = List<String>.from(experiments);
+        _isLoadingRtlTags = false;
+      });
+      if (_blockNameToId.isEmpty && token != null) {
+        final projectName = widget.project['name']?.toString() ?? '';
+        if (projectName.isNotEmpty) _loadBlockIds(projectName, token);
+      }
+      if (_selectedTab == 'QMS') _loadQmsData();
+      if (_selectedBlock != 'Select a block' && _selectedExperiment != 'Select an experiment') {
+        await _loadRunDirectory();
+        if (!mounted) return;
+        _loadMetricsData();
+        _loadRunHistory();
+      } else {
+        _loadRunHistory();
+      }
+    } catch (_) {
+      if (mounted) setState(() { _availableRtlTags = []; _isLoadingRtlTags = false; });
     }
   }
 
@@ -375,6 +531,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     }
     // Load run history only when user selects block (DB only)
     _loadRunHistory();
+    _saveProjectState();
   }
 
   void _onRtlTagChanged(String? value) {
@@ -396,6 +553,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       });
     }
     _loadRunHistory();
+    _saveProjectState();
   }
   
   void _onExperimentChanged(String? value) async {
@@ -415,6 +573,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     
     // Reload run history with new experiment filter
     _loadRunHistory();
+    _saveProjectState();
   }
 
   Future<void> _loadRunDirectory() async {
@@ -686,7 +845,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     try {
       final token = ref.read(authProvider).token;
       final user = ref.read(authProvider).user;
-      
+
       if (token == null) {
         if (mounted) {
           ref.read(errorHandlerProvider.notifier).showInfo(
@@ -702,17 +861,28 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       if (user != null) {
         html.window.localStorage['terminal_auth_user'] = jsonEncode(user);
       }
-      
-      final currentUrl = html.window.location.href;
-      final baseUrl = currentUrl.split('?')[0].split('#')[0];
-      final terminalUrl = '$baseUrl#/terminal';
-      
+
+      // Build full URL so the new window loads the same app and sees #/terminal
+      final origin = html.window.location.origin;
+      final pathname = html.window.location.pathname ?? '';
+      final base = pathname.isEmpty || pathname == '/' ? origin : '$origin$pathname';
+      final terminalUrl = '$base#/terminal';
+
       // Reuse existing terminal window if already open (same name 'terminal')
-      html.window.open(
+      final win = html.window.open(
         terminalUrl,
         'terminal',
         'width=1200,height=800,scrollbars=no,resizable=yes',
       );
+
+      // If popup was blocked, open in current tab so user still gets the SSH console
+      if (win == null && mounted) {
+        ref.read(errorHandlerProvider.notifier).showInfo(
+          'Opening terminal in this tab (popup was blocked). Use the back button to return.',
+          title: 'Full terminal',
+        );
+        html.window.location.href = terminalUrl;
+      }
     } catch (e) {
       if (mounted) {
         ref.read(errorHandlerProvider.notifier).showError(e, title: 'Failed to open terminal');
@@ -1257,7 +1427,10 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                             )
                           : DropdownButtonHideUnderline(
                               child: DropdownButton<String>(
-                                value: _selectedBlock,
+                                value: (_selectedBlock == 'Select a block' || _availableBlocks.contains(_selectedBlock))
+                                    ? _selectedBlock
+                                    : null,
+                                hint: Text('Select a block', style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.6))),
                                 isExpanded: true,
                                 isDense: true,
                                 style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface),
@@ -1309,7 +1482,10 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                             )
                           : DropdownButtonHideUnderline(
                               child: DropdownButton<String>(
-                                value: _selectedRtlTag,
+                                value: (_selectedRtlTag == 'Select RTL tag' || _availableRtlTags.contains(_selectedRtlTag))
+                                    ? _selectedRtlTag
+                                    : null,
+                                hint: Text('Select RTL tag', style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.6))),
                                 isExpanded: true,
                                 isDense: true,
                                 style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface),
@@ -1356,7 +1532,10 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                       ),
                       child: DropdownButtonHideUnderline(
                         child: DropdownButton<String>(
-                          value: _selectedExperiment,
+                          value: (_selectedExperiment == 'Select an experiment' || _availableExperiments.contains(_selectedExperiment))
+                              ? _selectedExperiment
+                              : null,
+                          hint: Text('Select an experiment', style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.6))),
                           isExpanded: true,
                           isDense: true,
                           style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface),
@@ -1612,7 +1791,10 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
           if (_chatMessages.isNotEmpty)
             IconButton(
               icon: Icon(Icons.delete_outline, size: 20, color: _kConsoleTextMuted),
-              onPressed: () => setState(() => _chatMessages.clear()),
+              onPressed: () {
+                setState(() => _chatMessages.clear());
+                _saveProjectState();
+              },
               tooltip: 'Clear chat',
               style: IconButton.styleFrom(
                 padding: const EdgeInsets.all(8),
@@ -1658,6 +1840,20 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         ),
       ),
     );
+  }
+
+  /// Remove known noise from SSH output (e.g. "export: Command not found" from backend env prefix).
+  static String? _filterCommandOutputNoise(String? text) {
+    if (text == null || text.isEmpty) return text;
+    final lines = text.split(RegExp(r'\r?\n'));
+    final filtered = lines.where((line) {
+      final t = line.trim().toLowerCase();
+      if (t.isEmpty) return true;
+      if (t.contains('export:') && t.contains('command not found')) return false;
+      return true;
+    }).toList();
+    final result = filtered.join('\n').trim();
+    return result.isEmpty ? null : result;
   }
 
   Widget _buildChatMessage(BuildContext context, ThemeData theme, Map<String, dynamic> message) {
@@ -2070,6 +2266,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
         setState(() {
           _selectedTab = label;
         });
+        _saveProjectState();
         if (label == 'QMS' && _selectedBlock != 'Select a block') {
           _loadQmsData();
         }
@@ -2632,22 +2829,25 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
 
           final exitCode = result['exitCode'];
           final hasError = exitCode != null && exitCode != 0;
-          final displayOutput = isCdCommand && stdout != null && stdout.trim().isNotEmpty
+          final rawDisplayOutput = isCdCommand && stdout != null && stdout.trim().isNotEmpty
               ? stdout.trim().split(RegExp(r'\r?\n')).last
               : stdout;
+          final displayOutput = _filterCommandOutputNoise(rawDisplayOutput) ?? '';
+          final filteredStderr = _filterCommandOutputNoise(stderr);
 
           if (_chatMessages.isNotEmpty && _chatMessages.last['isExecuting'] == true) {
             _chatMessages[_chatMessages.length - 1] = {
               'type': 'assistant',
               'isExecuting': false,
               'output': displayOutput,
-              'error': stderr,
+              'error': filteredStderr,
               'hasError': hasError,
               'exitCode': exitCode,
               'timestamp': DateTime.now(),
             };
           }
         });
+        _saveProjectState();
         
         // Scroll to bottom after updating message
         WidgetsBinding.instance.addPostFrameCallback((_) {

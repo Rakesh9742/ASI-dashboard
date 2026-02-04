@@ -2315,9 +2315,48 @@ class ZohoService {
             
             console.log(`Found ${tasks.length} tasks in tasklist "${tasklistName}" (ID: ${tasklistId})`);
             
+            // Fetch full task details per task so we get owner, details, Lead field, custom_fields (list API often returns minimal data)
+            if (tasks.length > 0) {
+              const enrichedTasks: any[] = [];
+              for (const task of tasks) {
+                const taskId = task.id_string || task.id;
+                if (!taskId) {
+                  enrichedTasks.push(task);
+                  continue;
+                }
+                try {
+                  const detailRes = await client.get(
+                    `/restapi/portal/${portal}/projects/${correctProjectId}/tasks/${taskId}/`
+                  );
+                  const raw = detailRes.data?.response?.result ?? detailRes.data;
+                  const detail = (typeof raw?.task !== 'undefined' ? raw.task : raw) ?? detailRes.data?.task ?? detailRes.data ?? {};
+                  const merged = { ...task, ...detail, details: detail.details ?? task.details, owner: detail.owner ?? task.owner };
+                  if (enrichedTasks.length === 0) {
+                    console.log(`📋 Task detail keys for ${taskId}:`, Object.keys(merged).sort().join(', '));
+                    const detailsObj = merged.details;
+                    if (detailsObj && typeof detailsObj === 'object') {
+                      console.log(`📋 Task details keys:`, Object.keys(detailsObj).sort().join(', '));
+                    }
+                    const cf = merged.custom_fields;
+                    if (cf != null) {
+                      console.log(`📋 Task custom_fields (look for Lead):`, JSON.stringify(cf, null, 2).substring(0, 1500));
+                    }
+                    if (merged.owner && typeof merged.owner === 'object') {
+                      console.log(`📋 Task owner keys:`, Object.keys(merged.owner).sort().join(', '));
+                    }
+                  }
+                  enrichedTasks.push(merged);
+                } catch (detailErr: any) {
+                  console.log(`⚠️ Task detail fetch for ${taskId} failed (using list data):`, detailErr.response?.data?.error?.message || detailErr.message);
+                  enrichedTasks.push(task);
+                }
+              }
+              tasks = enrichedTasks;
+            }
+            
             // Log task details for debugging
             if (tasks.length > 0) {
-              console.log(`📋 Sample task from "${tasklistName}":`, JSON.stringify(tasks[0], null, 2).substring(0, 500));
+              console.log(`📋 Sample task from "${tasklistName}":`, JSON.stringify(tasks[0], null, 2).substring(0, 800));
               // Log all task names to see what we got
               const taskNames = tasks.map(t => t.name || t.task_name || 'Unnamed').join(', ');
               console.log(`📋 Task names in "${tasklistName}": ${taskNames}`);
@@ -2346,12 +2385,13 @@ class ZohoService {
                 }
               }
               
-              // Fallback to owner fields
-              if (!ownerName && taskItem.owner) {
+              // Fallback to owner fields (task.owner from Zoho task detail can have role e.g. "Lead")
+              if (taskItem.owner) {
                 if (typeof taskItem.owner === 'object') {
-                  ownerName = taskItem.owner.name || `${taskItem.owner.first_name || ''} ${taskItem.owner.last_name || ''}`.trim() || undefined;
-                  ownerRole = taskItem.owner.role || undefined;
-                } else {
+                  const o = taskItem.owner;
+                  if (!ownerName) ownerName = o.name || `${o.first_name || ''} ${o.last_name || ''}`.trim() || undefined;
+                  ownerRole = o.role ?? o.Role ?? ownerRole;
+                } else if (!ownerName) {
                   ownerName = taskItem.owner;
                 }
               }
@@ -2359,7 +2399,13 @@ class ZohoService {
               // Fallback to owner_name field
               if (!ownerName && taskItem.owner_name) {
                 ownerName = taskItem.owner_name;
-                ownerRole = taskItem.owner_role || undefined;
+                ownerRole = taskItem.owner_role ?? ownerRole;
+              }
+              
+              // Zoho task details can have a field called "Lead" (task.Lead, task.details.Lead, custom_fields, or details.owners with role Lead). Use it for task-level role.
+              const leadField = getLeadFieldFromTask(taskItem);
+              if (leadField) {
+                ownerRole = leadField.role ?? ownerRole;
               }
               
               return {
@@ -2367,6 +2413,68 @@ class ZohoService {
                 owner_role: ownerRole
               };
             };
+            
+            // Get Lead field from Zoho task details (field "Lead" in task, details, custom_fields, or details.owners with role Lead).
+            function getLeadFieldFromTask(taskItem: any): { role: string; email?: string; name?: string } | null {
+              const details = taskItem.details ?? {};
+              const findLeadVal = (obj: any): any => {
+                if (obj == null || typeof obj !== 'object') return null;
+                const leadVal = obj.Lead ?? obj.lead ?? null;
+                if (leadVal != null) return leadVal;
+                for (const key of Object.keys(obj)) {
+                  if (key.toLowerCase().includes('lead')) return obj[key];
+                }
+                return null;
+              };
+              let leadVal = findLeadVal(taskItem) ?? findLeadVal(details);
+              if (leadVal != null) {
+                if (typeof leadVal === 'object') {
+                  const email = leadVal.email ?? leadVal.Email ?? leadVal.mail ?? null;
+                  const name = leadVal.name ?? leadVal.full_name ?? (leadVal.first_name || leadVal.last_name ? `${leadVal.first_name || ''} ${leadVal.last_name || ''}`.trim() : null) ?? null;
+                  return { role: 'Lead', email: email ? String(email).trim() : undefined, name: name ? String(name).trim() : undefined };
+                }
+                if (typeof leadVal === 'string' && leadVal.trim().toLowerCase() === 'lead') return { role: 'Lead' };
+                if (typeof leadVal === 'string' && leadVal.trim()) return { role: leadVal.trim() };
+              }
+              // details.owners: one of the owners may have role "Lead"
+              const owners = details.owners ?? details.Owners ?? taskItem.owners ?? [];
+              if (Array.isArray(owners)) {
+                for (const o of owners) {
+                  const role = (o.role ?? o.Role ?? o.designation ?? '').toString().trim();
+                  if (role.toLowerCase() === 'lead') {
+                    const email = o.email ?? o.Email ?? o.mail ?? null;
+                    const name = o.name ?? o.full_name ?? (o.first_name || o.last_name ? `${o.first_name || ''} ${o.last_name || ''}`.trim() : null) ?? null;
+                    return { role: 'Lead', email: email ? String(email).trim() : undefined, name: name ? String(name).trim() : undefined };
+                  }
+                }
+              }
+              const customFields = taskItem.custom_fields ?? details.custom_fields ?? details.custom_values ?? [];
+              if (Array.isArray(customFields)) {
+                for (const f of customFields) {
+                  const label = (f.label ?? f.label_name ?? f.field_label ?? f.name ?? f.field_name ?? f.column_name ?? '').toString().trim();
+                  if (!label || !label.toLowerCase().includes('lead')) continue;
+                  // Zoho user custom field: user object is in f.user (label_name: "Lead", user: { email, full_name, name })
+                  const userObj = f.user;
+                  if (userObj && typeof userObj === 'object') {
+                    const email = userObj.email ?? userObj.Email ?? userObj.mail ?? null;
+                    const name = userObj.name ?? userObj.full_name ?? userObj.user_name ?? null;
+                    return { role: 'Lead', email: email ? String(email).trim() : undefined, name: name ? String(name).trim() : undefined };
+                  }
+                  const v = f.value ?? f.values ?? f.content ?? f.display_value;
+                  if (v == null) continue;
+                  if (typeof v === 'object') {
+                    const email = v.email ?? v.Email ?? v.mail ?? v.e_mail ?? null;
+                    const name = v.name ?? v.full_name ?? v.user_name ?? v.display_name ?? (v.first_name || v.last_name ? `${v.first_name || ''} ${v.last_name || ''}`.trim() : null) ?? null;
+                    return { role: 'Lead', email: email ? String(email).trim() : undefined, name: name ? String(name).trim() : undefined };
+                  }
+                  if (typeof v === 'string' && v.trim()) {
+                    if (v.trim().toLowerCase() === 'lead') return { role: 'Lead' };
+                    return { role: 'Lead', name: v.trim() };
+                  }
+                }
+              }
+              return null;
+            }
             
             // Add tasklist info and milestone info to each task
             // Try to get milestone info from task itself if milestone API failed
@@ -2391,8 +2499,14 @@ class ZohoService {
                 };
               }
               
-              // Extract owner information
+              // Extract owner information (includes Lead field for task-level role)
               const ownerInfo = extractOwnerInfo(task);
+              const leadField = getLeadFieldFromTask(task);
+              const leadUserEmail = leadField?.email && String(leadField.email).trim() ? String(leadField.email).trim() : null;
+              const leadUserName = leadField?.name && String(leadField.name).trim() ? String(leadField.name).trim() : null;
+              if (leadField) {
+                console.log(`📋 Task "${task.name || task.task_name}" has Lead field: role=${leadField.role}${leadUserEmail ? `, email=${leadUserEmail}` : ''}${leadUserName && !leadUserEmail ? `, name=${leadUserName}` : ''}`);
+              }
               
               // Return task with all original fields plus additional metadata
               // Using spread operator first to include ALL original task fields
@@ -2431,7 +2545,10 @@ class ZohoService {
                 } : null,
                 // Add owner information
                 owner_name: ownerInfo.owner_name,
-                owner_role: ownerInfo.owner_role
+                owner_role: ownerInfo.owner_role,
+                // Lead field from Zoho task details (user assigned as Lead for this task)
+                lead_user_email: leadUserEmail,
+                lead_user_name: leadUserName
               };
             });
             
@@ -2721,6 +2838,7 @@ class ZohoService {
                 ownerRole = taskItem.owner_role || undefined;
               }
               
+              // No fallback fields for role: if Zoho does not provide task-level role, we leave it undefined (sync will record error).
               return {
                 owner_name: ownerName,
                 owner_role: ownerRole
@@ -2805,6 +2923,7 @@ class ZohoService {
                 ownerRole = taskItem.owner_role || undefined;
               }
               
+              // No fallback fields for role: if Zoho does not provide task-level role, we leave it undefined (sync will record error).
               return {
                 owner_name: ownerName,
                 owner_role: ownerRole

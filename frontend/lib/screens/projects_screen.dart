@@ -15,6 +15,17 @@ import 'view_screen.dart';
 const Color _kCardAccent = Color(0xFF6366F1);
 const Color _kCardAccentSecondary = Color(0xFF4F46E5);
 
+/// Parses run directory from command output that contains "All environment variables (sorted)"
+/// and "setenv EXP_DIR /path/to/exp". Returns the path as-is; does not construct or hardcode.
+String? _parseExpDirFromOutput(String output) {
+  if (output.isEmpty) return null;
+  final expDirMatch = RegExp(r'setenv\s+EXP_DIR\s+(.+)', caseSensitive: false).firstMatch(output);
+  if (expDirMatch == null) return null;
+  final path = expDirMatch.group(1)?.trim();
+  if (path == null || path.isEmpty || !path.startsWith('/')) return null;
+  return path;
+}
+
 class ProjectsScreen extends ConsumerStatefulWidget {
   const ProjectsScreen({super.key});
 
@@ -560,18 +571,38 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     }
   }
 
-  /// Format last run timestamp for display (e.g. "Jan 15, 2025, 3:00 PM").
+  /// IST offset: UTC+5:30 (Indian Standard Time).
+  static const Duration _istOffset = Duration(hours: 5, minutes: 30);
+
+  /// Format last run timestamp for display in Indian time only (e.g. "Jan 15, 2025, 3:00 PM IST").
+  /// Backend sends UTC; we convert to IST before formatting.
   String? _formatLastRunDate(String? dateString) {
     if (dateString == null || dateString.isEmpty) return null;
     try {
       final date = DateTime.parse(dateString);
+      final utc = date.isUtc ? date : DateTime.utc(date.year, date.month, date.day, date.hour, date.minute, date.second);
+      final ist = utc.add(_istOffset);
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      final hour = date.hour > 12 ? date.hour - 12 : (date.hour == 0 ? 12 : date.hour);
-      final ampm = date.hour >= 12 ? 'PM' : 'AM';
-      final min = date.minute.toString().padLeft(2, '0');
-      return '${months[date.month - 1]} ${date.day}, ${date.year}, $hour:$min $ampm';
+      final hour = ist.hour > 12 ? ist.hour - 12 : (ist.hour == 0 ? 12 : ist.hour);
+      final ampm = ist.hour >= 12 ? 'PM' : 'AM';
+      final min = ist.minute.toString().padLeft(2, '0');
+      return '${months[ist.month - 1]} ${ist.day}, ${ist.year}, $hour:$min $ampm IST';
     } catch (e) {
       return null;
+    }
+  }
+
+  /// Format date string as dd/MM/yy only (no time). Used for Start/Target on project card.
+  String? _formatDateOnly(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return null;
+    try {
+      final date = DateTime.parse(dateString);
+      final d = date.day.toString().padLeft(2, '0');
+      final m = date.month.toString().padLeft(2, '0');
+      final y = date.year.toString().length > 2 ? date.year.toString().substring(2) : date.year.toString();
+      return '$d/$m/$y';
+    } catch (e) {
+      return dateString;
     }
   }
 
@@ -604,7 +635,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                        projectDetails?['technology_node'] ?? 
                        zohoData?['technology_node'] ?? 
                        'N/A';
-    // Prefer last_run_at (from stages) for last run; fallback to last_run / updated_at
+    // Last run: from backend project data — last_run_at (stages/runs or projects table), else last_run/updated_at
     final lastRunAtRaw = project['last_run_at']?.toString() ?? project['last_run']?.toString() ?? project['updated_at']?.toString();
     final lastRun = _formatTimeAgo(lastRunAtRaw);
     final lastRunDateFormatted = lastRunAtRaw != null && lastRunAtRaw.isNotEmpty
@@ -734,8 +765,8 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
           description: description.isEmpty ? 'Hardware design project' : description,
           gateCount: gateCount.toString(),
           technology: technology,
-          startDate: startDate?.isNotEmpty == true ? startDate : null,
-          targetDate: targetDate?.isNotEmpty == true ? targetDate : null,
+          startDate: startDate?.isNotEmpty == true ? _formatDateOnly(startDate) : null,
+          targetDate: targetDate?.isNotEmpty == true ? _formatDateOnly(targetDate) : null,
           lastRun: lastRun,
           lastRunDateFormatted: lastRunDateFormatted,
           latestRunStatus: project['latest_run_status']?.toString(),
@@ -928,8 +959,8 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
     final startDate = preview['start_date']?.toString();
     final targetDate = preview['target_date']?.toString();
     final techLine = technologyNode != null && technologyNode.isNotEmpty ? 'Technology node: $technologyNode' : null;
-    final startLine = startDate != null && startDate.isNotEmpty ? 'Start date: $startDate' : null;
-    final targetLine = targetDate != null && targetDate.isNotEmpty ? 'Target date: $targetDate' : null;
+    final startLine = startDate != null && startDate.isNotEmpty ? 'Start date: ${_formatDateOnly(startDate)}' : null;
+    final targetLine = targetDate != null && targetDate.isNotEmpty ? 'Target date: ${_formatDateOnly(targetDate)}' : null;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -2465,92 +2496,70 @@ class _ExportToLinuxDialogState extends ConsumerState<_ExportToLinuxDialog> {
         } catch (e) {
           print('⚠️ Failed to mark setup completed: $e');
         }
-        // Try to fetch and display the run directory path after successful execution
+        // Try to fetch and display the run directory path from command output (setenv EXP_DIR); do not construct path
         try {
           print('═══════════════════════════════════════════════════════════');
-          print('🔍 FETCHING RUN DIRECTORY PATH AFTER createDir.py:');
+          print('🔍 RUN DIRECTORY after createDir.py: capture from output (EXP_DIR), do not construct path');
           print('   Project: ${widget.projectName}');
           print('   Sanitized Project: $projectNameSanitized');
           print('═══════════════════════════════════════════════════════════');
           
-          // Get the actual username from the remote server
-          final whoamiResult = await widget.apiService.executeSSHCommand(
-            command: 'whoami',
-            token: token,
-          );
-          
-          String? actualUsername;
-          if (whoamiResult['success'] == true && whoamiResult['stdout'] != null) {
-            actualUsername = whoamiResult['stdout'].toString().trim();
-            print('   ✅ Actual username on server: $actualUsername');
+          final combinedOutput = '${result['stdout'] ?? ''}\n${result['stderr'] ?? ''}';
+          String? runDirectory = _parseExpDirFromOutput(combinedOutput);
+          String? projectDir;
+          if (runDirectory != null) {
+            print('   ✅ Run directory from EXP_DIR in output: $runDirectory');
           }
-          
-          if (actualUsername != null && actualUsername.isNotEmpty) {
-            // Check if the project directory was created under /CX_PROJ
-            // The createDir.py script typically creates: /CX_PROJ/{project}/...
-            // Run directories are typically under: /CX_RUN_NEW/{project}/pd/users/{username}/...
-            // But we should check what was actually created
-            
-            // First, check if project directory exists under /CX_PROJ
-            final checkProjDirCommand = 'if [ -d "/CX_PROJ/$projectNameSanitized" ]; then echo "/CX_PROJ/$projectNameSanitized"; else echo ""; fi';
-            final projDirResult = await widget.apiService.executeSSHCommand(
-              command: checkProjDirCommand,
+          if (runDirectory == null) {
+            // Fallback: get username and try find (no hardcoded path)
+            final whoamiResult = await widget.apiService.executeSSHCommand(
+              command: 'whoami',
               token: token,
             );
-            
-            String? projectDir;
-            if (projDirResult['success'] == true && projDirResult['stdout'] != null) {
-              final stdout = projDirResult['stdout'].toString().trim();
-              if (stdout.isNotEmpty && stdout.startsWith('/')) {
-                projectDir = stdout;
-                print('   ✅ Found project directory: $projectDir');
+            String? actualUsername;
+            if (whoamiResult['success'] == true && whoamiResult['stdout'] != null) {
+              actualUsername = whoamiResult['stdout'].toString().trim();
+              print('   ✅ Actual username on server: $actualUsername');
+            }
+            if (actualUsername != null && actualUsername.isNotEmpty) {
+              final checkProjDirCommand = 'if [ -d "/CX_PROJ/$projectNameSanitized" ]; then echo "/CX_PROJ/$projectNameSanitized"; else echo ""; fi';
+              final projDirResult = await widget.apiService.executeSSHCommand(
+                command: checkProjDirCommand,
+                token: token,
+              );
+              if (projDirResult['success'] == true && projDirResult['stdout'] != null) {
+                final stdout = projDirResult['stdout'].toString().trim();
+                if (stdout.isNotEmpty && stdout.startsWith('/')) projectDir = stdout;
+              }
+              final escapedProject = projectNameSanitized.replaceAll("'", "'\\''");
+              final escapedUsername = actualUsername.replaceAll("'", "'\\''");
+              final findRunDirCommand = "find /CX_PROJ/$escapedProject/pd/users/$escapedUsername -maxdepth 3 -type d 2>/dev/null | head -1 || echo ''";
+              final runDirResult = await widget.apiService.executeSSHCommand(
+                command: findRunDirCommand,
+                token: token,
+              );
+              if (runDirResult['success'] == true && runDirResult['stdout'] != null) {
+                final stdout = runDirResult['stdout'].toString().trim();
+                if (stdout.isNotEmpty && stdout.startsWith('/')) {
+                  runDirectory = stdout.split('\n').first.trim();
+                  print('   ✅ Found run directory via find: $runDirectory');
+                }
               }
             }
-            
-            // Check for run directory under /CX_PROJ (setup uses --base-path /CX_PROJ)
-            // Look for: /CX_PROJ/{project}/pd/users/{username}/*
-            final escapedProject = projectNameSanitized.replaceAll("'", "'\\''");
-            final escapedUsername = actualUsername.replaceAll("'", "'\\''");
-            final findRunDirCommand = "find /CX_PROJ/$escapedProject/pd/users/$escapedUsername -maxdepth 3 -type d 2>/dev/null | head -1 || echo ''";
-            
-            final runDirResult = await widget.apiService.executeSSHCommand(
-              command: findRunDirCommand,
-              token: token,
-            );
-            
-            String? runDirectory;
-            if (runDirResult['success'] == true && runDirResult['stdout'] != null) {
-              final stdout = runDirResult['stdout'].toString().trim();
-              if (stdout.isNotEmpty && stdout.startsWith('/')) {
-                runDirectory = stdout.split('\n').first.trim();
-                print('   ✅ Found run directory: $runDirectory');
-              }
-            }
-            
-            // If not found, construct expected path based on setup (CX_PROJ)
-            if (runDirectory == null || runDirectory.isEmpty) {
-              runDirectory = '/CX_PROJ/$projectNameSanitized/pd/users/$actualUsername';
-              print('   ⚠️ Run directory not found via search, using expected path: $runDirectory');
-            }
-            
-            print('═══════════════════════════════════════════════════════════');
-            print('📁 DIRECTORY PATHS:');
-            if (projectDir != null) {
-              print('   Project Directory: $projectDir');
-            }
-            print('   Run Directory: $runDirectory');
-            print('═══════════════════════════════════════════════════════════');
-            
-            // Update the output to include the run directory path
-            if (mounted) {
-              setState(() {
-                _output = '${_output ?? 'Command executed successfully'}\n\n📁 Project Directory: ${projectDir ?? 'Not found'}\n📁 Run Directory: $runDirectory';
-              });
-            }
+            if (runDirectory == null) print('   ⚠️ Run directory not in output (setenv EXP_DIR) and find returned nothing; not using constructed path.');
+          }
+          print('═══════════════════════════════════════════════════════════');
+          print('📁 DIRECTORY PATHS:');
+          if (projectDir != null) print('   Project Directory: $projectDir');
+          print('   Run Directory: ${runDirectory ?? 'Not found (capture from EXP_DIR or find only)'}');
+          print('═══════════════════════════════════════════════════════════');
+          if (mounted) {
+            setState(() {
+              _output = '${_output ?? 'Command executed successfully'}\n\n📁 Project Directory: ${projectDir ?? 'Not found'}\n📁 Run Directory: ${runDirectory ?? 'Not found'}';
+            });
           }
         } catch (e) {
           print('⚠️ Warning: Failed to fetch run directory path: $e');
-          // Don't fail the entire operation if fetching path fails
         }
         
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3899,100 +3908,82 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
       if (isSuccess) {
         try {
           print('═══════════════════════════════════════════════════════════');
-          print('🔍 FETCHING RUN DIRECTORY PATH FROM REMOTE SERVER:');
+          print('🔍 RUN DIRECTORY: capture from setup output (setenv EXP_DIR), do not construct path');
           print('   Project: $projectName');
           print('   Block: $blockName');
           print('   Experiment: $experimentName');
           print('═══════════════════════════════════════════════════════════');
           
-          // Step 1: Get the actual username from the remote server
-          print('   Step 1: Getting actual username from remote server...');
-          final whoamiResult = await widget.apiService.executeSSHCommand(
-            command: 'whoami',
-            token: token,
-          );
+          final combinedOutput = '${result['stdout'] ?? ''}\n${result['stderr'] ?? ''}';
+          String? actualRunDirectory = _parseExpDirFromOutput(combinedOutput);
+          if (actualRunDirectory != null) {
+            print('   ✅ Run directory from EXP_DIR in output: $actualRunDirectory');
+          }
           
           String? actualUsername;
-          if (whoamiResult['success'] == true && whoamiResult['stdout'] != null) {
-            actualUsername = whoamiResult['stdout'].toString().trim();
-            print('   ✅ Actual username on server: $actualUsername');
-          }
-          
-          if (actualUsername == null || actualUsername.isEmpty) {
-            throw Exception('Unable to get username from remote server');
-          }
-          
-          final rtlTagForPath = _getEffectiveRtlTag();
-          
-          // Step 2: Search for the directory that was just created
-          // Setup uses --base-path /CX_PROJ, so run dirs are under /CX_PROJ/{project}/pd/users/...
-          // Path includes RTL tag when set: /CX_PROJ/{project}/pd/users/{username}/{block}/{rtl_tag}/{experiment} or .../{block}/{experiment}
-          print('   Step 2: Searching for directory created by setup command...');
-          const runDirBasePath = '/CX_PROJ';
-          
-          // Escape variables for shell command
-          final escapedProject = sanitizedProjectName.replaceAll("'", "'\\''");
-          final escapedBlock = sanitizedBlockName.replaceAll("'", "'\\''");
-          final escapedExperiment = experimentName.replaceAll("'", "'\\''");
-          final escapedUsername = actualUsername.replaceAll("'", "'\\''");
-          final escapedRtlTag = rtlTagForPath.replaceAll("'", "'\\''");
-          
-          // Construct expected path (with rtl_tag segment when non-empty) — use CX_PROJ to match setup command
-          final expectedPath = rtlTagForPath.isEmpty
-              ? '$runDirBasePath/$escapedProject/pd/users/$escapedUsername/$escapedBlock/$escapedExperiment'
-              : '$runDirBasePath/$escapedProject/pd/users/$escapedUsername/$escapedBlock/$escapedRtlTag/$escapedExperiment';
-          
-          // Command to find the directory: try expected path first, then search under CX_PROJ
-          final findPathCommand = "EXPECTED_PATH='$expectedPath'; if [ -d \"\$EXPECTED_PATH\" ]; then echo \"\$EXPECTED_PATH\"; else find $runDirBasePath/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' -mmin -5 2>/dev/null | head -1 || find $runDirBasePath/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' 2>/dev/null | head -1; fi";
-          
-          final pathResult = await widget.apiService.executeSSHCommand(
-            command: findPathCommand,
-            token: token,
-          );
-          
-          String? actualRunDirectory;
-          if (pathResult['success'] == true && pathResult['stdout'] != null) {
-            final stdout = pathResult['stdout'].toString().trim();
-            if (stdout.isNotEmpty && stdout.startsWith('/')) {
-              actualRunDirectory = stdout.split('\n').first.trim();
-              print('   ✅ Found run directory: $actualRunDirectory');
+          if (actualRunDirectory == null) {
+            // Step 1: Get username only if we still need to try find
+            print('   Step 1: Getting actual username from remote server...');
+            final whoamiResult = await widget.apiService.executeSSHCommand(
+              command: 'whoami',
+              token: token,
+            );
+            if (whoamiResult['success'] == true && whoamiResult['stdout'] != null) {
+              actualUsername = whoamiResult['stdout'].toString().trim();
+              print('   ✅ Actual username on server: $actualUsername');
             }
           }
           
-          if (actualRunDirectory == null || actualRunDirectory.isEmpty) {
-            // Last resort: construct path with rtl_tag when set — use /CX_PROJ to match setup command
-            actualRunDirectory = rtlTagForPath.isEmpty
-                ? '/CX_PROJ/$sanitizedProjectName/pd/users/$actualUsername/$sanitizedBlockName/$experimentName'
-                : '/CX_PROJ/$sanitizedProjectName/pd/users/$actualUsername/$sanitizedBlockName/$rtlTagForPath/$experimentName';
-            print('   ⚠️ Directory not found via search, using constructed path: $actualRunDirectory');
+          if (actualRunDirectory == null && actualUsername != null && actualUsername.isNotEmpty) {
+            // Step 2: Fallback — search for directory on server (no constructed path)
+            const runDirBasePath = '/CX_PROJ';
+            final escapedProject = sanitizedProjectName.replaceAll("'", "'\\''");
+            final escapedExperiment = experimentName.replaceAll("'", "'\\''");
+            final escapedUsername = actualUsername.replaceAll("'", "'\\''");
+            final findPathCommand = "find $runDirBasePath/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' -mmin -5 2>/dev/null | head -1 || find $runDirBasePath/$escapedProject/pd/users/$escapedUsername -type d -name '$escapedExperiment' 2>/dev/null | head -1";
+            final pathResult = await widget.apiService.executeSSHCommand(
+              command: findPathCommand,
+              token: token,
+            );
+            if (pathResult['success'] == true && pathResult['stdout'] != null) {
+              final stdout = pathResult['stdout'].toString().trim();
+              if (stdout.isNotEmpty && stdout.startsWith('/')) {
+                actualRunDirectory = stdout.split('\n').first.trim();
+                print('   ✅ Found run directory via find: $actualRunDirectory');
+              }
+            }
           }
           
-          print('═══════════════════════════════════════════════════════════');
-          print('💾 SAVING RUN DIRECTORY PATH TO DATABASE:');
-          print('   Path: $actualRunDirectory');
-          print('═══════════════════════════════════════════════════════════');
-          
-          print('   📤 Sending to backend:');
-          print('      Project: $projectName');
-          print('      Zoho Project ID: ${widget.zohoProjectId ?? "null"}');
-          print('      Username: $actualUsername');
-          print('      Run Directory: $actualRunDirectory');
-          
-          final rtlTag = _getEffectiveRtlTag();
-          await widget.apiService.saveRunDirectory(
-            projectName: projectName,
-            blockName: blockName,
-            experimentName: experimentName,
-            runDirectory: actualRunDirectory,
-            username: actualUsername,
-            rtlTag: rtlTag.isEmpty ? null : rtlTag,
-            zohoProjectId: widget.zohoProjectId,
-            domainCode: domainCode,
-            token: token,
-          );
-          savedRunDirectory = actualRunDirectory;
-          savedUsername = actualUsername;
-          print('✅ Run directory path saved successfully');
+          if (actualRunDirectory == null) {
+            print('   ⚠️ Run directory not in output (setenv EXP_DIR) and find returned nothing; not saving (no constructed path).');
+          } else {
+            actualUsername ??= (await widget.apiService.executeSSHCommand(command: 'whoami', token: token))['stdout']?.toString().trim();
+            if (actualUsername == null || actualUsername.isEmpty) actualUsername = '';
+            print('═══════════════════════════════════════════════════════════');
+            print('💾 SAVING RUN DIRECTORY PATH TO DATABASE (from output or find):');
+            print('   Path: $actualRunDirectory');
+            print('═══════════════════════════════════════════════════════════');
+            print('   📤 Sending to backend:');
+            print('      Project: $projectName');
+            print('      Zoho Project ID: ${widget.zohoProjectId ?? "null"}');
+            print('      Username: $actualUsername');
+            print('      Run Directory: $actualRunDirectory');
+            final rtlTag = _getEffectiveRtlTag();
+            await widget.apiService.saveRunDirectory(
+              projectName: projectName,
+              blockName: blockName,
+              experimentName: experimentName,
+              runDirectory: actualRunDirectory,
+              username: actualUsername,
+              rtlTag: rtlTag.isEmpty ? null : rtlTag,
+              zohoProjectId: widget.zohoProjectId,
+              domainCode: domainCode,
+              token: token,
+            );
+            savedRunDirectory = actualRunDirectory;
+            savedUsername = actualUsername;
+            print('✅ Run directory path saved successfully');
+          }
         } catch (e) {
           print('⚠️ Warning: Failed to fetch/save run directory path: $e');
           // Don't fail the entire setup if saving path fails, just log it
@@ -4031,9 +4022,11 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
           _successRtlTag = _getEffectiveRtlTag().isEmpty ? null : _getEffectiveRtlTag();
           _successRunDirectory = savedRunDirectory;
           _successUsername = savedUsername;
-          _output = fullOutput.isNotEmpty 
-              ? fullOutput 
+          _output = fullOutput.isNotEmpty
+              ? fullOutput
               : 'Setup command executed successfully';
+          // Do not show success card in this dialog — we close and show modal instead
+          _isSuccess = false;
         } else {
           // Error: show full output (stdout + stderr) so user sees the real error
           final errorMsg = result['error']?.toString();
@@ -4054,7 +4047,15 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
 
       if (mounted) {
         if (isSuccess) {
-          // Keep dialog open and show success info card (no auto-close)
+          // Notify parent of run directory, close setup dialog, then show success in same modal style as error dialog
+          if (widget.onRunDirectorySaved != null && savedRunDirectory != null && savedRunDirectory.isNotEmpty) {
+            widget.onRunDirectorySaved!(savedRunDirectory);
+          }
+          Navigator.of(context).pop();
+          final runDirMessage = savedRunDirectory != null && savedRunDirectory.isNotEmpty
+              ? 'run_directory = $savedRunDirectory'
+              : 'Setup completed.';
+          ref.read(errorHandlerProvider.notifier).showInfo(runDirMessage, title: 'Setup completed successfully');
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -4641,8 +4642,8 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
               const SizedBox(height: 18),
             ],
 
-            // Output/Error Display (same white + border style)
-            if (!_isSuccess && (_output != null || _error != null)) ...[
+            // Output/Error Display (show full message when done; on success also show run dir from setenv)
+            if (_output != null || _error != null) ...[
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
@@ -4655,18 +4656,53 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
                     width: 1.5,
                   ),
                 ),
-                constraints: const BoxConstraints(maxHeight: 200),
+                constraints: const BoxConstraints(maxHeight: 220),
                 child: SingleChildScrollView(
-                  child: Text(
-                    _error ?? _output ?? '',
-                    style: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                      height: 1.4,
-                      color: _error != null
-                          ? Colors.red.shade900
-                          : Colors.green.shade900,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_isSuccess && _successRunDirectory != null && _successRunDirectory!.isNotEmpty) ...[
+                        Text(
+                          'run_directory =',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                        SelectableText(
+                          _successRunDirectory!,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontFamily: 'monospace',
+                            color: theme.colorScheme.onSurface,
+                            height: 1.35,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Command output:',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: theme.colorScheme.onSurface.withOpacity(0.6),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                      ],
+                      Text(
+                        _error ?? _output ?? '',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                          height: 1.4,
+                          color: _error != null
+                              ? Colors.red.shade900
+                              : Colors.green.shade900,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),

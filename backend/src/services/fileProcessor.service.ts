@@ -745,6 +745,31 @@ class FileProcessorService {
   }
 
   /**
+   * Get domain_id from run_directory path (e.g. /CX_PROJ/proj/pd/users/... → domain "pd").
+   * Use this when creating/updating a run so domain is set from the path, not from EDA files.
+   */
+  async getDomainIdFromRunDirectory(runDirectory: string | undefined): Promise<number | null> {
+    if (!runDirectory) return null;
+    const { domain: domainName } = this.extractProjectAndDomainFromRunDirectory(runDirectory);
+    if (!domainName) return null;
+    let domainId = await this.findDomainId(domainName);
+    if (domainId == null) {
+      const domainCode = domainName.toUpperCase().replace(/\s+/g, '_').substring(0, 50);
+      try {
+        const insertResult = await pool.query(
+          `INSERT INTO public.domains (name, code, description, is_active) VALUES ($1, $2, $3, true)
+           ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+          [domainName.trim(), domainCode, `Domain: ${domainName.trim()}`]
+        );
+        domainId = insertResult.rows[0]?.id ?? null;
+      } catch {
+        // ignore
+      }
+    }
+    return domainId;
+  }
+
+  /**
    * Find domain ID from domain name (with typo handling)
    */
   async findDomainId(domainName: string): Promise<number | null> {
@@ -899,39 +924,64 @@ class FileProcessorService {
       }
 
       // 5. Find run (experiment) - runs table only (no Zoho). Only existing runs get EDA data.
-      const runResult = await client.query(
-        `SELECT id, rtl_tag FROM public.runs 
-         WHERE block_id = $1 AND experiment = $2`,
-        [blockId, experiment]
-      );
+      // When file has rtl_tag, match run by (block_id, experiment, rtl_tag) to avoid RTL tag mismatch.
+      const incomingRtlTagLower = incomingRtlTagRaw.length > 0 ? incomingRtlTagRaw.toLowerCase().trim() : '';
+      let runResult: { rows: any[] };
+      if (incomingRtlTagLower) {
+        runResult = await client.query(
+          `SELECT id, rtl_tag FROM public.runs 
+           WHERE block_id = $1 AND experiment = $2 AND LOWER(COALESCE(rtl_tag, '')) = $3`,
+          [blockId, experiment, incomingRtlTagLower]
+        );
+        if (runResult.rows.length === 0) {
+          const existingRuns = await client.query(
+            `SELECT rtl_tag FROM public.runs WHERE block_id = $1 AND experiment = $2`,
+            [blockId, experiment]
+          );
+          const existingTags = existingRuns.rows.map((r: any) => (r.rtl_tag ?? '').toString().trim()).filter(Boolean);
+          throw new Error(
+            `RTL tag mismatch: no run exists for block "${blockName}", experiment "${experiment}" with rtl_tag "${incomingRtlTagRaw}". ` +
+            (existingTags.length > 0
+              ? `Existing runs for this block/experiment use rtl_tag(s): ${existingTags.join(', ')}. `
+              : '') +
+            `Create the run with this RTL tag in Experiment Setup first, then upload EDA files.`
+          );
+        }
+      } else {
+        runResult = await client.query(
+          `SELECT id, rtl_tag FROM public.runs 
+           WHERE block_id = $1 AND experiment = $2`,
+          [blockId, experiment]
+        );
+      }
       let runId: number | null = null;
       if (runResult.rows.length > 0) {
         runId = runResult.rows[0].id;
         const existingRtlTag = runResult.rows[0].rtl_tag?.toString().trim() ?? '';
-        // RTL tag belongs to user+block (user_block_rtl_tags). A user or block can have multiple RTL tags.
-        // Use file's RTL tag when present; otherwise keep run's. Allow entry when uploader has this RTL tag for this block.
-        const rtlTagToSet = incomingRtlTagRaw.length > 0 ? incomingRtlTagRaw : existingRtlTag;
-        const rtlTagToSetLower = rtlTagToSet.toLowerCase();
-        if (uploadedBy != null && rtlTagToSet.length > 0) {
+        // Do not replace username, experiment, rtl_tag, or block from EDA files - only validate and use existing run values.
+        const rtlTagToCheck = incomingRtlTagRaw.length > 0 ? incomingRtlTagRaw : existingRtlTag;
+        const rtlTagToCheckLower = rtlTagToCheck.toLowerCase();
+        if (uploadedBy != null && rtlTagToCheck.length > 0) {
           const tableExists = await client.query(
             `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'user_block_rtl_tags')`
           );
           if (tableExists.rows[0]?.exists === true) {
             const allowed = await client.query(
               `SELECT 1 FROM user_block_rtl_tags WHERE user_id = $1 AND block_id = $2 AND LOWER(rtl_tag) = $3 LIMIT 1`,
-              [uploadedBy, blockId, rtlTagToSetLower]
+              [uploadedBy, blockId, rtlTagToCheckLower]
             );
             if (allowed.rows.length === 0) {
               throw new Error(
-                `RTL tag "${rtlTagToSet}" for block "${blockName}" is not assigned to you. ` +
+                `RTL tag "${rtlTagToCheck}" for block "${blockName}" is not assigned to you. ` +
                 `Create or select this RTL tag in Experiment Setup for this block first, then upload EDA files.`
               );
             }
           }
         }
+        // Update only last_updated - do not overwrite user_name, rtl_tag, run_directory, or domain_id from file; keep whatever the run already has
         await client.query(
-          'UPDATE public.runs SET rtl_tag = $1, user_name = $2, run_directory = $3, last_updated = $4, domain_id = $5 WHERE id = $6',
-          [rtlTagToSet, userName, runDirectory, lastUpdated, domainId, runId]
+          'UPDATE public.runs SET last_updated = $1 WHERE id = $2',
+          [lastUpdated, runId]
         );
       } else {
         throw new Error(

@@ -781,13 +781,28 @@ router.post('/external/upload', authenticateApiKey, upload.single('file'), async
         }
       });
     } catch (processingError: any) {
+      const msg = processingError.message || '';
+      if (/RTL tag/i.test(msg)) {
+        console.error(`[API ERROR] [EDA FILES] RTL tag mismatch or validation error:`, msg);
+        return res.status(400).json({
+          success: false,
+          error: 'RTL tag mismatch',
+          code: 'RTL_TAG_MISMATCH',
+          message: msg,
+          data: {
+            fileName,
+            filePath,
+            fileSize,
+            fileType,
+            uploadedAt: new Date().toISOString()
+          }
+        });
+      }
       console.error(`❌ [EXTERNAL API] Error processing file ${fileName}:`, processingError);
-      
-      // File is still saved, but processing failed
       res.status(500).json({
         success: false,
         error: 'File processing failed',
-        message: processingError.message || 'An error occurred while processing the file',
+        message: msg || 'An error occurred while processing the file',
         data: {
           fileName,
           filePath,
@@ -798,11 +813,21 @@ router.post('/external/upload', authenticateApiKey, upload.single('file'), async
       });
     }
   } catch (error: any) {
+    const msg = error.message || '';
+    if (/RTL tag/i.test(msg)) {
+      console.error(`[API ERROR] [EDA FILES] RTL tag error on upload:`, msg);
+      return res.status(400).json({
+        success: false,
+        error: 'RTL tag mismatch',
+        code: 'RTL_TAG_MISMATCH',
+        message: msg
+      });
+    }
     console.error('❌ [EXTERNAL API] Error receiving file:', error);
     res.status(500).json({ 
       success: false,
       error: 'Upload failed',
-      message: error.message || 'An unexpected error occurred'
+      message: msg || 'An unexpected error occurred'
     });
   }
 });
@@ -992,9 +1017,20 @@ router.post('/external/replace-stage', authenticateApiKey, upload.single('file')
 
     if (runResult.rows.length === 0) {
       await client.query('ROLLBACK');
+      const existingRuns = await client.query(
+        'SELECT rtl_tag FROM public.runs WHERE block_id = $1 AND experiment = $2',
+        [blockId, experiment]
+      );
+      const existingRtlTags = (existingRuns.rows as any[]).map((r: any) => (r.rtl_tag ?? '').toString().trim()).filter(Boolean);
+      const message = existingRtlTags.length > 0
+        ? `RTL tag mismatch: no run for block "${blockName}", experiment "${experiment}" with rtl_tag "${rtlTag}". Existing runs use rtl_tag(s): ${existingRtlTags.join(', ')}. Create the run in Experiment Setup first.`
+        : `Run with experiment "${experiment}" and rtl_tag "${rtlTag}" not found for block "${blockName}". Create the run in Experiment Setup first.`;
+      console.error(`[API ERROR] [EDA FILES] replace-stage RTL tag mismatch:`, message);
       return res.status(404).json({
         error: 'Run not found',
-        message: `Run with experiment "${experiment}" and rtl_tag "${rtlTag}" not found`
+        code: 'RTL_TAG_MISMATCH',
+        message,
+        existing_rtl_tags: existingRtlTags.length > 0 ? existingRtlTags : undefined
       });
     }
 
@@ -1445,6 +1481,16 @@ router.post('/process/:filename', authenticate, async (req, res) => {
       }
     });
   } catch (error: any) {
+    const msg = error.message || '';
+    if (/RTL tag/i.test(msg)) {
+      console.error(`[API ERROR] [EDA FILES] RTL tag mismatch or validation error (process):`, msg);
+      return res.status(400).json({
+        error: 'RTL tag mismatch',
+        code: 'RTL_TAG_MISMATCH',
+        message: msg,
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      });
+    }
     console.error('Error processing file:', error);
     if (error.code === '42P01') {
       return res.status(503).json({
@@ -1453,7 +1499,7 @@ router.post('/process/:filename', authenticate, async (req, res) => {
       });
     }
     res.status(500).json({ 
-      error: error.message || 'Internal server error',
+      error: msg || 'Internal server error',
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }

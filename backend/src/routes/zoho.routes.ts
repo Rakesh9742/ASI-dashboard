@@ -1036,6 +1036,7 @@ function isPDTasklist(tasklistName: string | null | undefined): boolean {
 /**
  * Sync blocks and block-to-user assignments from Zoho tasks (same mapping as UI: task = block, task owner = assigned user).
  * Only tasks under the PD tasklist are added as blocks; DV and other tasklists are skipped.
+ * block_users.role (task-level role) is set here only — when admin does Sync Projects.
  * Call when admin does Sync Projects.
  */
 async function syncBlocksAndBlockUsers(
@@ -1089,19 +1090,62 @@ async function syncBlocksAndBlockUsers(
           }
         }
       }
+      // Lead field from Zoho task details: user assigned as Lead for this task (email or name e.g. "Rakesh P")
+      const leadUserEmail = task.lead_user_email != null && String(task.lead_user_email).trim() !== ''
+        ? String(task.lead_user_email).trim()
+        : null;
+      const leadUserName = task.lead_user_name != null && String(task.lead_user_name).trim() !== ''
+        ? String(task.lead_user_name).trim()
+        : null;
+      const hasLeadField = !!(leadUserEmail || leadUserName);
+      if (leadUserEmail && !ownerEmails.includes(leadUserEmail)) {
+        ownerEmails.push(leadUserEmail);
+      }
       if (!hasBlockUsersTable) continue;
+      // Block role: only "lead" comes from Zoho task Lead field. All other users get role from project (user_projects).
       for (const email of ownerEmails) {
         try {
           const userRow = await pool.query('SELECT id FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))', [email]);
           if (userRow.rows.length === 0) continue;
           const uid = userRow.rows[0].id;
+          let roleForUser: string | null;
+          if (leadUserEmail && email.toLowerCase() === leadUserEmail.toLowerCase()) {
+            roleForUser = 'lead';
+          } else {
+            const projectRoleRow = await pool.query(
+              'SELECT role FROM user_projects WHERE user_id = $1 AND project_id = $2 LIMIT 1',
+              [uid, asiProjectId]
+            );
+            roleForUser = projectRoleRow.rows[0]?.role?.toString().trim() || null;
+          }
           await pool.query(
-            `INSERT INTO block_users (block_id, user_id) VALUES ($1, $2) ON CONFLICT (block_id, user_id) DO NOTHING`,
-            [blockId, uid]
+            `INSERT INTO block_users (block_id, user_id, role) VALUES ($1, $2, $3)
+             ON CONFLICT (block_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+            [blockId, uid, roleForUser]
           );
           assignmentsUpserted++;
         } catch (e: any) {
           errors.push(`Block "${blockName}" user ${email}: ${e.message || 'assign failed'}`);
+        }
+      }
+      // Lead by name only (no email): resolve user by full_name and assign with role "lead"
+      if (leadUserName && !leadUserEmail) {
+        try {
+          const nameRow = await pool.query(
+            'SELECT id FROM users WHERE TRIM(full_name) ILIKE TRIM($1) OR TRIM(username) ILIKE TRIM($1) LIMIT 1',
+            [leadUserName]
+          );
+          if (nameRow.rows.length > 0) {
+            const uid = nameRow.rows[0].id;
+            await pool.query(
+              `INSERT INTO block_users (block_id, user_id, role) VALUES ($1, $2, $3)
+               ON CONFLICT (block_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+              [blockId, uid, 'lead']
+            );
+            assignmentsUpserted++;
+          }
+        } catch (e: any) {
+          errors.push(`Block "${blockName}" Lead by name "${leadUserName}": ${e.message || 'assign failed'}`);
         }
       }
     }

@@ -50,11 +50,9 @@ export function initializeTerminalWebSocket(server: HTTPServer) {
         console.log(`Terminal session created successfully for ${sessionId}`);
         
         // Set up data handler IMMEDIATELY to catch all output
-        // This must be done before any other operations
         session.stream.on('data', (data: Buffer) => {
           if (ws.readyState === WebSocket.OPEN) {
             const output = data.toString();
-            // Only log first few outputs to avoid spam
             if (!session.stream.listenerCount || session.stream.listenerCount('data') === 1) {
               console.log(`Terminal output received (${output.length} bytes): ${output.substring(0, 100)}`);
             }
@@ -62,9 +60,8 @@ export function initializeTerminalWebSocket(server: HTTPServer) {
               type: 'output',
               data: output
             }));
-          } else {
-            console.warn(`WebSocket not open, cannot send output. State: ${ws.readyState}`);
           }
+          // State 3 = CLOSED: client disconnected (e.g. closed tab) — skip send, no need to log
         });
 
         // Handle stream stderr
@@ -127,15 +124,11 @@ export function initializeTerminalWebSocket(server: HTTPServer) {
         console.log(`Sending connection success message for session ${sessionId}`);
         
         // Wait a bit for shell to initialize, then send a newline to trigger prompt
-        // Reduced delay from 800ms to 300ms for faster response
         setTimeout(() => {
           if (session.connected && ws.readyState === WebSocket.OPEN) {
-            console.log(`Sending initial newline to trigger shell prompt for session ${sessionId}`);
-            // Send a newline to trigger the shell prompt
             session.stream.write('\r\n');
-          } else {
-            console.warn(`Cannot send initial newline: connected=${session.connected}, wsState=${ws.readyState}`);
           }
+          // If ws is closed (e.g. user closed tab), skip — no need to log
         }, 300);
       })
       .catch((error) => {
