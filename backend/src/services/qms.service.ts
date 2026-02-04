@@ -252,17 +252,23 @@ class QmsService {
 
       // Validate domain belongs to the project
       const domainResult = await client.query(
-        `SELECT d.name
+        `SELECT d.name, d.code
          FROM project_domains pd
          JOIN domains d ON d.id = pd.domain_id
          WHERE pd.project_id = $1 AND d.is_active = true`,
         [projectId]
       );
-      const projectDomains = domainResult.rows.map((row: any) => String(row.name).trim().toLowerCase());
+      const projectDomains = domainResult.rows.flatMap((row: any) => {
+        const names: string[] = [];
+        if (row.name) names.push(String(row.name).trim().toLowerCase());
+        if (row.code) names.push(String(row.code).trim().toLowerCase());
+        return names;
+      });
       if (projectDomains.length === 0) {
         throw new Error(`Project "${projectName}" has no active domains configured; external upload blocked.`);
       }
-      if (!projectDomains.includes(String(domainName).trim().toLowerCase())) {
+      const normalizedDomain = String(domainName).trim().toLowerCase();
+      if (!projectDomains.includes(normalizedDomain)) {
         throw new Error(`Domain "${domainName}" does not match project "${projectName}" domains (${projectDomains.join(', ')})`);
       }
 
