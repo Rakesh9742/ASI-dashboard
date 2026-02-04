@@ -109,19 +109,11 @@ class QmsService {
     }
   }
 
-  private extractExperimentFromStageDirectory(stageDirectory?: string | null, blockName?: string | null): string | null {
+  private extractExperimentFromStageDirectory(stageDirectory?: string | null): string | null {
     if (!stageDirectory) return null;
     const parts = stageDirectory.split('/').filter(Boolean);
     if (parts.length < 2) return null;
-
-    if (blockName) {
-      const blockIndex = parts.findIndex(part => part === blockName);
-      if (blockIndex >= 0 && blockIndex + 1 < parts.length) {
-        const experiment = parts[blockIndex + 1];
-        if (experiment) return experiment;
-      }
-    }
-
+    // Experiment is always the second last segment in stage_directory.
     const experiment = parts[parts.length - 2];
     return experiment || null;
   }
@@ -222,7 +214,7 @@ class QmsService {
       report.experiment ||
       report.experiment_name ||
       report.experimentName ||
-      this.extractExperimentFromStageDirectory(stageDirectory, blockName);
+      this.extractExperimentFromStageDirectory(stageDirectory);
 
     if (!projectName || !blockName || !experimentName) {
       throw new Error('Report must include project, block_name, and experiment (or stage_directory to infer experiment).');
