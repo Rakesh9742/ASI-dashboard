@@ -43,6 +43,10 @@ interface CheckItemData {
   info: string | null;
   evidence: string | null;
   version: string | null;
+  // Comment fields from check_items table
+  comments?: string | null; // From external JSON only, not editable
+  engineer_comments?: string | null; // Editable by engineer/admin/lead
+  reviewer_comments?: string | null; // Editable by approver/admin/lead when checklist is submitted_for_approval
   report_data?: CReportData;
   approval?: CheckItemApproval;
   created_at: Date;
@@ -56,8 +60,6 @@ interface CReportData {
   description: string | null;
   status: string;
   fix_details: string | null;
-  engineer_comments: string | null;
-  lead_comments: string | null;
   result_value: string | null;
   signoff_status: string | null;
   signoff_by: number | null;
@@ -89,9 +91,22 @@ class QmsService {
     return templatePath;
   }
 
-  private getDefaultChecklistName(experimentName: string): string {
+  private async getDefaultChecklistName(blockId: number, experimentName: string, rtlTag?: string): Promise<string> {
+    // Get block name from database
+    const blockResult = await pool.query('SELECT block_name FROM blocks WHERE id = $1', [blockId]);
+    const blockName = blockResult.rows.length > 0 ? blockResult.rows[0].block_name : 'block';
+    
+    const normalizedBlock = (blockName || '').trim();
     const normalizedExperiment = (experimentName || '').trim();
-    return normalizedExperiment ? `Synthesis QMS - ${normalizedExperiment}` : 'Synthesis QMS - Default';
+    const normalizedTag = (rtlTag || '').trim();
+    
+    // Format: blockname_tagname_expname
+    if (normalizedTag) {
+      return `${normalizedBlock}_${normalizedTag}_${normalizedExperiment}`;
+    } else {
+      // Fallback if no tag: blockname_expname
+      return `${normalizedBlock}_${normalizedExperiment}`;
+    }
   }
 
   private extractExperimentFromStageDirectory(stageDirectory?: string | null, blockName?: string | null): string | null {
@@ -111,6 +126,14 @@ class QmsService {
     return experiment || null;
   }
 
+  private extractDomainFromStageDirectory(stageDirectory?: string | null): string | null {
+    if (!stageDirectory) return null;
+    const parts = stageDirectory.split('/').filter(Boolean);
+    // Domain is the segment after the 3rd slash in the full path.
+    // Example: /CX_PROJ/ganga/pd/users/... => domain = "pd"
+    return parts.length >= 3 ? parts[2] : null;
+  }
+
   /**
    * Ensure default checklist exists for a block + experiment using the default template.
    */
@@ -119,9 +142,17 @@ class QmsService {
     experimentName: string,
     userId: number | null
   ): Promise<void> {
+    // Resolve run_id for this block+experiment (get the first run, or any run with this experiment)
+    const runResult = await pool.query(
+      'SELECT id, rtl_tag FROM runs WHERE block_id = $1 AND experiment = $2 LIMIT 1',
+      [blockId, experimentName]
+    );
+    const runId = runResult.rows.length > 0 ? runResult.rows[0].id : null;
+    const rtlTag = runResult.rows.length > 0 ? runResult.rows[0].rtl_tag : null;
+    
     const templatePath = this.getDefaultTemplateFilePath();
-    const checklistName = this.getDefaultChecklistName(experimentName);
-    await this.uploadTemplate(blockId, templatePath, userId ?? 0, checklistName, null);
+    const checklistName = await this.getDefaultChecklistName(blockId, experimentName, rtlTag);
+    await this.uploadTemplate(blockId, templatePath, userId ?? 0, checklistName, null, runId);
   }
 
   /**
@@ -185,14 +216,20 @@ class QmsService {
 
     const projectName = report.project || report.project_name || report.projectName;
     const blockName = report.block_name || report.blockName;
+    const stageDirectory = report.stage_directory || report.stageDirectory;
+    const domainName = this.extractDomainFromStageDirectory(stageDirectory);
     const experimentName =
       report.experiment ||
       report.experiment_name ||
       report.experimentName ||
-      this.extractExperimentFromStageDirectory(report.stage_directory || report.stageDirectory, blockName);
+      this.extractExperimentFromStageDirectory(stageDirectory, blockName);
 
     if (!projectName || !blockName || !experimentName) {
       throw new Error('Report must include project, block_name, and experiment (or stage_directory to infer experiment).');
+    }
+
+    if (!domainName) {
+      throw new Error('Report must include stage_directory to infer domain name.');
     }
 
     const checks = report.checks && typeof report.checks === 'object' ? report.checks : null;
@@ -213,6 +250,22 @@ class QmsService {
       }
       const projectId = projectResult.rows[0].id;
 
+      // Validate domain belongs to the project
+      const domainResult = await client.query(
+        `SELECT d.name
+         FROM project_domains pd
+         JOIN domains d ON d.id = pd.domain_id
+         WHERE pd.project_id = $1 AND d.is_active = true`,
+        [projectId]
+      );
+      const projectDomains = domainResult.rows.map((row: any) => String(row.name).trim().toLowerCase());
+      if (projectDomains.length === 0) {
+        throw new Error(`Project "${projectName}" has no active domains configured; external upload blocked.`);
+      }
+      if (!projectDomains.includes(String(domainName).trim().toLowerCase())) {
+        throw new Error(`Domain "${domainName}" does not match project "${projectName}" domains (${projectDomains.join(', ')})`);
+      }
+
       const blockResult = await client.query(
         'SELECT id FROM blocks WHERE project_id = $1 AND block_name = $2',
         [projectId, String(blockName).trim()]
@@ -222,19 +275,83 @@ class QmsService {
       }
       const blockId = blockResult.rows[0].id;
 
-      const checklistName = this.getDefaultChecklistName(String(experimentName).trim());
+      // Resolve run_id for this block+experiment
+      const runResult = await client.query(
+        'SELECT id, rtl_tag FROM runs WHERE block_id = $1 AND experiment = $2 LIMIT 1',
+        [blockId, String(experimentName).trim()]
+      );
+      const runId = runResult.rows.length > 0 ? runResult.rows[0].id : null;
+      const rtlTag = runResult.rows.length > 0 ? runResult.rows[0].rtl_tag : null;
+
+      const checklistName = await this.getDefaultChecklistName(blockId, String(experimentName).trim(), rtlTag);
       const checklistResult = await client.query(
-        'SELECT id, status FROM checklists WHERE block_id = $1 AND name = $2',
+        'SELECT id, status, run_id FROM checklists WHERE block_id = $1 AND name = $2',
         [blockId, checklistName]
       );
       if (checklistResult.rows.length === 0) {
         throw new Error(`Checklist "${checklistName}" not found for block "${blockName}"`);
       }
       const checklistId = checklistResult.rows[0].id;
+      
+      // Update run_id if not set (for backward compatibility with old checklists)
+      if (runId && !checklistResult.rows[0].run_id) {
+        await client.query(
+          'UPDATE checklists SET run_id = $1 WHERE id = $2',
+          [runId, checklistId]
+        );
+      }
       const checklistStatus = checklistResult.rows[0].status as string | null;
-      if (checklistStatus !== 'rejected') {
+      
+      // Version checking: prevent uploading to older versions if newer version is in progress
+      let hasNewerVersionInProgress = false;
+      if (rtlTag && runId) {
+        // Extract version number from rtl_tag (e.g., "bronze_v4" -> 4)
+        const currentVersionMatch = rtlTag.match(/_v(\d+)$/);
+        if (currentVersionMatch) {
+          const currentVersion = parseInt(currentVersionMatch[1], 10);
+          
+          // Check for newer versions of the same block+experiment
+          const newerVersionsResult = await client.query(
+            `SELECT r.rtl_tag, cl.status, cl.name
+             FROM runs r
+             JOIN checklists cl ON cl.run_id = r.id
+             WHERE r.block_id = $1 
+               AND r.experiment = $2 
+               AND r.id != $3
+               AND r.rtl_tag IS NOT NULL`,
+            [blockId, String(experimentName).trim(), runId]
+          );
+          
+          for (const row of newerVersionsResult.rows) {
+            const otherVersionMatch = row.rtl_tag.match(/_v(\d+)$/);
+            if (otherVersionMatch) {
+              const otherVersion = parseInt(otherVersionMatch[1], 10);
+              // If a newer version exists and is not approved, block the upload
+              if (otherVersion > currentVersion && row.status !== 'approved') {
+                hasNewerVersionInProgress = true;
+                throw new Error(
+                  `Cannot upload to ${rtlTag}: A newer version "${row.rtl_tag}" (checklist: ${row.name}) is already in progress with status "${row.status}". Please complete or approve the newer version first.`
+                );
+              }
+            }
+          }
+        }
+      }
+      
+      // Allow external uploads for 'pending', 'draft', 'rejected' states
+      // Also allow 'approved' and 'submitted_for_approval' if no newer version is in progress
+      const alwaysAllowedStatuses = ['pending', 'draft', 'rejected'];
+      const conditionallyAllowedStatuses = ['approved', 'submitted_for_approval'];
+      
+      const isAlwaysAllowed = alwaysAllowedStatuses.includes(checklistStatus || '');
+      const isConditionallyAllowed = conditionallyAllowedStatuses.includes(checklistStatus || '') && !hasNewerVersionInProgress;
+      
+      if (!isAlwaysAllowed && !isConditionallyAllowed) {
+        const reason = hasNewerVersionInProgress 
+          ? 'a newer version is in progress' 
+          : `status is "${checklistStatus ?? 'unknown'}"`;
         throw new Error(
-          `Checklist "${checklistName}" is in "${checklistStatus ?? 'unknown'}" state; external updates are only allowed when status is "rejected".`
+          `Checklist "${checklistName}" cannot be updated: ${reason}. External updates are only allowed when status is "pending", "draft", "rejected", or "approved"/"submitted_for_approval" (if no newer version exists).`
         );
       }
 
@@ -261,10 +378,12 @@ class QmsService {
         const message = checkData.message || null;
         const value = checkData.value ?? null;
         const reportPathOverride = checkData.report_path || checkData.reportPath || null;
+        const comments = checkData.comments || null;
 
+        // Update check_items: check_name and comments (from JSON)
         await client.query(
-          'UPDATE check_items SET check_name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-          [checkName, itemRow.id]
+          'UPDATE check_items SET check_name = $1, comments = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+          [checkName, comments, itemRow.id]
         );
 
         const reportDataResult = await client.query(
@@ -273,6 +392,7 @@ class QmsService {
         );
 
         if (reportDataResult.rows.length > 0) {
+          // External upload: Update data fields INCLUDING status from JSON
           await client.query(
             `
               UPDATE c_report_data
@@ -288,13 +408,14 @@ class QmsService {
             [
               reportPathOverride || reportPath,
               JSON.stringify(checkData),
-              status,
+              status || 'pending',
               value?.toString?.() ?? value,
               message,
               itemRow.id
             ]
           );
         } else {
+          // External upload: Insert with status from JSON
           await client.query(
             `
               INSERT INTO c_report_data
@@ -305,51 +426,67 @@ class QmsService {
               itemRow.id,
               reportPathOverride || reportPath,
               JSON.stringify(checkData),
-              status,
+              status || 'pending',
               value?.toString?.() ?? value,
               message
             ]
           );
         }
 
-        await client.query(
-          `
-            UPDATE check_item_approvals
-            SET
-              status = 'pending',
-              comments = NULL,
-              submitted_at = NULL,
-              approved_at = NULL,
-              updated_at = CURRENT_TIMESTAMP
-            WHERE check_item_id = $1
-          `,
+        // Reset approval status to allow re-review after external data update
+        // If check item was previously approved, it needs to be reviewed again
+        const approvalResult = await client.query(
+          'SELECT id, status FROM check_item_approvals WHERE check_item_id = $1',
           [itemRow.id]
         );
+        
+        if (approvalResult.rows.length > 0) {
+          const currentApprovalStatus = approvalResult.rows[0].status;
+          // Reset to 'submitted' if it was previously approved or rejected, so approver can review again
+          // Reset to 'pending' if checklist will be moved to pending/draft
+          let newApprovalStatus = 'submitted';
+          if (checklistStatus === 'pending' || checklistStatus === 'draft') {
+            newApprovalStatus = 'pending';
+          }
+          
+          await client.query(
+            `UPDATE check_item_approvals 
+             SET status = $1, 
+                 comments = NULL,
+                 approved_at = NULL,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE check_item_id = $2`,
+            [newApprovalStatus, itemRow.id]
+          );
+        } else {
+          // Create approval record if it doesn't exist
+          await client.query(
+            `INSERT INTO check_item_approvals 
+               (check_item_id, status, default_approver_id)
+             VALUES ($1, 'pending', (SELECT lead_id FROM blocks WHERE id = $2))`,
+            [itemRow.id, blockId]
+          );
+        }
 
         updated++;
       }
 
       if (updated > 0) {
-        const checklistColsResult = await client.query(
-          `
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'checklists'
-              AND column_name IN ('submitted_by', 'submitted_at', 'approver_id', 'approver_role')
-          `
-        );
-        const checklistCols = new Set(checklistColsResult.rows.map((r: any) => r.column_name));
-        const updateFields: string[] = ["status = 'draft'", 'updated_at = CURRENT_TIMESTAMP'];
-        if (checklistCols.has('submitted_by')) updateFields.push('submitted_by = NULL');
-        if (checklistCols.has('submitted_at')) updateFields.push('submitted_at = NULL');
-        if (checklistCols.has('approver_id')) updateFields.push('approver_id = NULL');
-        if (checklistCols.has('approver_role')) updateFields.push('approver_role = NULL');
-
-        await client.query(
-          `UPDATE checklists SET ${updateFields.join(', ')} WHERE id = $1`,
-          [checklistId]
-        );
+        // If checklist was rejected, reset to pending to allow resubmission
+        // If checklist was approved/submitted, also reset to pending for re-review
+        let updateQuery = 'UPDATE checklists SET updated_at = CURRENT_TIMESTAMP';
+        const queryParams: any[] = [];
+        let paramIndex = 1;
+        
+        if (checklistStatus === 'rejected' || checklistStatus === 'approved' || checklistStatus === 'submitted_for_approval') {
+          updateQuery += `, status = $${paramIndex++}`;
+          queryParams.push('pending');
+        }
+        
+        updateQuery += ` WHERE id = $${paramIndex}`;
+        queryParams.push(checklistId);
+        
+        await client.query(updateQuery, queryParams);
       }
 
       await client.query('COMMIT');
@@ -541,7 +678,13 @@ class QmsService {
    *   they have access to (block access is enforced when loading filters/blocks).
    * - Customer: can only see checklists for projects explicitly assigned to them.
    */
-  async getChecklistsForBlock(blockId: number, userId?: number, userRole?: string): Promise<ChecklistData[]> {
+  async getChecklistsForBlock(
+    blockId: number, 
+    userId?: number, 
+    userRole?: string,
+    experiment?: string,
+    rtlTag?: string
+  ): Promise<ChecklistData[]> {
     try {
       const hasMilestonesTable = await this.milestonesTableExists();
       const milestoneJoin = hasMilestonesTable 
@@ -555,17 +698,37 @@ class QmsService {
       let whereClause = 'WHERE cl.block_id = $1';
       const queryParams: any[] = [blockId];
 
+      // Filter by experiment and/or rtl_tag if provided
+      if (experiment || rtlTag) {
+        // Join with runs table to filter by experiment/rtl_tag
+        whereClause += ` AND cl.run_id IN (
+          SELECT id FROM runs 
+          WHERE block_id = $1`;
+        
+        if (experiment) {
+          queryParams.push(experiment);
+          whereClause += ` AND experiment = $${queryParams.length}`;
+        }
+        
+        if (rtlTag) {
+          queryParams.push(rtlTag);
+          whereClause += ` AND rtl_tag = $${queryParams.length}`;
+        }
+        
+        whereClause += ')';
+      }
+
       // Additional restriction only for customers
       if (userRole === 'customer' && userId) {
         // Customers see checklists for projects assigned to them
+        queryParams.push(userId);
         whereClause += ` AND EXISTS (
           SELECT 1
           FROM blocks b
           JOIN user_projects up ON up.project_id = b.project_id
           WHERE b.id = cl.block_id
-            AND up.user_id = $2
+            AND up.user_id = $${queryParams.length}
         )`;
-        queryParams.push(userId);
       }
       // Admin, project_manager, and lead see all checklists (no additional filter)
       
@@ -850,15 +1013,6 @@ class QmsService {
       const checklist = checklistResult.rows[0];
 
       // Check which columns exist in c_report_data table
-      // TODO: These columns need to be added via migration 013_add_check_item_details.sql:
-      // - description
-      // - fix_details
-      // - engineer_comments
-      // - lead_comments
-      // - result_value
-      // - signoff_status
-      // - signoff_by
-      // - signoff_at
       const columnCheck = await pool.query(`
         SELECT column_name
         FROM information_schema.columns 
@@ -868,8 +1022,6 @@ class QmsService {
       const existingColumns = new Set(columnCheck.rows.map((r: any) => r.column_name));
       const hasDescription = existingColumns.has('description');
       const hasFixDetails = existingColumns.has('fix_details');
-      const hasEngineerComments = existingColumns.has('engineer_comments');
-      const hasLeadComments = existingColumns.has('lead_comments');
       const hasResultValue = existingColumns.has('result_value');
       const hasSignoffStatus = existingColumns.has('signoff_status');
       const hasSignoffBy = existingColumns.has('signoff_by');
@@ -885,8 +1037,6 @@ class QmsService {
             ${hasDescription ? 'crd.description as report_description,' : 'NULL as report_description,'}
             crd.status as report_status,
             ${hasFixDetails ? 'crd.fix_details,' : 'NULL as fix_details,'}
-            ${hasEngineerComments ? 'crd.engineer_comments,' : 'NULL as engineer_comments,'}
-            ${hasLeadComments ? 'crd.lead_comments,' : 'NULL as lead_comments,'}
             ${hasResultValue ? 'crd.result_value,' : 'NULL as result_value,'}
             ${hasSignoffStatus ? 'crd.signoff_status,' : 'NULL as signoff_status,'}
             ${hasSignoffBy ? 'crd.signoff_by,' : 'NULL as signoff_by,'}
@@ -937,6 +1087,10 @@ class QmsService {
         info: row.info,
         evidence: row.evidence,
         version: row.version || 'v1',
+        // Comment fields from check_items table
+        comments: row.comments ?? null,
+        engineer_comments: row.engineer_comments ?? null,
+        reviewer_comments: row.reviewer_comments ?? null,
         report_data: row.report_data_id ? {
           id: row.report_data_id,
           check_item_id: row.id,
@@ -944,8 +1098,6 @@ class QmsService {
           description: row.report_description,
           status: row.report_status,
           fix_details: row.fix_details,
-          engineer_comments: row.engineer_comments,
-          lead_comments: row.lead_comments,
           result_value: row.result_value,
           signoff_status: row.signoff_status,
           signoff_by: row.signoff_by,
@@ -989,15 +1141,6 @@ class QmsService {
   async getCheckItem(checkItemId: number): Promise<CheckItemData | null> {
     try {
       // Check which columns exist in c_report_data table
-      // TODO: These columns need to be added via migration 013_add_check_item_details.sql:
-      // - description
-      // - fix_details
-      // - engineer_comments
-      // - lead_comments
-      // - result_value
-      // - signoff_status
-      // - signoff_by
-      // - signoff_at
       const columnCheck = await pool.query(`
         SELECT column_name
         FROM information_schema.columns 
@@ -1007,8 +1150,6 @@ class QmsService {
       const existingColumns = new Set(columnCheck.rows.map((r: any) => r.column_name));
       const hasDescription = existingColumns.has('description');
       const hasFixDetails = existingColumns.has('fix_details');
-      const hasEngineerComments = existingColumns.has('engineer_comments');
-      const hasLeadComments = existingColumns.has('lead_comments');
       const hasResultValue = existingColumns.has('result_value');
       const hasSignoffStatus = existingColumns.has('signoff_status');
       const hasSignoffBy = existingColumns.has('signoff_by');
@@ -1024,8 +1165,6 @@ class QmsService {
             ${hasDescription ? 'crd.description as report_description,' : 'NULL as report_description,'}
             crd.status as report_status,
             ${hasFixDetails ? 'crd.fix_details,' : 'NULL as fix_details,'}
-            ${hasEngineerComments ? 'crd.engineer_comments,' : 'NULL as engineer_comments,'}
-            ${hasLeadComments ? 'crd.lead_comments,' : 'NULL as lead_comments,'}
             ${hasResultValue ? 'crd.result_value,' : 'NULL as result_value,'}
             ${hasSignoffStatus ? 'crd.signoff_status,' : 'NULL as signoff_status,'}
             ${hasSignoffBy ? 'crd.signoff_by,' : 'NULL as signoff_by,'}
@@ -1082,6 +1221,10 @@ class QmsService {
         info: row.info,
         evidence: row.evidence,
         version: row.version || 'v1',
+        // Comments from check_items table
+        comments: row.comments ?? null,
+        engineer_comments: row.engineer_comments ?? null,
+        reviewer_comments: row.reviewer_comments ?? null,
         report_data: row.report_data_id ? {
           id: row.report_data_id,
           check_item_id: row.id,
@@ -1089,8 +1232,6 @@ class QmsService {
           description: row.report_description,
           status: row.report_status,
           fix_details: row.fix_details,
-          engineer_comments: row.engineer_comments,
-          lead_comments: row.lead_comments,
           result_value: row.result_value,
           signoff_status: row.signoff_status,
           signoff_by: row.signoff_by,
@@ -1197,36 +1338,35 @@ class QmsService {
         );
 
         if (existingResult.rows.length > 0) {
-          // Update existing
+          // Update existing - do NOT update status (only external JSON updates status)
           await client.query(
             `
               UPDATE c_report_data 
               SET 
                 report_path = $1,
                 csv_data = $2,
-                status = CASE WHEN status = 'pending' THEN 'in_review' ELSE status END,
-                signoff_status = COALESCE($4, signoff_status),
-                result_value = COALESCE($5, result_value),
-                engineer_comments = COALESCE($6, engineer_comments),
+                signoff_status = COALESCE($3, signoff_status),
+                result_value = COALESCE($4, result_value),
+                engineer_comments = COALESCE($5, engineer_comments),
                 updated_at = CURRENT_TIMESTAMP
-              WHERE check_item_id = $3
+              WHERE check_item_id = $6
             `,
             [
               reportPath, 
               JSON.stringify(reportData), 
-              checkItemId,
               additionalData?.signoff_status ?? null,
               additionalData?.result_value ?? null,
-              additionalData?.engineer_comments ?? null
+              additionalData?.engineer_comments ?? null,
+              checkItemId
             ]
           );
         } else {
-          // Create new
+          // Create new - use default 'pending' status from schema (don't set status here)
           await client.query(
             `
               INSERT INTO c_report_data 
-                (check_item_id, report_path, csv_data, status, signoff_status, result_value, engineer_comments)
-              VALUES ($1, $2, $3, 'in_review', $4, $5, $6)
+                (check_item_id, report_path, csv_data, signoff_status, result_value, engineer_comments)
+              VALUES ($1, $2, $3, $4, $5, $6)
             `,
             [
               checkItemId, 
@@ -1447,34 +1587,35 @@ class QmsService {
         );
 
         if (existingResult.rows.length > 0) {
+          // Do NOT update status - only external JSON can update status
           await client.query(
             `
               UPDATE c_report_data
               SET
                 report_path = $1,
                 csv_data = $2,
-                status = 'in_review',
-                signoff_status = COALESCE($4, signoff_status),
-                result_value = COALESCE($5, result_value),
-                engineer_comments = COALESCE($6, engineer_comments),
+                signoff_status = COALESCE($3, signoff_status),
+                result_value = COALESCE($4, result_value),
+                engineer_comments = COALESCE($5, engineer_comments),
                 updated_at = CURRENT_TIMESTAMP
-              WHERE check_item_id = $3
+              WHERE check_item_id = $6
             `,
             [
               rowReportPath,
               JSON.stringify(row),
-              checkItemId,
               signoffStatus,
               resultValue,
-              comments
+              comments,
+              checkItemId
             ]
           );
         } else {
+          // Use default 'pending' status from schema - don't set status here
           await client.query(
             `
               INSERT INTO c_report_data
-                (check_item_id, report_path, csv_data, status, signoff_status, result_value, engineer_comments)
-              VALUES ($1, $2, $3, 'in_review', $4, $5, $6)
+                (check_item_id, report_path, csv_data, signoff_status, result_value, engineer_comments)
+              VALUES ($1, $2, $3, $4, $5, $6)
             `,
             [checkItemId, rowReportPath, JSON.stringify(row), signoffStatus, resultValue, comments]
           );
@@ -1692,6 +1833,135 @@ class QmsService {
   }
 
   /**
+   * Update check item comments with role-based permissions
+   * Engineers can edit engineer_comments (in check_items table)
+   * Approvers/Admins/Leads can edit reviewer_comments (in check_items table, only when checklist is submitted_for_approval)
+   */
+  async updateCheckItemComments(
+    checkItemId: number,
+    engineerComments: string | undefined,
+    reviewerComments: string | undefined,
+    userId: number,
+    userRole: string
+  ): Promise<void> {
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Get checklist info and submission details
+        const checkItemInfo = await client.query(
+          `SELECT ci.checklist_id, cl.block_id, cl.submitted_by, cl.status as checklist_status
+           FROM check_items ci
+           JOIN checklists cl ON cl.id = ci.checklist_id
+           WHERE ci.id = $1`,
+          [checkItemId]
+        );
+
+        if (checkItemInfo.rows.length === 0) {
+          throw new Error('Check item not found');
+        }
+
+        const checklistId = checkItemInfo.rows[0].checklist_id;
+        const blockId = checkItemInfo.rows[0].block_id;
+        const submittedBy = checkItemInfo.rows[0].submitted_by;
+        const checklistStatus = checkItemInfo.rows[0].checklist_status;
+
+        // Permission check for engineer_comments
+        if (engineerComments !== undefined) {
+          // Engineers, project managers, admins, and leads can edit engineer comments
+          const canEditEngineerComments = 
+            userRole === 'admin' || 
+            userRole === 'lead' || 
+            userRole === 'engineer' || 
+            userRole === 'project_manager';
+          
+          if (!canEditEngineerComments) {
+            throw new Error('Only engineers, project managers, admins, or leads can edit engineer comments');
+          }
+
+          // Update engineer_comments in check_items table
+          await client.query(
+            `UPDATE check_items 
+             SET engineer_comments = $1, updated_at = CURRENT_TIMESTAMP 
+             WHERE id = $2`,
+            [engineerComments, checkItemId]
+          );
+
+          await this.logAuditAction(
+            client,
+            checkItemId,
+            checklistId,
+            blockId,
+            userId,
+            'engineer_comment_updated',
+            { engineer_comments: engineerComments }
+          );
+        }
+
+        // Permission check for reviewer_comments
+        if (reviewerComments !== undefined) {
+          // Reviewer comments can only be edited when checklist is in submitted_for_approval status
+          if (checklistStatus !== 'submitted_for_approval') {
+            throw new Error('Reviewer comments can only be edited when checklist is in submitted_for_approval status');
+          }
+
+          // Only approver/admin/lead can edit reviewer comments
+          const isAdminOrPMOrLead = userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
+          
+          if (!isAdminOrPMOrLead) {
+            // Check if user is the assigned approver
+            const approvalResult = await client.query(
+              `SELECT assigned_approver_id, default_approver_id 
+               FROM check_item_approvals 
+               WHERE check_item_id = $1`,
+              [checkItemId]
+            );
+
+            if (approvalResult.rows.length > 0) {
+              const approverId = approvalResult.rows[0].assigned_approver_id ?? 
+                                 approvalResult.rows[0].default_approver_id;
+              if (approverId !== userId) {
+                throw new Error('Only assigned approver, admin, or lead can edit reviewer comments');
+              }
+            } else {
+              throw new Error('No approval record found. Cannot edit reviewer comments.');
+            }
+          }
+
+          // Update reviewer_comments in check_items table
+          await client.query(
+            `UPDATE check_items 
+             SET reviewer_comments = $1, updated_at = CURRENT_TIMESTAMP 
+             WHERE id = $2`,
+            [reviewerComments, checkItemId]
+          );
+
+          await this.logAuditAction(
+            client,
+            checkItemId,
+            checklistId,
+            blockId,
+            userId,
+            'reviewer_comment_updated',
+            { reviewer_comments: reviewerComments }
+          );
+        }
+
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error: any) {
+      console.error('Error updating check item comments:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Submit check item for approval
    */
   async submitCheckItemForApproval(checkItemId: number, userId: number): Promise<void> {
@@ -1715,11 +1985,12 @@ class QmsService {
           throw new Error(`Check item is already ${currentStatus}`);
         }
 
-        // Update status to submitted
+        // Do NOT update c_report_data.status - it is only updated by external JSON uploads
+        // Just update timestamp to track when it was submitted for approval
         await client.query(
           `
             UPDATE c_report_data 
-            SET status = 'submitted', updated_at = CURRENT_TIMESTAMP
+            SET updated_at = CURRENT_TIMESTAMP
             WHERE check_item_id = $1
           `,
           [checkItemId]
@@ -1817,7 +2088,8 @@ class QmsService {
     checkItemId: number,
     approved: boolean,
     comments: string | null,
-    userId: number
+    userId: number,
+    withWaiver: boolean = false
   ): Promise<void> {
     try {
       const client = await pool.connect();
@@ -1851,8 +2123,14 @@ class QmsService {
           throw new Error('You are not the assigned approver for this check item.');
         }
 
-        // Update approval status
-        const newStatus = approved ? 'approved' : 'not_approved';
+        // Update approval status - support approved_with_waiver
+        let newStatus: string;
+        if (approved) {
+          newStatus = withWaiver ? 'approved_with_waiver' : 'approved';
+        } else {
+          newStatus = 'not_approved';
+        }
+        
         // Use separate query parameter for the CASE comparison to avoid type inference issues
         await client.query(
           `
@@ -1867,15 +2145,15 @@ class QmsService {
           [newStatus, comments || null, checkItemId, approved]
         );
 
-        // Update report data status
-        const reportStatus = approved ? 'approved' : 'not_approved';
+        // Do NOT update c_report_data.status - it is only updated by external JSON uploads
+        // Just update timestamp
         await client.query(
           `
             UPDATE c_report_data 
-            SET status = $1, updated_at = CURRENT_TIMESTAMP
-            WHERE check_item_id = $2
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE check_item_id = $1
           `,
-          [reportStatus, checkItemId]
+          [checkItemId]
         );
 
         // Log audit action
@@ -1929,7 +2207,7 @@ class QmsService {
 
         // Check if all items are approved (only check when checklist is submitted_for_approval)
         if (currentStatus === 'submitted_for_approval' && totalItems > 0) {
-          // Count approved items - an item is approved if both approval_status and report_status are 'approved'
+          // Count approved items - an item is approved if approval_status is 'approved' or 'approved_with_waiver'
           let approvedCount = 0;
           let rejectedCount = 0;
 
@@ -1937,8 +2215,8 @@ class QmsService {
             const approvalStatus = row.approval_status;
             const reportStatus = row.report_status;
             
-            // Item is approved if both approval and report status are 'approved'
-            if (approvalStatus === 'approved' && reportStatus === 'approved') {
+            // Item is approved if approval status is 'approved' or 'approved_with_waiver' AND report status is 'approved'
+            if ((approvalStatus === 'approved' || approvalStatus === 'approved_with_waiver') && reportStatus === 'approved') {
               approvedCount++;
             } else if (approvalStatus === 'not_approved' || reportStatus === 'not_approved') {
               rejectedCount++;
@@ -2086,11 +2364,12 @@ class QmsService {
             [comments || null, checkItemId]
           );
 
-          // Update report data status
+          // Do NOT update c_report_data.status - only external JSON uploads can change it
+          // Just update timestamp
           await client.query(
             `
               UPDATE c_report_data 
-              SET status = 'approved', updated_at = CURRENT_TIMESTAMP
+              SET updated_at = CURRENT_TIMESTAMP
               WHERE check_item_id = $1
             `,
             [checkItemId]
@@ -2145,7 +2424,8 @@ class QmsService {
     checkItemIds: number[],
     approved: boolean,
     userId: number,
-    comments?: string | null
+    comments?: string | null,
+    withWaiver: boolean = false
   ): Promise<void> {
     if (checkItemIds.length === 0) {
       throw new Error('No check items provided');
@@ -2165,7 +2445,13 @@ class QmsService {
         const isAdminOrPMOrLead =
           userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
 
-        const status = approved ? 'approved' : 'not_approved';
+        // Determine status based on approved and withWaiver flags
+        let status: string;
+        if (approved) {
+          status = withWaiver ? 'approved_with_waiver' : 'approved';
+        } else {
+          status = 'not_approved';
+        }
         const reportStatus = approved ? 'approved' : 'not_approved';
         let checklistId: number | null = null;
         let blockId: number | null = null;
@@ -2259,14 +2545,15 @@ class QmsService {
             [status, comments || null, checkItemId, approved]
           );
 
-          // Update report data status
+          // Do NOT update c_report_data.status - only external JSON uploads can change it
+          // Just update timestamp
           await client.query(
             `
               UPDATE c_report_data 
-              SET status = $1, updated_at = CURRENT_TIMESTAMP
-              WHERE check_item_id = $2
+              SET updated_at = CURRENT_TIMESTAMP
+              WHERE check_item_id = $1
             `,
-            [reportStatus, checkItemId]
+            [checkItemId]
           );
 
           // Log audit action for each item
@@ -2299,7 +2586,7 @@ class QmsService {
 
         allItemsResult.rows.forEach((row: any) => {
           const itemStatus = row.status;
-          if (itemStatus === 'approved') {
+          if (itemStatus === 'approved' || itemStatus === 'approved_with_waiver') {
             approvedCount++;
           } else if (itemStatus === 'not_approved') {
             rejectedCount++;
@@ -2672,14 +2959,13 @@ class QmsService {
             );
           }
 
-          // Mark check item report data as submitted if it exists
+          // Do NOT update c_report_data.status - only external JSON uploads can change it
           // Note: engineer_comments are now stored in checklists table, not c_report_data
+          // Just update timestamp
           await client.query(
             `
               UPDATE c_report_data 
-              SET 
-                status = 'submitted',
-                updated_at = CURRENT_TIMESTAMP
+              SET updated_at = CURRENT_TIMESTAMP
               WHERE check_item_id = $1
             `,
             [checkItemId]
@@ -2917,16 +3203,15 @@ class QmsService {
             );
           }
 
-          // Update c_report_data status
+          // Do NOT update c_report_data.status - only external JSON uploads can change it
+          // Just update timestamp
           await client.query(
             `
               UPDATE c_report_data 
-              SET 
-                status = $1,
-                updated_at = CURRENT_TIMESTAMP
-              WHERE check_item_id = $2
+              SET updated_at = CURRENT_TIMESTAMP
+              WHERE check_item_id = $1
             `,
-            [approved ? 'approved' : 'not_approved', checkItemId]
+            [checkItemId]
           );
         }
 
@@ -3029,7 +3314,8 @@ class QmsService {
     filePath: string,
     userId: number,
     checklistName: string | null,
-    milestoneId: number | null
+    milestoneId: number | null,
+    runId: number | null = null
   ): Promise<any> {
     try {
       // Read Excel file
@@ -3220,8 +3506,8 @@ class QmsService {
           } else {
             // Create new checklist
             const insertResult = await client.query(
-              'INSERT INTO checklists (block_id, milestone_id, name, status) VALUES ($1, $2, $3, $4) RETURNING id',
-              [blockId, milestoneId, checklistName, 'draft']
+              'INSERT INTO checklists (block_id, milestone_id, name, status, run_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+              [blockId, milestoneId, checklistName, 'draft', runId]
             );
             checklistId = insertResult.rows[0].id;
             createdChecklists.push(checklistName);
