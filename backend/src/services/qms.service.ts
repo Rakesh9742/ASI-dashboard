@@ -126,6 +126,23 @@ class QmsService {
     return parts.length >= 3 ? parts[2] : null;
   }
 
+  private async getBlockLeadId(client: any, blockId: number): Promise<number | null> {
+    const columnResult = await client.query(
+      `SELECT 1
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'blocks'
+         AND column_name = 'lead_id'
+       LIMIT 1`
+    );
+    if (columnResult.rows.length === 0) {
+      return null;
+    }
+
+    const leadResult = await client.query('SELECT lead_id FROM blocks WHERE id = $1', [blockId]);
+    return leadResult.rows[0]?.lead_id ?? null;
+  }
+
   /**
    * Ensure default checklist exists for a block + experiment using the default template.
    */
@@ -458,11 +475,12 @@ class QmsService {
           );
         } else {
           // Create approval record if it doesn't exist
+          const defaultApproverId = await this.getBlockLeadId(client, blockId);
           await client.query(
             `INSERT INTO check_item_approvals 
                (check_item_id, status, default_approver_id)
-             VALUES ($1, 'pending', (SELECT lead_id FROM blocks WHERE id = $2))`,
-            [itemRow.id, blockId]
+             VALUES ($1, 'pending', $2)`,
+            [itemRow.id, defaultApproverId]
           );
         }
 
