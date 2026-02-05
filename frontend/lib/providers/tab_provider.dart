@@ -37,29 +37,19 @@ class TabNotifier extends StateNotifier<TabState> {
 
   void openProject(Map<String, dynamic> project) {
     final projectName = project['name'] ?? 'Unnamed Project';
-    final tabId = project['id']?.toString() ?? project['name']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString();
-    
-    // Check if tab already exists
-    final existingTab = state.tabs.firstWhere(
-      (tab) => tab.id == tabId,
-      orElse: () => ProjectTab(id: '', name: '', project: {}),
-    );
+    final projectKey = project['id']?.toString() ?? project['name']?.toString() ?? '';
+    // Unique tab id per tab instance so the same project can be opened in multiple tabs
+    final tabId = '${projectKey}_${DateTime.now().millisecondsSinceEpoch}';
 
-    if (existingTab.id.isEmpty) {
-      // Create new tab
-      final newTab = ProjectTab(
-        id: tabId,
-        name: projectName,
-        project: project,
-      );
-      state = state.copyWith(
-        tabs: [...state.tabs, newTab],
-        activeTabId: tabId,
-      );
-    } else {
-      // Switch to existing tab
-      state = state.copyWith(activeTabId: tabId);
-    }
+    final newTab = ProjectTab(
+      id: tabId,
+      name: projectName,
+      project: project,
+    );
+    state = state.copyWith(
+      tabs: [...state.tabs, newTab],
+      activeTabId: tabId,
+    );
   }
 
   void closeTab(String tabId) {

@@ -38,7 +38,7 @@ class SemiconProjectState {
 class SemiconProjectStateNotifier extends StateNotifier<Map<String, SemiconProjectState>> {
   SemiconProjectStateNotifier() : super({});
 
-  /// Same id as tab_provider uses for the project (so we key state by tab).
+  /// Base id from project (id or name). Callers pass tabId when available so state is per-tab.
   static String projectStateId(Map<String, dynamic> project) {
     return project['id']?.toString() ??
         project['name']?.toString() ??

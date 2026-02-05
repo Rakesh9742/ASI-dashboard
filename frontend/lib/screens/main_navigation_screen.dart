@@ -59,11 +59,13 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> {
           return SemiconDashboardScreen(
             key: ValueKey('project-${tab.id}'),
             project: tab.project,
+            tabId: tab.id,
           );
         }
         return SemiconDashboardScreen(
           key: ValueKey('project-${tab.id}'),
           project: tab.project,
+          tabId: tab.id,
         );
       }).toList();
       currentScreen = IndexedStack(

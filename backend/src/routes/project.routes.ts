@@ -1059,8 +1059,24 @@ router.get(
       if (tableExists.rows[0]?.exists !== true) {
         return res.json({ success: true, rtlTags: [] });
       }
-      // Admin, project_manager, lead: show all RTL tags for this block (any user). Others: only current user's tags.
-      const showAllRtlTags = userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
+      // Show all RTL tags if: global role is admin/pm/lead, OR block-level role (block_users) is lead, OR project-level role (user_projects) is lead
+      let showAllRtlTags = userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
+      if (!showAllRtlTags) {
+        const blockRoleRow = await pool.query(
+          `SELECT role FROM block_users WHERE block_id = $1 AND user_id = $2 LIMIT 1`,
+          [blockId, userId]
+        );
+        const blockRole = (blockRoleRow.rows[0]?.role ?? '').toString().toLowerCase();
+        if (blockRole === 'lead' || blockRole === 'admin' || blockRole === 'project_manager') showAllRtlTags = true;
+      }
+      if (!showAllRtlTags) {
+        const projectRoleRow = await pool.query(
+          `SELECT role FROM user_projects WHERE project_id = $1 AND user_id = $2 LIMIT 1`,
+          [projectId, userId]
+        );
+        const projectRole = (projectRoleRow.rows[0]?.role ?? '').toString().toLowerCase();
+        if (projectRole === 'lead' || projectRole === 'admin' || projectRole === 'project_manager') showAllRtlTags = true;
+      }
       const rtlResult = showAllRtlTags
         ? await pool.query(
             `SELECT DISTINCT rtl_tag FROM user_block_rtl_tags WHERE block_id = $1 ORDER BY rtl_tag`,

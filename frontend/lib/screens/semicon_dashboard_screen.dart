@@ -18,11 +18,14 @@ import 'qms_checklist_detail_screen.dart';
 class SemiconDashboardScreen extends ConsumerStatefulWidget {
   final Map<String, dynamic> project;
   final String? initialTab;
+  /// When provided (e.g. from main tab bar), state is keyed by this so each tab has isolated selection state.
+  final String? tabId;
 
   const SemiconDashboardScreen({
     super.key,
     required this.project,
     this.initialTab,
+    this.tabId,
   });
 
   @override
@@ -88,8 +91,11 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
   late final SemiconProjectStateNotifier _stateNotifier;
   late final SemiconBlocksCacheNotifier _blocksCacheNotifier;
 
-  /// Same id as tab_provider uses so we can persist/restore state per project tab.
-  String get _projectStateId => SemiconProjectStateNotifier.projectStateId(widget.project);
+  /// State key: per-tab when tabId is set (so multiple tabs for same project don't share selection), else per-project.
+  String get _projectStateId =>
+      widget.tabId ?? SemiconProjectStateNotifier.projectStateId(widget.project);
+  /// Cache key: always per-project so blocks/experiments cache is shared across tabs of the same project.
+  String get _blocksCacheKey => SemiconProjectStateNotifier.projectStateId(widget.project);
 
   /// Local project identifier for API calls (DB only). Prefer local id, else project name.
   dynamic get _localProjectIdentifier {
@@ -132,7 +138,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
     print('   User role: $role');
     print('═══════════════════════════════════════════════════════════');
     // Use cached blocks when switching back to this project tab so it shows instantly (no loading).
-    final blocksCache = _blocksCacheNotifier.getCache(_projectStateId);
+    final blocksCache = _blocksCacheNotifier.getCache(_blocksCacheKey);
     if (blocksCache != null && blocksCache.availableBlocks.isNotEmpty) {
       _availableBlocks = List<String>.from(blocksCache.availableBlocks);
       _blockToExperiments = Map<String, List<String>>.from(
@@ -268,7 +274,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
       });
       // Cache blocks so switching back to this project tab does not refetch (use captured notifier, not ref)
       _blocksCacheNotifier.saveCache(
-        _projectStateId,
+        _blocksCacheKey,
         SemiconBlocksCache(
           availableBlocks: List<String>.from(finalBlocks),
           blockToExperiments: Map<String, List<String>>.from(
@@ -1270,7 +1276,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                 mainAxisSize: MainAxisSize.max,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Left Panel — Context & Command Console (50%)
+                  // Left Panel — Semicon Buddy (50%)
                   SizedBox(
                     width: leftWidth,
                   child: Container(
@@ -1304,7 +1310,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                               ),
                               const SizedBox(width: 10),
                               Text(
-                                'Context & Console',
+                                'Semicon Buddy',
                                 style: theme.textTheme.titleSmall?.copyWith(
                                   fontWeight: FontWeight.w600,
                                   color: theme.colorScheme.onSurface.withOpacity(0.85),
@@ -1760,7 +1766,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                   ),
                 ),
                 Text(
-                  'Remote SSH · Commands run on server',
+                  'The AI will run the job for you on the Compute Cloud',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: _kConsoleTextMuted,
                   ),
@@ -1828,7 +1834,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             ),
             const SizedBox(height: 16),
             Text(
-              'Send a command to run on the remote server',
+              'The AI will run the job for you',
               style: theme.textTheme.titleSmall?.copyWith(
                 color: _kConsoleText,
                 fontWeight: FontWeight.w500,
@@ -1837,7 +1843,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
             ),
             const SizedBox(height: 8),
             Text(
-              'Select block & experiment to run in that directory,\nor type a command below (runs in home if not set).',
+              'Select block & experiment for context, then type what you need.\nThe AI runs it on the remote server.',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: _kConsoleTextMuted,
               ),
@@ -2064,7 +2070,7 @@ class _SemiconDashboardScreenState extends ConsumerState<SemiconDashboardScreen>
                   maxLength: 500,
                   style: const TextStyle(color: _kConsoleText, fontSize: 13),
                   decoration: InputDecoration(
-                    hintText: 'Message Command Console...',
+                    hintText: 'Type a command—the AI will run it for you',
                     hintStyle: TextStyle(color: _kConsoleTextMuted.withOpacity(0.8)),
                     filled: true,
                     fillColor: _kConsoleInputBg,

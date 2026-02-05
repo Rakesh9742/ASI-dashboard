@@ -3665,7 +3665,7 @@ class _SetupDialog extends ConsumerStatefulWidget {
   ConsumerState<_SetupDialog> createState() => _SetupDialogState();
 }
 
-class _SetupDialogState extends ConsumerState<_SetupDialog> {
+class _SetupDialogState extends ConsumerState<_SetupDialog> with WidgetsBindingObserver {
   String? _selectedBlock;
   final TextEditingController _experimentController = TextEditingController();
   final TextEditingController _rtlTagCreateNewController = TextEditingController();
@@ -3688,11 +3688,31 @@ class _SetupDialogState extends ConsumerState<_SetupDialog> {
   String? _selectedRtlTag; // when use existing: selected tag
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _blockDropdownOverlay?.remove();
+    _blockDropdownOverlay = null;
+    _blockDropdownOpen = false;
     _experimentController.dispose();
     _rtlTagCreateNewController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _closeBlockDropdown();
+    }
+    if (state == AppLifecycleState.resumed && mounted && _selectedBlock != null && !_rtlTagsLoading) {
+      _loadRtlTags();
+    }
   }
 
   Future<void> _loadRtlTags() async {
