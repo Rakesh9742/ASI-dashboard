@@ -49,7 +49,8 @@ curl -X POST "http://<backend-host>/api/qms/external-checklists/upload-report" \
 
   
 curl.exe -X POST "http://localhost:3000/api/qms/external-checklists/upload-report" -H "X-API-Key: sitedafilesdata" -F "file=@backend/templates/syn_qms.json"
-
+cd C:\Users\ganga\OneDrive\Desktop\ASI-Dashboard\ASI-dashboard
+curl.exe -X POST "http://15.207.235.35:3000/api/qms/external-checklists/upload-report" -H "X-API-Key: sitedafilesdata" -F "file=@backend/templates/sys_qms1.json"
 ```
 
 ### Behavior
