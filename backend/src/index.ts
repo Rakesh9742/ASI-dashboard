@@ -72,6 +72,11 @@ app.use(cors({
       }
     }
     
+    // If no configured origins, allow all (prevents accidental CORS lockout)
+    if (corsOrigins.length === 0) {
+      return callback(null, true);
+    }
+
     // Check against allowed origins from environment variable (works for both dev and production)
     if (corsOrigins.length > 0) {
       const normalizedOrigin = normalizeUrl(origin);

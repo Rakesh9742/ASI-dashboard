@@ -323,7 +323,15 @@ class _QmsCheckItemDetailScreenState extends ConsumerState<QmsCheckItemDetailScr
     final authState = ref.read(authProvider);
     final user = authState.user;
     final role = user?['role'];
-    return role == 'admin' || role == 'project_manager' || role == 'lead';
+    if (_checkItem == null) return false;
+    if (role == 'admin') return true;
+
+    final userId = user?['id'];
+    final approval = _checkItem!['approval'];
+    if (userId == null || approval == null) return false;
+
+    final approverId = approval['assigned_approver_id'] ?? approval['default_approver_id'];
+    return approverId == userId;
   }
 
   bool _canEdit() {
@@ -341,6 +349,10 @@ class _QmsCheckItemDetailScreenState extends ConsumerState<QmsCheckItemDetailScr
     // Don't allow individual check item submission if parent checklist is submitted for approval
     final checklistStatus = _checkItem!['checklist_status'] ?? 'draft';
     if (checklistStatus == 'submitted_for_approval' || checklistStatus == 'submitted') {
+      return false;
+    }
+
+    if (_checkItem!['is_block_owner'] != true) {
       return false;
     }
     

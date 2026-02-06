@@ -2540,6 +2540,19 @@ router.get(
       const projectRole = projectRoleRow.rows[0]?.role?.toString().trim() || null;
       const effectiveRole = (projectRole || userRole || '').toString().trim();
       const roleLower = effectiveRole.toLowerCase();
+      const blockUsersExists = await client.query(
+        `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'block_users')`
+      );
+      const hasBlockUsersTable = blockUsersExists.rows[0]?.exists === true;
+      const blockUsersRoleExists = await client.query(
+        `SELECT EXISTS (
+           SELECT FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'block_users' AND column_name = 'role'
+         )`
+      );
+      const hasBlockUsersRoleColumn = blockUsersRoleExists.rows[0]?.exists === true;
+      const blockUserRoleSelect = hasBlockUsersRoleColumn ? 'MAX(bu.role) as block_user_role,' : 'NULL as block_user_role,';
+
       // Admin and project_manager see all blocks and all runs. Lead sees only assigned blocks but all runs in those blocks.
       const showAll = roleLower === 'admin' || roleLower === 'project_manager';
       console.log('🔵 [blocks-experiments] globalRole:', userRole, '| projectRole:', projectRole, '| effectiveRole:', effectiveRole, '| showAll (see all blocks):', showAll);
@@ -2554,7 +2567,7 @@ router.get(
               b.project_id,
               b.created_at as block_created_at,
               MAX(bu.run_directory) as block_user_run_directory,
-              MAX(bu.role) as block_user_role,
+              ${blockUserRoleSelect}
               COALESCE(
                 json_agg(
                   json_build_object(
@@ -2584,10 +2597,6 @@ router.get(
       }
 
       // Lead: only blocks assigned (block_users), but ALL runs in those blocks. Engineer: only blocks assigned and only runs they created.
-      const blockUsersExists = await client.query(
-        `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'block_users')`
-      );
-      const hasBlockUsersTable = blockUsersExists.rows[0]?.exists === true;
       console.log('🔵 [blocks-experiments] hasBlockUsersTable:', hasBlockUsersTable);
 
       // Lead: only blocks assigned to lead (block_users), all runs in those blocks (any user)
@@ -2600,7 +2609,7 @@ router.get(
               b.project_id,
               b.created_at as block_created_at,
               MAX(bu.run_directory) as block_user_run_directory,
-              MAX(bu.role) as block_user_role,
+              ${blockUserRoleSelect}
               COALESCE(
                 json_agg(
                   json_build_object(
@@ -2655,7 +2664,7 @@ router.get(
               b.project_id,
               b.created_at as block_created_at,
               MAX(bu.run_directory) as block_user_run_directory,
-              MAX(bu.role) as block_user_role,
+              ${blockUserRoleSelect}
               COALESCE(
                 json_agg(
                   json_build_object(

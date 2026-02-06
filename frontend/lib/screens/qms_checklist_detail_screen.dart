@@ -28,6 +28,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
   bool _isSubmitting = false;
   bool _isApproving = false;
   bool _isAssigningApprover = false;
+  bool _showTimelineDetails = false;
   Map<String, dynamic>? _checklist;
   List<dynamic> _availableApprovers = [];
   int? _selectedApproverId;
@@ -241,11 +242,23 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
     }
   }
 
-  bool _canSubmitChecklist() {
+  bool _canAttemptSubmitChecklist() {
     if (_checklist == null) return false;
     final status = _checklist!['status'] ?? 'draft';
-    // Can submit if status is draft (engineer can submit for approval)
-    return status == 'draft';
+    if (status != 'draft') return false;
+
+    final authState = ref.read(authProvider);
+    final role = authState.user?['role'];
+    if (role != 'admin' && role != 'engineer' && role != 'lead') {
+      return false;
+    }
+
+    return _checklist!['is_block_owner'] == true;
+  }
+
+  bool _canSubmitChecklist() {
+    if (!_canAttemptSubmitChecklist()) return false;
+    return _checklist?['has_report_data'] == true;
   }
 
   bool _isEngineer() {
@@ -269,24 +282,22 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
 
     if (_checklist == null || userId == null) return false;
 
-    // Admins, project managers, and leads are always allowed (backend will still enforce assignee rules)
-    if (role == 'admin' || role == 'project_manager' || role == 'lead') {
+    // Admins are always allowed (backend will still enforce assignee rules)
+    if (role == 'admin') {
       return true;
     }
 
-    // Engineers can be approvers only if they are assigned/default approver on at least one item
-    if (role == 'engineer') {
-      final items = _checklist!['check_items'] as List?;
-      if (items == null) return false;
+    // Non-admins can be approvers only if they are assigned/default approver on at least one item
+    final items = _checklist!['check_items'] as List?;
+    if (items == null) return false;
 
-      for (final item in items) {
-        final approval = item['approval'];
-        if (approval != null) {
-          final approverId =
-              approval['assigned_approver_id'] ?? approval['default_approver_id'];
-          if (approverId == userId) {
-            return true;
-          }
+    for (final item in items) {
+      final approval = item['approval'];
+      if (approval != null) {
+        final approverId =
+            approval['assigned_approver_id'] ?? approval['default_approver_id'];
+        if (approverId == userId) {
+          return true;
         }
       }
     }
@@ -316,17 +327,15 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
       return false;
     }
 
-    // Admin / PM / Lead can act on any item (backend still enforces rules)
-    if (role == 'admin' || role == 'project_manager' || role == 'lead') {
+    // Admin can act on any item (backend still enforces rules)
+    if (role == 'admin') {
       return true;
     }
 
-    // Engineer can act only if they are the assigned/default approver for this item
-    if (role == 'engineer') {
-      final approverId =
-          approval['assigned_approver_id'] ?? approval['default_approver_id'];
-      return approverId == userId;
-    }
+    // Non-admin can act only if they are the assigned/default approver for this item
+    final approverId =
+        approval['assigned_approver_id'] ?? approval['default_approver_id'];
+    return approverId == userId;
 
     return false;
   }
@@ -830,6 +839,82 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
     }
   }
 
+  String _formatShortDate(dynamic dateValue) {
+    if (dateValue == null) return 'N/A';
+    try {
+      final date = dateValue is String ? DateTime.parse(dateValue) : dateValue as DateTime;
+      return DateFormat('MMM dd, HH:mm').format(date);
+    } catch (e) {
+      return dateValue.toString();
+    }
+  }
+
+  Widget _buildProgressSummary() {
+    if (_checklist == null) return const SizedBox.shrink();
+
+    final status = (_checklist!['status'] ?? 'draft').toString();
+    final submittedAt = _checklist!['submitted_at'];
+    final updatedAt = _checklist!['updated_at'];
+    final timestamp = submittedAt ?? updatedAt;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Theme.of(context).dividerColor.withOpacity(0.5)),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          setState(() {
+            _showTimelineDetails = !_showTimelineDetails;
+          });
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              const Icon(Icons.timeline_rounded, size: 18, color: _kBrandPrimary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Row(
+                  children: [
+                    const Text(
+                      'Progress',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      status.replaceAll('_', ' '),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    if (timestamp != null) ...[
+                      const SizedBox(width: 8),
+                      Text(
+                        _formatShortDate(timestamp),
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Icon(
+                _showTimelineDetails ? Icons.expand_less : Icons.expand_more,
+                size: 20,
+                color: Colors.grey.shade600,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildProgressTimeline() {
     if (_checklist == null) return SizedBox.shrink();
 
@@ -838,6 +923,10 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
     final submittedAt = _checklist!['submitted_at'];
     final updatedAt = _checklist!['updated_at'];
     final submittedByName = _checklist!['submitted_by_name'];
+    
+    // Check if user can submit and if report data exists
+    final hasReportData = _checklist?['has_report_data'] == true;
+    final canSubmit = _canSubmitChecklist();
     
     // Get current user for engineer name if not submitted yet
     final authState = ref.read(authProvider);
@@ -1043,38 +1132,26 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                 const Spacer(),
                 // Action buttons based on checklist status
                 if (_checklist!['status'] == 'pending' || _checklist!['status'] == 'draft')
-                  ElevatedButton.icon(
-                    onPressed: _submitChecklist,
-                    icon: const Icon(Icons.send_rounded, size: 18),
-                    label: const Text('Submit for Approval'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _kBrandPrimary,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                  Tooltip(
+                    message: !hasReportData
+                        ? 'Report is not uploaded yet from linux'
+                        : 'Submit for approval',
+                    child: ElevatedButton.icon(
+                      onPressed: canSubmit ? _submitChecklist : null,
+                      icon: const Icon(Icons.send_rounded, size: 18),
+                      label: const Text('Submit for Approval'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _kBrandPrimary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        elevation: 0,
                       ),
-                      elevation: 0,
                     ),
                   )
-                else if (_checklist!['status'] == 'submitted_for_approval' && _isApprover())
-                  ElevatedButton.icon(
-                    onPressed: _areAllSelectableItemsSelected() ? _unselectAllCheckItems : _selectAllCheckItems,
-                    icon: Icon(
-                      _areAllSelectableItemsSelected() ? Icons.remove_done_rounded : Icons.checklist_rounded,
-                      size: 18,
-                    ),
-                    label: Text(_areAllSelectableItemsSelected() ? 'Unselect All' : 'Select All'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _kBrandPrimary,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 0,
-                    ),
-                  ),
+                
               ],
             ),
           ),
@@ -1148,6 +1225,11 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
   bool _canEditEngineerComments(Map<String, dynamic> item) {
     final authState = ref.read(authProvider);
     final userRole = authState.user?['role'];
+
+    final checklistStatus = _checklist?['status'];
+    if (checklistStatus == 'submitted_for_approval' || checklistStatus == 'approved') {
+      return false;
+    }
     
     // Engineers, project managers, admins, and leads can edit engineer comments
     return userRole == 'engineer' || 
@@ -1274,7 +1356,9 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
 
     final checkItems = _checklist!['check_items'] as List? ?? [];
     final checklistStatus = _checklist!['status'] ?? 'draft';
+    final canAttemptSubmit = _canAttemptSubmitChecklist() && checklistStatus != 'submitted';
     final canSubmit = _canSubmitChecklist() && checklistStatus != 'submitted';
+    final hasReportData = _checklist?['has_report_data'] == true;
 
     // Build filter option lists from available check items
     List<String> _buildOptions(String key) {
@@ -1393,7 +1477,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
             itemBuilder: (context) {
               final items = <PopupMenuEntry<String>>[];
               final allSelected = _areAllSelectableItemsSelected();
-              if (_isEngineer() && checklistStatus == 'draft') {
+              if (canSubmit) {
                 items.add(
                   const PopupMenuItem(
                     value: 'submit',
@@ -1402,6 +1486,19 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                         Icon(Icons.send, size: 18),
                         SizedBox(width: 8),
                         Text('Submit for Approval'),
+                      ],
+                    ),
+                  ),
+                );
+              } else if (canAttemptSubmit && !hasReportData) {
+                items.add(
+                  const PopupMenuItem(
+                    enabled: false,
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline, size: 18),
+                        SizedBox(width: 8),
+                        Text('Report is not uploaded yet'),
                       ],
                     ),
                   ),
@@ -1454,8 +1551,14 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
       ),
       body: Column(
         children: [
-          // Progress Timeline
-          _buildProgressTimeline(),
+          // Compact progress summary (tap to expand full timeline)
+          _buildProgressSummary(),
+          AnimatedCrossFade(
+            firstChild: const SizedBox.shrink(),
+            secondChild: _buildProgressTimeline(),
+            crossFadeState: _showTimelineDetails ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+            duration: const Duration(milliseconds: 200),
+          ),
 
           // Check items table
           Expanded(
@@ -1483,6 +1586,40 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                     clipBehavior: Clip.antiAlias,
                     child: Column(
                     children: [
+                      if (_checklist!['status'] == 'submitted_for_approval' && _isApprover())
+                        Container(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              ElevatedButton.icon(
+                                onPressed: _areAllSelectableItemsSelected()
+                                    ? _unselectAllCheckItems
+                                    : _selectAllCheckItems,
+                                icon: Icon(
+                                  _areAllSelectableItemsSelected()
+                                      ? Icons.remove_done_rounded
+                                      : Icons.checklist_rounded,
+                                  size: 18,
+                                ),
+                                label: Text(
+                                  _areAllSelectableItemsSelected()
+                                      ? 'Unselect All'
+                                      : 'Select All',
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: _kBrandPrimary,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  elevation: 0,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       // Clear filters button - appears above table when filters are active
                       if (_hasActiveFilters())
                         Container(

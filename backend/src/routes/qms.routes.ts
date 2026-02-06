@@ -132,12 +132,13 @@ router.get('/blocks/:blockId/checklists', authenticate, async (req, res) => {
 router.get('/checklists/:checklistId', authenticate, async (req, res) => {
   try {
     const checklistId = parseInt(req.params.checklistId, 10);
+    const userId = (req as any).user?.id;
     
     if (isNaN(checklistId)) {
       return res.status(400).json({ error: 'Invalid checklist ID' });
     }
 
-    const checklist = await qmsService.getChecklistWithItems(checklistId);
+    const checklist = await qmsService.getChecklistWithItems(checklistId, userId);
     
     if (!checklist) {
       return res.status(404).json({ error: 'Checklist not found' });
@@ -169,7 +170,7 @@ router.put(
       }
 
       await qmsService.updateChecklist(checklistId, name ?? null, userId);
-      const updatedChecklist = await qmsService.getChecklistWithItems(checklistId);
+      const updatedChecklist = await qmsService.getChecklistWithItems(checklistId, userId);
 
       res.json({
         message: 'Checklist updated successfully',
@@ -215,12 +216,13 @@ router.delete(
 router.get('/check-items/:checkItemId', authenticate, async (req, res) => {
   try {
     const checkItemId = parseInt(req.params.checkItemId, 10);
+    const userId = (req as any).user?.id;
     
     if (isNaN(checkItemId)) {
       return res.status(400).json({ error: 'Invalid check item ID' });
     }
 
-    const checkItem = await qmsService.getCheckItem(checkItemId);
+    const checkItem = await qmsService.getCheckItem(checkItemId, userId);
     
     if (!checkItem) {
       return res.status(404).json({ error: 'Check item not found' });
@@ -293,7 +295,7 @@ router.put(
         userId
       );
 
-      const updatedItem = await qmsService.getCheckItem(checkItemId);
+      const updatedItem = await qmsService.getCheckItem(checkItemId, userId);
       res.json(updatedItem);
     } catch (error: any) {
       console.error('Error updating check item:', error);
@@ -309,7 +311,7 @@ router.put(
 router.post(
   '/check-items/:checkItemId/submit',
   authenticate,
-  authorize('engineer', 'project_manager', 'admin', 'lead'),
+  authorize('engineer', 'admin', 'lead'),
   async (req, res) => {
     try {
       const checkItemId = parseInt(req.params.checkItemId, 10);
@@ -321,7 +323,7 @@ router.post(
 
       await qmsService.submitCheckItemForApproval(checkItemId, userId);
 
-      const updatedItem = await qmsService.getCheckItem(checkItemId);
+      const updatedItem = await qmsService.getCheckItem(checkItemId, userId);
       res.json({
         message: 'Check item submitted for approval',
         check_item: updatedItem
@@ -359,7 +361,7 @@ router.put(
       const withWaiver = with_waiver === true;
       await qmsService.approveCheckItem(checkItemId, approved, comments || null, userId, withWaiver);
 
-      const updatedItem = await qmsService.getCheckItem(checkItemId);
+      const updatedItem = await qmsService.getCheckItem(checkItemId, userId);
       
       let statusMessage = 'rejected';
       if (approved) {
@@ -408,7 +410,7 @@ router.put(
         userRole
       );
 
-      const updatedItem = await qmsService.getCheckItem(checkItemId);
+      const updatedItem = await qmsService.getCheckItem(checkItemId, userId);
       res.json({
         message: 'Comments updated successfully',
         check_item: updatedItem
@@ -444,7 +446,7 @@ router.put(
 
       await qmsService.assignApprover(checkItemId, parseInt(approver_id, 10), userId);
 
-      const updatedItem = await qmsService.getCheckItem(checkItemId);
+      const updatedItem = await qmsService.getCheckItem(checkItemId, userId);
       res.json({
         message: 'Approver assigned successfully',
         check_item: updatedItem
@@ -483,7 +485,7 @@ router.get('/check-items/:checkItemId/history', authenticate, async (req, res) =
 router.post(
   '/checklists/:checklistId/submit',
   authenticate,
-  authorize('engineer', 'project_manager', 'admin', 'lead'),
+  authorize('engineer', 'admin', 'lead'),
   async (req, res) => {
     try {
       const checklistId = parseInt(req.params.checklistId, 10);
@@ -496,7 +498,7 @@ router.post(
 
       await qmsService.submitChecklist(checklistId, userId, engineer_comments || null);
 
-      const updatedChecklist = await qmsService.getChecklistWithItems(checklistId);
+      const updatedChecklist = await qmsService.getChecklistWithItems(checklistId, userId);
       res.json({
         message: 'Checklist submitted successfully',
         checklist: updatedChecklist
@@ -532,7 +534,7 @@ router.put(
 
       await qmsService.assignApproverToChecklist(checklistId, parseInt(approver_id, 10), userId);
 
-      const updatedChecklist = await qmsService.getChecklistWithItems(checklistId);
+      const updatedChecklist = await qmsService.getChecklistWithItems(checklistId, userId);
       res.json({
         message: 'Approver assigned successfully',
         checklist: updatedChecklist

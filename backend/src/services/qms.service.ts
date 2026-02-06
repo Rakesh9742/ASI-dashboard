@@ -20,6 +20,8 @@ interface ChecklistData {
   status: string;
   engineer_comments: string | null;
   reviewer_comments: string | null;
+  is_block_owner?: boolean;
+  has_report_data?: boolean;
   check_items?: CheckItemData[];
   created_at: Date;
   updated_at: Date;
@@ -28,6 +30,8 @@ interface ChecklistData {
 interface CheckItemData {
   id: number;
   checklist_id: number;
+  block_id?: number;
+  is_block_owner?: boolean;
   checklist_status?: string;
   check_name?: string | null;
   name: string;
@@ -141,6 +145,73 @@ class QmsService {
 
     const leadResult = await client.query('SELECT lead_id FROM blocks WHERE id = $1', [blockId]);
     return leadResult.rows[0]?.lead_id ?? null;
+  }
+
+  private async blockUsersTableExists(client: any): Promise<boolean> {
+    const result = await client.query(
+      `SELECT EXISTS (
+         SELECT FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = 'block_users'
+       ) as exists`
+    );
+    return result.rows[0]?.exists === true;
+  }
+
+  private async blockUsersHasRoleColumn(client: any): Promise<boolean> {
+    const result = await client.query(
+      `SELECT EXISTS (
+         SELECT FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'block_users'
+           AND column_name = 'role'
+       ) as exists`
+    );
+    return result.rows[0]?.exists === true;
+  }
+
+  private async isBlockOwnerOrAdmin(client: any, blockId: number, userId: number): Promise<boolean> {
+    const userCheck = await client.query('SELECT role FROM users WHERE id = $1', [userId]);
+    const userRole = userCheck.rows[0]?.role;
+    if (userRole === 'admin') return true;
+
+    const hasBlockUsers = await this.blockUsersTableExists(client);
+    if (!hasBlockUsers) return false;
+
+    const hasRoleColumn = await this.blockUsersHasRoleColumn(client);
+    if (hasRoleColumn) {
+      const roleResult = await client.query(
+        'SELECT role FROM block_users WHERE block_id = $1 AND user_id = $2 LIMIT 1',
+        [blockId, userId]
+      );
+      const role = (roleResult.rows[0]?.role || '').toString().trim().toLowerCase();
+      return role === 'engineer' || role === 'lead';
+    }
+
+    const assignmentResult = await client.query(
+      'SELECT 1 FROM block_users WHERE block_id = $1 AND user_id = $2 LIMIT 1',
+      [blockId, userId]
+    );
+    return assignmentResult.rows.length > 0;
+  }
+
+  private async getBlockLeadUserIds(client: any, blockId: number): Promise<number[]> {
+    const hasBlockUsers = await this.blockUsersTableExists(client);
+    if (!hasBlockUsers) return [];
+
+    const hasRoleColumn = await this.blockUsersHasRoleColumn(client);
+    if (!hasRoleColumn) return [];
+
+    const result = await client.query(
+      `SELECT u.id
+       FROM block_users bu
+       JOIN users u ON u.id = bu.user_id
+       WHERE bu.block_id = $1
+         AND bu.role = 'lead'
+         AND u.is_active = true
+       ORDER BY u.id ASC`,
+      [blockId]
+    );
+    return result.rows.map((row: any) => row.id);
   }
 
   /**
@@ -756,6 +827,13 @@ class QmsService {
             u_submitted.id as submitted_by_id,
             u_submitted.username as submitted_by_username,
             u_submitted.full_name as submitted_by_name,
+            EXISTS (
+              SELECT 1
+              FROM check_items ci_rd
+              JOIN c_report_data crd ON crd.check_item_id = ci_rd.id
+              WHERE ci_rd.checklist_id = cl.id
+                AND (crd.report_path IS NOT NULL OR crd.status IS NOT NULL)
+            ) as has_report_data,
             -- Current approver name (prefer pending assignment, else last approved)
             (
               SELECT u.full_name
@@ -824,7 +902,13 @@ class QmsService {
         queryParams
       );
 
-      return result.rows;
+      const rows = result.rows;
+      if (userId) {
+        for (const row of rows) {
+          row.is_block_owner = await this.isBlockOwnerOrAdmin(pool, row.block_id, userId);
+        }
+      }
+      return rows;
     } catch (error: any) {
       console.error('Error getting checklists:', error);
       throw error;
@@ -994,7 +1078,7 @@ class QmsService {
   /**
    * Get checklist with all check items
    */
-  async getChecklistWithItems(checklistId: number): Promise<ChecklistData | null> {
+  async getChecklistWithItems(checklistId: number, userId?: number | null): Promise<ChecklistData | null> {
     try {
       const hasMilestonesTable = await this.milestonesTableExists();
       const milestoneJoin = hasMilestonesTable 
@@ -1012,7 +1096,14 @@ class QmsService {
             b.block_name,
             u_submitted.id as submitted_by_id,
             u_submitted.username as submitted_by_username,
-            u_submitted.full_name as submitted_by_name
+            u_submitted.full_name as submitted_by_name,
+            EXISTS (
+              SELECT 1
+              FROM check_items ci_rd
+              JOIN c_report_data crd ON crd.check_item_id = ci_rd.id
+              WHERE ci_rd.checklist_id = cl.id
+                AND (crd.report_path IS NOT NULL OR crd.status IS NOT NULL)
+            ) as has_report_data
           FROM checklists cl
           ${milestoneJoin}
           LEFT JOIN blocks b ON b.id = cl.block_id
@@ -1027,6 +1118,11 @@ class QmsService {
       }
 
       const checklist = checklistResult.rows[0];
+
+      if (userId) {
+        const isOwner = await this.isBlockOwnerOrAdmin(pool, checklist.block_id, userId);
+        checklist.is_block_owner = isOwner;
+      }
 
       // Check which columns exist in c_report_data table
       const columnCheck = await pool.query(`
@@ -1154,7 +1250,7 @@ class QmsService {
   /**
    * Get check item details with report data
    */
-  async getCheckItem(checkItemId: number): Promise<CheckItemData | null> {
+  async getCheckItem(checkItemId: number, userId?: number | null): Promise<CheckItemData | null> {
     try {
       // Check which columns exist in c_report_data table
       const columnCheck = await pool.query(`
@@ -1176,6 +1272,7 @@ class QmsService {
           SELECT 
             ci.*,
             cl.status as checklist_status,
+            cl.block_id as block_id,
             crd.id as report_data_id,
             crd.report_path,
             ${hasDescription ? 'crd.description as report_description,' : 'NULL as report_description,'}
@@ -1219,9 +1316,12 @@ class QmsService {
       }
 
       const row = result.rows[0];
+      const isOwner = userId ? await this.isBlockOwnerOrAdmin(pool, row.block_id, userId) : undefined;
       return {
         id: row.id,
         checklist_id: row.checklist_id,
+        block_id: row.block_id,
+        is_block_owner: isOwner,
         checklist_status: row.checklist_status || 'draft',
         check_name: row.check_name ?? null,
         name: row.name,
@@ -1885,6 +1985,9 @@ class QmsService {
 
         // Permission check for engineer_comments
         if (engineerComments !== undefined) {
+          if (checklistStatus === 'submitted_for_approval' || checklistStatus === 'approved') {
+            throw new Error('Engineer comments cannot be edited after checklist submission.');
+          }
           // Engineers, project managers, admins, and leads can edit engineer comments
           const canEditEngineerComments = 
             userRole === 'admin' || 
@@ -1986,6 +2089,26 @@ class QmsService {
       try {
         await client.query('BEGIN');
 
+        const checkItemResult = await client.query(
+          `
+            SELECT ci.checklist_id, cl.block_id
+            FROM check_items ci
+            JOIN checklists cl ON cl.id = ci.checklist_id
+            WHERE ci.id = $1
+          `,
+          [checkItemId]
+        );
+        const checklistId = checkItemResult.rows[0]?.checklist_id;
+        const blockId = checkItemResult.rows[0]?.block_id;
+        if (!blockId) {
+          throw new Error('Check item not found or missing block.');
+        }
+
+        const canSubmit = await this.isBlockOwnerOrAdmin(client, blockId, userId);
+        if (!canSubmit) {
+          throw new Error('Only block owners or admins can submit check items for approval.');
+        }
+
         // Check if report data exists
         const reportResult = await client.query(
           'SELECT id, status FROM c_report_data WHERE check_item_id = $1',
@@ -2020,19 +2143,6 @@ class QmsService {
 
         if (approvalResult.rows.length === 0) {
           // Get default approver from check item or checklist
-          const checkItemResult = await client.query(
-            `
-              SELECT ci.checklist_id, cl.block_id
-              FROM check_items ci
-              JOIN checklists cl ON cl.id = ci.checklist_id
-              WHERE ci.id = $1
-            `,
-            [checkItemId]
-          );
-          
-          const checklistId = checkItemResult.rows[0]?.checklist_id;
-          const blockId = checkItemResult.rows[0]?.block_id;
-
           // For now, default approver can be set later by lead
           await client.query(
             `
@@ -2062,18 +2172,6 @@ class QmsService {
         }
 
         // Log audit action
-        const checklistResult = await client.query(
-          'SELECT checklist_id FROM check_items WHERE id = $1',
-          [checkItemId]
-        );
-        const checklistId = checklistResult.rows[0]?.checklist_id;
-        
-        const blockResult = await client.query(
-          'SELECT block_id FROM checklists WHERE id = $1',
-          [checklistId]
-        );
-        const blockId = blockResult.rows[0]?.block_id;
-
         await this.logAuditAction(
           client,
           checkItemId,
@@ -2118,7 +2216,7 @@ class QmsService {
           [userId]
         );
         const userRole = userCheck.rows[0]?.role;
-        const isAdminOrPMOrLead = userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
+        const isAdmin = userRole === 'admin';
 
         // Check approval record
         const approvalResult = await client.query(
@@ -2133,10 +2231,11 @@ class QmsService {
         const approval = approvalResult.rows[0];
         const approverId = approval.assigned_approver_id || approval.default_approver_id;
 
-        // Verify user is the assigned approver (unless admin, project_manager, or lead)
-        // Also allow if no approver is assigned (null approverId)
-        if (!isAdminOrPMOrLead && approverId != null && approverId !== userId) {
-          throw new Error('You are not the assigned approver for this check item.');
+        // Verify user is the assigned approver (unless admin)
+        if (!isAdmin) {
+          if (approverId == null || approverId !== userId) {
+            throw new Error('You are not the assigned approver for this check item.');
+          }
         }
 
         // Update approval status - support approved_with_waiver
@@ -2458,8 +2557,7 @@ class QmsService {
           [userId]
         );
         const userRole = userCheck.rows[0]?.role;
-        const isAdminOrPMOrLead =
-          userRole === 'admin' || userRole === 'project_manager' || userRole === 'lead';
+        const isAdmin = userRole === 'admin';
 
         // Determine status based on approved and withWaiver flags
         let status: string;
@@ -2525,15 +2623,15 @@ class QmsService {
           }
 
           // Permission checks:
-          // - Admin / PM / Lead can act on any items
-          // - Engineer can only act if they are the assigned/default approver
+          // - Admin can act on any items
+          // - Non-admin must be the assigned/default approver
           // - Submitting engineer cannot approve their own checklist
           const approverId =
             approvalRecord.assigned_approver_id ?? approvalRecord.default_approver_id;
 
-          if (!isAdminOrPMOrLead) {
-            // For engineers: must be the assigned approver
-            if (approverId != null && approverId !== userId) {
+          if (!isAdmin) {
+            // Must be the assigned approver
+            if (approverId == null || approverId !== userId) {
               throw new Error(
                 'You are not the assigned approver for one or more selected check items.'
               );
@@ -2684,7 +2782,7 @@ class QmsService {
         // Get checklist info to check who submitted
         const checklistResult = await client.query(
           `
-            SELECT cl.id, cl.submitted_by
+            SELECT cl.id, cl.submitted_by, cl.block_id
             FROM check_items ci
             JOIN checklists cl ON cl.id = ci.checklist_id
             WHERE ci.id = $1
@@ -2698,6 +2796,12 @@ class QmsService {
 
         const checklistId = checklistResult.rows[0].id;
         const submittedBy = checklistResult.rows[0].submitted_by;
+        const blockId = checklistResult.rows[0].block_id;
+
+        const blockLeadIds = await this.getBlockLeadUserIds(client, blockId);
+        if (!blockLeadIds.includes(approverId)) {
+          throw new Error('Approver must be the block lead.');
+        }
 
         // Prevent assigning the submitting engineer as approver
         if (submittedBy && approverId === submittedBy) {
@@ -2736,17 +2840,13 @@ class QmsService {
         }
 
         // Log audit action
-        const blockResult = await client.query(
-          'SELECT block_id FROM checklists WHERE id = $1',
-          [checklistId]
-        );
-        const blockId = blockResult.rows[0]?.block_id;
+        const blockIdForLog = checklistResult.rows[0]?.block_id;
 
         await this.logAuditAction(
           client,
           checkItemId,
           checklistId,
-          blockId,
+          blockIdForLog,
           userId,
           'approver_assigned',
           { approver_id: approverId }
@@ -2794,6 +2894,11 @@ class QmsService {
         // Prevent assigning the submitting engineer as approver
         if (submittedBy && approverId === submittedBy) {
           throw new Error('Cannot assign the submitting engineer as approver');
+        }
+
+        const blockLeadIds = await this.getBlockLeadUserIds(client, blockId);
+        if (!blockLeadIds.includes(approverId)) {
+          throw new Error('Approver must be the block lead.');
         }
 
         // Get all check items in the checklist
@@ -2908,8 +3013,32 @@ class QmsService {
           throw new Error('Checklist not found or has no associated block.');
         }
 
-        // Get project lead for this block
-        const projectLeadId = await this.getProjectLeadForBlock(blockId);
+        const reportCheck = await client.query(
+          `
+            SELECT COUNT(*) as count
+            FROM check_items ci
+            JOIN c_report_data crd ON crd.check_item_id = ci.id
+            WHERE ci.checklist_id = $1
+              AND (crd.report_path IS NOT NULL OR crd.status IS NOT NULL)
+          `,
+          [checklistId]
+        );
+        const hasReport = parseInt(reportCheck.rows[0]?.count || '0', 10) > 0;
+        if (!hasReport) {
+          throw new Error('Report is not uploaded yet from linux.');
+        }
+
+        const canSubmit = await this.isBlockOwnerOrAdmin(client, blockId, userId);
+        if (!canSubmit) {
+          throw new Error('Only block owners or admins can submit this checklist for approval.');
+        }
+
+        // Get block lead for this block (approver must be block lead only)
+        const blockLeadIds = await this.getBlockLeadUserIds(client, blockId);
+        const projectLeadId = blockLeadIds.length > 0 ? blockLeadIds[0] : null;
+        if (!projectLeadId) {
+          throw new Error('No block lead assigned for this block. Please assign a lead before submitting.');
+        }
 
         // Update checklist status to 'submitted_for_approval' and track submission
         // Store engineer_comments in checklists table
@@ -3018,44 +3147,13 @@ class QmsService {
    */
   async getProjectLeadForBlock(blockId: number): Promise<number | null> {
     try {
-      const result = await pool.query(
-        `
-          SELECT u.id
-          FROM blocks b
-          JOIN projects p ON p.id = b.project_id
-          JOIN project_domains pd ON pd.project_id = p.id
-          JOIN domains d ON d.id = pd.domain_id
-          JOIN users u ON u.domain_id = d.id
-          WHERE b.id = $1
-            AND u.role IN ('lead', 'admin')
-            AND u.is_active = true
-          ORDER BY 
-            CASE WHEN u.role = 'lead' THEN 0 ELSE 1 END,
-            u.id ASC
-          LIMIT 1
-        `,
-        [blockId]
-      );
-
-      if (result.rows.length > 0) {
-        return result.rows[0].id;
+      const client = await pool.connect();
+      try {
+        const leadIds = await this.getBlockLeadUserIds(client, blockId);
+        return leadIds.length > 0 ? leadIds[0] : null;
+      } finally {
+        client.release();
       }
-
-      // Fallback: any active lead/admin in the system
-      const globalResult = await pool.query(
-        `
-          SELECT id
-          FROM users
-          WHERE role IN ('lead', 'admin')
-            AND is_active = true
-          ORDER BY 
-            CASE WHEN role = 'lead' THEN 0 ELSE 1 END,
-            id ASC
-          LIMIT 1
-        `
-      );
-
-      return globalResult.rows.length > 0 ? globalResult.rows[0].id : null;
     } catch (error: any) {
       console.error('Error getting project lead for block:', error);
       throw error;
@@ -3081,53 +3179,37 @@ class QmsService {
 
       const blockId = checklistResult.rows[0].block_id;
 
-      // Get the project_id from the block
-      const blockResult = await pool.query(
-        'SELECT project_id FROM blocks WHERE id = $1',
-        [blockId]
-      );
-
-      if (blockResult.rows.length === 0) {
-        throw new Error('Block not found');
+      const hasBlockUsers = await this.blockUsersTableExists(pool);
+      if (!hasBlockUsers) {
+        return [];
       }
 
-      const projectId = blockResult.rows[0].project_id;
+      const hasRoleColumn = await this.blockUsersHasRoleColumn(pool);
+      if (!hasRoleColumn) {
+        return [];
+      }
 
-      // Build query to get users assigned to this project
-      // Include users who:
-      // 1. Are assigned to the project via user_projects table, OR
-      // 2. Created the project (created_by), OR
-      // 3. Are admin (admins can approve any project)
-      // Use project-specific role (up.role) if available, otherwise use global role (u.role)
-      // Cast both to text to handle type mismatch (up.role is VARCHAR, u.role is ENUM)
       let query = `
         SELECT DISTINCT 
           u.id, 
           u.username, 
           u.full_name, 
-          COALESCE(up.role, u.role::text) as role,
+          'lead' as role,
           u.email
-        FROM users u
-        LEFT JOIN user_projects up ON u.id = up.user_id AND up.project_id = $1
-        LEFT JOIN projects p ON p.id = $1 AND p.created_by = u.id
-        WHERE u.is_active = true
-          AND (
-            up.user_id IS NOT NULL
-            OR p.created_by = u.id
-            OR u.role = 'admin'
-          )
-          AND (
-            COALESCE(up.role, u.role::text) IN ('lead', 'engineer', 'admin', 'project_manager')
-          )
+        FROM block_users bu
+        JOIN users u ON u.id = bu.user_id
+        WHERE bu.block_id = $1
+          AND bu.role = 'lead'
+          AND u.is_active = true
       `;
-      const params: any[] = [projectId];
+      const params: any[] = [blockId];
 
       if (excludeUserId) {
         query += ` AND u.id != $2`;
         params.push(excludeUserId);
       }
 
-      query += ` ORDER BY COALESCE(up.role, u.role::text), u.full_name ASC`;
+      query += ` ORDER BY u.full_name ASC`;
 
       const result = await pool.query(query, params);
       return result.rows;

@@ -964,6 +964,8 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                                                       final isDraft = rawStatus == 'draft';
                                                       final isSubmittedForApproval = rawStatus == 'submitted_for_approval' || rawStatus == 'submitted for approval';
                                                       final isEngineerOrAdmin = userRole == 'engineer' || userRole == 'admin';
+                                                      final isBlockOwner = checklist['is_block_owner'] == true;
+                                                      final hasReportData = checklist['has_report_data'] == true;
                                                       final isApprover = _isApprover(checklist);
                                                       final canAssignApprover = (userRole == 'lead' || userRole == 'admin') && isSubmittedForApproval;
                                                       final canEditOrDelete = userRole == 'admin' || userRole == 'lead';
@@ -983,7 +985,7 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                                                         ),
                                                       );
                                                       
-                                                      if (isEngineerOrAdmin && isDraft) {
+                                                      if (isEngineerOrAdmin && isDraft && isBlockOwner && hasReportData) {
                                                         items.add(
                                                           const PopupMenuItem<String>(
                                                             value: 'submit',
@@ -992,6 +994,19 @@ class QmsDashboardScreenState extends ConsumerState<QmsDashboardScreen> {
                                                                 Icon(Icons.send, size: 18),
                                                                 SizedBox(width: 8),
                                                                 Text('Submit for Approval'),
+                                                              ],
+                                                            ),
+                                                          ),
+                                                        );
+                                                      } else if (isEngineerOrAdmin && isDraft && isBlockOwner && !hasReportData) {
+                                                        items.add(
+                                                          const PopupMenuItem<String>(
+                                                            enabled: false,
+                                                            child: Row(
+                                                              children: [
+                                                                Icon(Icons.info_outline, size: 18),
+                                                                SizedBox(width: 8),
+                                                                Text('Report is not uploaded yet'),
                                                               ],
                                                             ),
                                                           ),
