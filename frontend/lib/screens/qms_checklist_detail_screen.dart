@@ -245,7 +245,8 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
   bool _canAttemptSubmitChecklist() {
     if (_checklist == null) return false;
     final status = _checklist!['status'] ?? 'draft';
-    if (status != 'draft') return false;
+    // Allow submission for draft or pending status
+    if (status != 'draft' && status != 'pending') return false;
 
     final authState = ref.read(authProvider);
     final role = authState.user?['role'];
@@ -253,6 +254,10 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
       return false;
     }
 
+    // Admins can always submit (for testing purposes)
+    if (role == 'admin') return true;
+
+    // Other roles need to be block owners
     return _checklist!['is_block_owner'] == true;
   }
 
@@ -839,6 +844,17 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
     }
   }
 
+  String _getStatusDisplayText(String status) {
+    switch (status.toLowerCase()) {
+      case 'draft':
+        return 'PROGRESS REVIEW';
+      case 'pending':
+        return 'PROGRESS REVIEW';
+      default:
+        return status.replaceAll('_', ' ').toUpperCase();
+    }
+  }
+
   String _formatShortDate(dynamic dateValue) {
     if (dateValue == null) return 'N/A';
     try {
@@ -1128,30 +1144,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                 );
               }),
                   ),
-                ),
-                const Spacer(),
-                // Action buttons based on checklist status
-                if (_checklist!['status'] == 'pending' || _checklist!['status'] == 'draft')
-                  Tooltip(
-                    message: !hasReportData
-                        ? 'Report is not uploaded yet from linux'
-                        : 'Submit for approval',
-                    child: ElevatedButton.icon(
-                      onPressed: canSubmit ? _submitChecklist : null,
-                      icon: const Icon(Icons.send_rounded, size: 18),
-                      label: const Text('Submit for Approval'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _kBrandPrimary,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        elevation: 0,
-                      ),
-                    ),
-                  )
-                
+                )
               ],
             ),
           ),
@@ -1457,26 +1450,104 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_checklist!['name'] ?? 'Checklist'),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                _checklist!['name'] ?? 'Checklist',
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Compact progress indicator
+            InkWell(
+              onTap: () {
+                setState(() {
+                  _showTimelineDetails = !_showTimelineDetails;
+                });
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: _kBrandPrimary.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: _kBrandPrimary.withOpacity(0.3)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _showTimelineDetails ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                      size: 16,
+                      color: _kBrandPrimary,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _getStatusDisplayText((_checklist!['status'] ?? 'draft').toString()),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: _kBrandPrimary,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            // Submit for Approval button (after progress indicator)
+            if (canSubmit && (checklistStatus == 'pending' || checklistStatus == 'draft')) ...[
+              const SizedBox(width: 8),
+              Tooltip(
+                message: !hasReportData
+                    ? 'Report is not uploaded yet from linux'
+                    : 'Submit for approval',
+                child: ElevatedButton.icon(
+                  onPressed: hasReportData ? _submitChecklist : null,
+                  icon: const Icon(Icons.send_rounded, size: 16),
+                  label: const Text('Submit'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _kBrandPrimary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    elevation: 0,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
         elevation: 0,
         actions: [
+          // Select All button (visible when approver and submitted for approval)
+          if (_isApprover() && checklistStatus == 'submitted_for_approval')
+            TextButton.icon(
+              onPressed: _areAllSelectableItemsSelected() ? _unselectAllCheckItems : _selectAllCheckItems,
+              icon: Icon(
+                _areAllSelectableItemsSelected() ? Icons.remove_done_rounded : Icons.checklist_rounded,
+                size: 18,
+              ),
+              label: Text(_areAllSelectableItemsSelected() ? 'Unselect All' : 'Select All'),
+              style: TextButton.styleFrom(
+                foregroundColor: _kBrandPrimary,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              ),
+            ),
           PopupMenuButton<String>(
             onSelected: (value) {
               if (value == 'submit') {
                 _submitChecklist();
               } else if (value == 'assign') {
                 _loadApprovers().then((_) => _showAssignApproverDialog());
-              } else if (value == 'select_all') {
-                _selectAllCheckItems();
-              } else if (value == 'unselect_all') {
-                _unselectAllCheckItems();
               } else if (value == 'refresh') {
                 _loadChecklist();
               }
             },
             itemBuilder: (context) {
               final items = <PopupMenuEntry<String>>[];
-              final allSelected = _areAllSelectableItemsSelected();
               if (canSubmit) {
                 items.add(
                   const PopupMenuItem(
@@ -1518,20 +1589,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                   ),
                 );
               }
-              if (_isApprover() && checklistStatus == 'submitted_for_approval') {
-                items.add(
-                  PopupMenuItem(
-                    value: allSelected ? 'unselect_all' : 'select_all',
-                    child: Row(
-                      children: [
-                        Icon(allSelected ? Icons.remove_done : Icons.select_all, size: 18),
-                        const SizedBox(width: 8),
-                        Text(allSelected ? 'Unselect All Items' : 'Select All Items'),
-                      ],
-                    ),
-                  ),
-                );
-              }
+              // Select All is now a visible button in AppBar actions
               items.add(
                 const PopupMenuItem(
                   value: 'refresh',
@@ -1551,8 +1609,7 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
       ),
       body: Column(
         children: [
-          // Compact progress summary (tap to expand full timeline)
-          _buildProgressSummary(),
+          // Full timeline details (expanded/collapsed from AppBar progress indicator)
           AnimatedCrossFade(
             firstChild: const SizedBox.shrink(),
             secondChild: _buildProgressTimeline(),
@@ -1586,40 +1643,6 @@ class _QmsChecklistDetailScreenState extends ConsumerState<QmsChecklistDetailScr
                     clipBehavior: Clip.antiAlias,
                     child: Column(
                     children: [
-                      if (_checklist!['status'] == 'submitted_for_approval' && _isApprover())
-                        Container(
-                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.end,
-                            children: [
-                              ElevatedButton.icon(
-                                onPressed: _areAllSelectableItemsSelected()
-                                    ? _unselectAllCheckItems
-                                    : _selectAllCheckItems,
-                                icon: Icon(
-                                  _areAllSelectableItemsSelected()
-                                      ? Icons.remove_done_rounded
-                                      : Icons.checklist_rounded,
-                                  size: 18,
-                                ),
-                                label: Text(
-                                  _areAllSelectableItemsSelected()
-                                      ? 'Unselect All'
-                                      : 'Select All',
-                                ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: _kBrandPrimary,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  elevation: 0,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
                       // Clear filters button - appears above table when filters are active
                       if (_hasActiveFilters())
                         Container(

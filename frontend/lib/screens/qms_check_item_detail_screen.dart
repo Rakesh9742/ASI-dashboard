@@ -352,7 +352,12 @@ class _QmsCheckItemDetailScreenState extends ConsumerState<QmsCheckItemDetailScr
       return false;
     }
 
-    if (_checkItem!['is_block_owner'] != true) {
+    // Check if user is admin (can always submit) or block owner
+    final authState = ref.read(authProvider);
+    final role = authState.user?['role'];
+    final isAdmin = role == 'admin';
+    
+    if (!isAdmin && _checkItem!['is_block_owner'] != true) {
       return false;
     }
     
